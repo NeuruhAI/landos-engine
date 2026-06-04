@@ -9,3 +9,9 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+
+# PII guard — data artifacts at any depth must never be staged
+data/**/*.csv
+data/**/*.manifest.json
+data/incoming/
+reports/**
