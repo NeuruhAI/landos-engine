@@ -21,8 +21,11 @@ rather than the scoring internals.
 - APG push adapter (destination table unconfirmed; cannot write)
 
 **Planned (framework / stubs only — NOT live):**
-- Motivated axis (probate/death, aging owner, business-sale, divorce, etc.) — trigger
-  registry scaffold exists; no live data feeds wired
+- Motivated axis (probate/death, aging owner, business-sale, divorce, etc.) — PLANNED,
+  not yet built. No motivated package or columns exist. A parcel-keyed probate signal
+  would ride the existing distress signal stack (the scorer already recognizes a
+  `probate` signal type), so a v1 needs no scorer-math change — see
+  docs/probate_feasibility.md.
 - Forward-value / deal-quadrant layer
 
 ## Architecture
@@ -32,7 +35,8 @@ rather than the scoring internals.
 - **Distressed** — parcel *status* (tax-delinquent, brownfield, environmental). Live,
   read from the existing `landos.signals` stack.
 - **Motivated** — owner *life-circumstance* (probate, aging, business-sale, …).
-  Framework only — registry + stubs, no live feeds.
+  Planned, not built — there is no `app/motivated/` package or `motivated_*` column
+  yet. A probate signal would stack through the existing distress fusion.
 
 **Multi-county by design.** County is a stored value (`county_fips`) driven by
 `COUNTY_CONFIG`; adding a county is a config row (region string + APN-prefix rule),
