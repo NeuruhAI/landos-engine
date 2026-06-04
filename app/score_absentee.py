@@ -60,6 +60,30 @@ COUNTY_GEO: Dict[str, Dict[str, Any]] = {
             "UNION PIER", "GALIEN", "SHOREHAM", "LINCOLN TOWNSHIP",
         },
     },
+    "18141": {  # St. Joseph County, IN
+        "name": "St. Joseph",
+        "state": "IN",
+        "zips": {
+            # South Bend
+            "46601", "46613", "46614", "46615", "46616", "46617", "46619", "46628",
+            "46635", "46637",
+            # Mishawaka
+            "46544", "46545", "46546",
+            # rest of county
+            "46530",  # Granger
+            "46536",  # Lakeville
+            "46552",  # New Carlisle
+            "46554",  # North Liberty
+            "46556",  # Notre Dame
+            "46561",  # Osceola
+            "46574",  # Walkerton
+        },
+        "places": {
+            "SOUTH BEND", "MISHAWAKA", "GRANGER", "WALKERTON", "NORTH LIBERTY",
+            "NEW CARLISLE", "LAKEVILLE", "OSCEOLA", "NOTRE DAME", "ROSELAND",
+            "INDIAN VILLAGE",
+        },
+    },
 }
 
 # ---- owner_type classification --------------------------------------------
@@ -158,27 +182,35 @@ def classify_absentee_tier(
     situs: Dict[str, Any], mailing: Dict[str, Any],
     county_geo: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """out_of_state | out_of_county | out_of_town | owner_occupied | unknown."""
+    """out_of_state | out_of_county | out_of_town | owner_occupied | unknown_situs | unknown.
+
+    SITUS-DEGRADE (some counties, e.g. St. Joseph IN, often lack a situs street address):
+    out_of_state and out_of_county resolve from state/county alone — no situs street
+    needed. The owner_occupied-vs-out_of_town distinction DOES need the situs street; when
+    it's absent we return 'unknown_situs' rather than silently calling it owner-occupied
+    (and never fabricate a situs)."""
     m_state = (mailing.get("state") or "").upper().strip()
     s_state = (situs.get("state") or "").upper().strip()
     # no mailing locality at all -> cannot classify (don't fabricate a tier)
     if not (mailing.get("address") or mailing.get("city") or m_state):
         return "unknown"
+    # out_of_state resolves from state mismatch alone (no situs street required)
     if m_state and s_state and m_state != s_state:
         return "out_of_state"
-    if _is_owner_occupied(situs, mailing):
-        return "owner_occupied"
     same_county = _in_situs_county(mailing, county_geo)
-    if same_county is True:
-        # same county but not the situs address -> different town/address in county
-        m_city = _norm_place(mailing.get("city"))
-        s_city = _norm_place(situs.get("city"))
-        if m_city and s_city and m_city == s_city:
-            return "out_of_town"   # same town, different parcel address (e.g. PO box)
-        return "out_of_town"
+    # out_of_county resolves from county membership alone (no situs street required)
     if same_county is False:
         return "out_of_county"
-    return "out_of_town"  # in-state, county undeterminable -> conservative middle tier
+    # same county (or county-undeterminable) -> need the situs STREET to separate
+    # owner_occupied from out_of_town.
+    s_house, _ = _street_tokens(situs.get("address"))
+    situs_has_street = bool(s_house) and s_house != "0"
+    if not situs_has_street:
+        # situs street unknown -> cannot determine occupancy; do NOT assume occupied
+        return "unknown_situs"
+    if _is_owner_occupied(situs, mailing):
+        return "owner_occupied"
+    return "out_of_town"
 
 
 # ---- absentee score --------------------------------------------------------
@@ -189,6 +221,7 @@ TIER_BASE = {
     "out_of_county": 70.0,
     "out_of_town": 50.0,
     "owner_occupied": 20.0,
+    "unknown_situs": 40.0,   # in/near county but situs street unknown -> occupancy undetermined
     "unknown": 40.0,
 }
 # owner_type adjustment: an ABSENTEE entity is a classic motivated-seller candidate.
@@ -214,7 +247,7 @@ def absentee_flag(tier: str) -> bool:
 # ---- signal overlap (cross-signal join, already loaded by the caller) ------
 DISTRESS_SIGNALS = {
     "tax_delinquent", "brownfield", "environmental_part201",
-    "pre_foreclosure", "code_violation", "probate", "vacancy",
+    "pre_foreclosure", "foreclosure", "code_violation", "probate", "vacancy",
 }
 
 
@@ -280,7 +313,7 @@ def raw_fused_score(abs_score: float, signal_overlap: Dict[str, Any]) -> float:
 
 # Tier ordering for tiebreaks (higher = farther from the parcel = stronger signal).
 TIER_RANK = {"out_of_state": 4, "out_of_county": 3, "out_of_town": 2,
-             "owner_occupied": 1, "unknown": 0}
+             "owner_occupied": 1, "unknown_situs": 0, "unknown": 0}
 
 
 def tiebreak_key(raw_score: float, signal_overlap: Dict[str, Any],

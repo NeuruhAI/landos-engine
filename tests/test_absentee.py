@@ -437,3 +437,77 @@ def test_decompression_top10_not_all_identical():
     assert top[0] == 100.0                      # top normalizes to the ceiling
     assert len(set(top)) > 1                    # NOT all identical — de-compressed
     assert len(set(top[:5])) >= 4               # genuinely spread across the range
+
+
+# ---- St. Joseph IN (18141): ingest-id vs match-id split + situs degrade --------
+def test_in_county_config_present():
+    from app.normalizers.reportall_owner import COUNTY_CONFIG
+    cfg = COUNTY_CONFIG["18141"]
+    assert cfg["region"] == "St. Joseph County, IN"
+    assert cfg["state_abbr"] == "IN"
+    assert cfg["id_mode"] == "reportall_native"
+    assert "strip_prefix" not in cfg          # IN must NOT reuse the Berrien strip model
+    assert "18141" in COUNTY_GEO               # county-membership reference exists
+
+
+def _in_record(**over):
+    r = {
+        "parcel_id": "018-8034-1460",                 # ReportAll internal ingest id
+        "alt_id_1": "71-08-14-405-006.000-026",        # human county APN (the match key)
+        "alt_id_2": None,
+        "owner": "SMITH MELISSA A",
+        "mail_placename": "SOUTH BEND", "mail_statename": "IN", "mail_zipcode": "46613",
+        "mail_address1": "1720 Kemble",
+        "address": "1720 KEMBLE Ave", "addr_city": "SOUTH BEND", "county_name": "St. Joseph",
+        "state_abbr": "IN", "addr_zip": "46613", "latitude": "41.66", "longitude": "-86.25",
+        "land_use_class": "Residential", "acreage": "0.1500",
+    }
+    r.update(over)
+    return r
+
+
+def test_in_normalize_parcel_apn_from_alt_id_1():
+    from app.normalizers.reportall_owner import ReportAllOwnerNormalizer
+    norm = ReportAllOwnerNormalizer("t", "18141", client_key="x")
+    leads = norm.normalize([("018-8034-1460", _in_record())])
+    assert len(leads) == 1
+    d = leads[0]
+    assert d["parcel_apn"] == "71-08-14-405-006.000-026"   # match key = alt_id_1 (71-form)
+    assert d["reportall_parcel_id"] == "018-8034-1460"      # ingest id = parcel_id (018-form)
+    assert d["raw_meta"]["alt_id_1"] == "71-08-14-405-006.000-026"
+    assert d["owner_name"] == "SMITH MELISSA A"
+    assert d["owner_mailing_state"] == "IN"
+
+
+def test_in_normalize_skips_record_missing_alt_id_1():
+    from app.normalizers.reportall_owner import ReportAllOwnerNormalizer
+    norm = ReportAllOwnerNormalizer("t", "18141", client_key="x")
+    leads = norm.normalize([("018-0000-0000", _in_record(alt_id_1=None))])
+    assert leads == []          # no county APN -> no match key -> skip, never fabricate
+
+
+def test_tier_unknown_situs_when_no_situs_street():
+    # in-county mailing (South Bend, in St. Joseph) but situs street unknown ->
+    # cannot tell owner_occupied from out_of_town -> unknown_situs (not owner_occupied)
+    geo = COUNTY_GEO["18141"]
+    situs = {"address": None, "city": "SOUTH BEND", "county": "St. Joseph", "state": "IN", "zip": None}
+    mailing = {"address": "1720 Kemble", "city": "SOUTH BEND", "state": "IN", "zip": "46613"}
+    t = classify_absentee_tier(situs, mailing, geo)
+    assert t == "unknown_situs"
+    assert absentee_flag(t) is False           # we do NOT claim it's absentee
+
+
+def test_tier_out_of_state_resolves_without_situs_street():
+    # situs street null, but mailing in a different state -> still out_of_state
+    geo = COUNTY_GEO["18141"]
+    situs = {"address": None, "city": "SOUTH BEND", "county": "St. Joseph", "state": "IN", "zip": None}
+    mailing = {"address": "1 FAR ST", "city": "CHICAGO", "state": "IL", "zip": "60601"}
+    assert classify_absentee_tier(situs, mailing, geo) == "out_of_state"
+
+
+def test_tier_out_of_county_resolves_without_situs_street():
+    # situs street null, mailing in-state IN but not in St. Joseph -> out_of_county
+    geo = COUNTY_GEO["18141"]
+    situs = {"address": None, "city": "SOUTH BEND", "county": "St. Joseph", "state": "IN", "zip": None}
+    mailing = {"address": "5 N ST", "city": "INDIANAPOLIS", "state": "IN", "zip": "46204"}
+    assert classify_absentee_tier(situs, mailing, geo) == "out_of_county"

@@ -49,30 +49,39 @@ def main() -> None:
             + ", ".join(f"{c['region']} ({f})" for f, c in COUNTY_CONFIG.items())
         )
 
-    csv_path = args.csv or os.path.join(
-        os.path.expanduser("~/Documents/landos-engine/data"),
-        f"lead_queue_{args.county.lower()}.csv",
-    )
-    if not os.path.exists(csv_path):
-        raise SystemExit(f"APN source CSV not found: {csv_path}")
+    id_mode = COUNTY_CONFIG[fips].get("id_mode", "strip_prefix")
 
-    seeds = [a.strip() for a in args.seed_apns.split(",") if a.strip()]
-    queue = read_apns(csv_path)
-    # seeds first (guaranteed), then ranked queue; dedupe preserving order; cap at limit
-    ordered, seen = [], set()
-    for a in seeds + queue:
-        if a not in seen:
-            seen.add(a)
-            ordered.append(a)
-    apns = ordered[: args.limit]
+    if id_mode == "reportall_native":
+        # county has no pre-existing APN source (CSV/signals); seed by ReportAll
+        # owner-search discovery. parcel_apn := alt_id_1 (county APN), ingest id kept.
+        print(f"county={args.county} fips={fips}  mode=reportall_native (discovery seed)  "
+              f"limit={args.limit}")
+        norm = ReportAllOwnerNormalizer(TENANT, fips, discover_limit=args.limit)
+        n_input = args.limit
+    else:
+        csv_path = args.csv or os.path.join(
+            os.path.expanduser("~/Documents/landos-engine/data"),
+            f"lead_queue_{args.county.lower()}.csv",
+        )
+        if not os.path.exists(csv_path):
+            raise SystemExit(f"APN source CSV not found: {csv_path}")
+        seeds = [a.strip() for a in args.seed_apns.split(",") if a.strip()]
+        queue = read_apns(csv_path)
+        # seeds first (guaranteed), then ranked queue; dedupe preserving order; cap at limit
+        ordered, seen = [], set()
+        for a in seeds + queue:
+            if a not in seen:
+                seen.add(a)
+                ordered.append(a)
+        apns = ordered[: args.limit]
+        print(f"county={args.county} fips={fips}  source={os.path.basename(csv_path)}  "
+              f"seeds={len(seeds)}  selected={len(apns)} APNs (limit={args.limit})")
+        norm = ReportAllOwnerNormalizer(TENANT, fips, apns)
+        n_input = len(apns)
 
-    print(f"county={args.county} fips={fips}  source={os.path.basename(csv_path)}  "
-          f"seeds={len(seeds)}  selected={len(apns)} APNs (limit={args.limit})")
-
-    norm = ReportAllOwnerNormalizer(TENANT, fips, apns)
     with psycopg.connect(DATABASE_URL) as conn:
         n = norm.run(conn)
-    print(f"Done. {n} owner leads upserted from {len(apns)} APNs "
+    print(f"Done. {n} owner leads upserted from {n_input} input records "
           f"({len(norm.misses)} misses, {norm.calls_made} ReportAll API calls).")
     if norm.misses:
         print(f"  misses (count=0, no record — not fabricated): {len(norm.misses)}")

@@ -38,10 +38,21 @@ API_VERSION = "9"
 # county_fips -> how to query ReportAll for that county.
 #   region        : ReportAll `region` clause text
 #   state_abbr    : situs state (for absentee out-of-state comparison)
-#   strip_prefix  : leading APN segment ReportAll drops for this county ("" = none)
-# Berrien (26021) is just the first entry; this is the ONLY county-specific data.
+#   id_mode       : how the ingest key and the canonical match key (parcel_apn) relate:
+#     "strip_prefix"    — ReportAll parcel_id IS the human county APN (minus a prefix).
+#                         Ingest by parcel_id; parcel_apn = the (de-prefixed) input APN.
+#                         Berrien MI. Requires "strip_prefix".
+#     "reportall_native"— ReportAll parcel_id is an INTERNAL id (e.g. 018-form); the
+#                         human county tax APN lives in alt_id_1 (e.g. 71-...-026).
+#                         Ingest BY parcel_id (discovery pull); parcel_apn = alt_id_1
+#                         (the canonical match key); the 018-form goes to the dedicated
+#                         reportall_parcel_id column. St. Joseph IN. No strip_prefix.
+# This is the ONLY county-specific data; adding a county = adding a row here.
 COUNTY_CONFIG: Dict[str, Dict[str, str]] = {
-    "26021": {"region": "Berrien County, MI", "state_abbr": "MI", "strip_prefix": "11-"},
+    "26021": {"region": "Berrien County, MI", "state_abbr": "MI",
+              "id_mode": "strip_prefix", "strip_prefix": "11-"},
+    "18141": {"region": "St. Joseph County, IN", "state_abbr": "IN",
+              "id_mode": "reportall_native"},
 }
 
 RawHit = Tuple[str, Optional[Dict[str, Any]]]  # (original_csv_apn, reportall_result_or_None)
@@ -66,64 +77,77 @@ def reportall_parcel_id(csv_apn: str, strip_prefix: str) -> str:
 class ReportAllOwnerNormalizer:
     source = "reportall"
 
-    def __init__(self, tenant_id: str, county_fips: str, apns: List[str],
-                 client_key: Optional[str] = None, timeout: int = 30):
+    def __init__(self, tenant_id: str, county_fips: str, apns: Optional[List[str]] = None,
+                 client_key: Optional[str] = None, timeout: int = 30,
+                 discover_limit: int = 150):
         if county_fips not in COUNTY_CONFIG:
             raise ValueError(
                 f"No COUNTY_CONFIG entry for county_fips={county_fips!r}. "
-                f"Add a row (region + strip_prefix) to enable this county."
+                f"Add a row (region + id_mode) to enable this county."
             )
         self.tenant_id = tenant_id
         self.county_fips = county_fips
         self.cfg = COUNTY_CONFIG[county_fips]
+        self.id_mode = self.cfg.get("id_mode", "strip_prefix")
+        self.strip_prefix = self.cfg.get("strip_prefix", "")
         # de-dupe while preserving order; drop blanks (never query an empty APN)
         seen = set()
-        self.apns = [a.strip() for a in apns
+        self.apns = [a.strip() for a in (apns or [])
                      if a and a.strip() and not (a.strip() in seen or seen.add(a.strip()))]
         self.client_key = client_key or os.environ.get("REPORTALL_CLIENT_KEY")
         self.timeout = timeout
+        self.discover_limit = discover_limit
         self.calls_made = 0
         self.misses: List[str] = []  # APNs that returned count=0
 
     # ---- fetch ---------------------------------------------------------------
-    def _query(self, parcel_id: str) -> Dict[str, Any]:
-        params = urllib.parse.urlencode({
-            "client": self.client_key,
-            "v": API_VERSION,
-            "region": self.cfg["region"],
-            "parcel_id": parcel_id,
-        })
-        url = f"{API_URL}?{params}"
-        req = urllib.request.Request(url, headers={"User-Agent": "landos-engine/1.0"})
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                body = r.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="replace")[:300]
-            raise RuntimeError(f"ReportAll HTTP {e.code} for parcel_id={parcel_id}: {detail}")
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"ReportAll network error for parcel_id={parcel_id}: {e.reason}")
-        self.calls_made += 1
-        try:
-            data = json.loads(body)
-        except json.JSONDecodeError:
-            raise RuntimeError(f"ReportAll non-JSON response for parcel_id={parcel_id}: {body[:200]}")
-        if data.get("status") != "OK":
-            # auth/quota/bad-request — fatal, stop the whole run with the exact message
-            raise RuntimeError(
-                f"ReportAll error for parcel_id={parcel_id}: {data.get('message', data)}"
-            )
-        return data
-
-    def fetch(self) -> List[RawHit]:
+    def _require_key(self) -> None:
         if not self.client_key:
             raise RuntimeError(
                 "REPORTALL_CLIENT_KEY is not set (env or constructor). Cannot query "
                 "ReportAll. Set it in .env before running."
             )
+
+    def _search(self, extra: Dict[str, Any], label: str) -> Dict[str, Any]:
+        """Low-level ReportAll call: region + extra attribute clause(s). Raises on
+        HTTP / network / non-OK (fatal — the run STOPS with the exact message)."""
+        params = urllib.parse.urlencode({
+            "client": self.client_key, "v": API_VERSION,
+            "region": self.cfg["region"], **extra,
+        })
+        req = urllib.request.Request(f"{API_URL}?{params}",
+                                     headers={"User-Agent": "landos-engine/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                body = r.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")[:300]
+            raise RuntimeError(f"ReportAll HTTP {e.code} for {label}: {detail}")
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"ReportAll network error for {label}: {e.reason}")
+        self.calls_made += 1
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"ReportAll non-JSON response for {label}: {body[:200]}")
+        if data.get("status") != "OK":
+            raise RuntimeError(f"ReportAll error for {label}: {data.get('message', data)}")
+        return data
+
+    def _query(self, parcel_id: str) -> Dict[str, Any]:
+        return self._search({"parcel_id": parcel_id}, f"parcel_id={parcel_id}")
+
+    # discovery seed terms for a brand-new county with no lead/signal source yet:
+    # common surnames for individuals + "LLC" for entity owners (absentee variety).
+    SEED_OWNER_TERMS = ["SMITH", "JOHNSON", "MILLER", "BROWN", "DAVIS",
+                        "WILLIAMS", "JONES", "WILSON", "LLC"]
+
+    def fetch(self) -> List[RawHit]:
+        """strip_prefix mode: query each known APN by parcel_id (the human county APN)."""
+        self._require_key()
         out: List[RawHit] = []
         for csv_apn in self.apns:
-            pid = reportall_parcel_id(csv_apn, self.cfg["strip_prefix"])
+            pid = reportall_parcel_id(csv_apn, self.strip_prefix)
             data = self._query(pid)
             results = data.get("results") or []
             if not results:
@@ -133,12 +157,74 @@ class ReportAllOwnerNormalizer:
             out.append((csv_apn, results[0]))
         return out
 
+    def discover(self) -> List[RawHit]:
+        """reportall_native mode: no pre-existing APN source for the county, so seed by
+        owner-search pulls (paginated, varied terms), keyed by ReportAll parcel_id. Each
+        record already carries alt_id_1 (the county APN) — no per-parcel re-query needed.
+        Dedups by parcel_id, capped at discover_limit. Returns (parcel_id, record) tuples."""
+        self._require_key()
+        seen: set = set()
+        out: List[RawHit] = []
+        rpp = 50
+        terms = self.SEED_OWNER_TERMS
+        # ROUND-ROBIN: cap each term at its fair share so NO single common surname
+        # (e.g. SMITH) fills the whole quota and starves later terms like "LLC".
+        per_term = max(1, -(-self.discover_limit // len(terms)))  # ceil(limit/terms)
+
+        def pull(term: str, cap: int, tag: str) -> None:
+            got, page = 0, 1
+            while got < cap and len(out) < self.discover_limit:
+                data = self._search({"owner": term, "rpp": rpp, "page": page},
+                                    f"owner~{term} {tag}p{page}")
+                results = data.get("results") or []
+                if not results:
+                    break
+                for r in results:
+                    pid = r.get("parcel_id")
+                    if not pid or pid in seen:
+                        continue
+                    seen.add(pid)
+                    out.append((pid, r))
+                    got += 1
+                    if got >= cap or len(out) >= self.discover_limit:
+                        break
+                if len(results) < rpp:
+                    break  # last page for this term
+                page += 1
+
+        # pass 1: fair share per term (guarantees every term, incl LLC, contributes)
+        for term in terms:
+            if len(out) >= self.discover_limit:
+                break
+            pull(term, per_term, "")
+        # pass 2: if short (some terms had few matches), top up unconstrained
+        for term in terms:
+            if len(out) >= self.discover_limit:
+                break
+            pull(term, self.discover_limit, "topup ")
+        return out[: self.discover_limit]
+
     # ---- normalize -----------------------------------------------------------
     def normalize(self, raw: List[RawHit]) -> List[Dict[str, Any]]:
         leads: List[Dict[str, Any]] = []
-        for csv_apn, r in raw:
+        for ingest_key, r in raw:
             if not r:
                 continue  # miss: no real record -> never fabricate
+            # ingest-id vs match-id split (see COUNTY_CONFIG.id_mode):
+            #   strip_prefix     -> parcel_apn = the (de-prefixed) input APN; no separate
+            #                       ingest id (ReportAll parcel_id == the human APN).
+            #   reportall_native -> parcel_apn = alt_id_1 (human county APN, the match key);
+            #                       reportall_parcel_id = the 018-form ingest id.
+            if self.id_mode == "reportall_native":
+                parcel_apn = (r.get("alt_id_1") or "").strip() or None
+                reportall_pid = (r.get("parcel_id") or "").strip() or None
+                if not parcel_apn:
+                    # no county APN -> nothing to match on; skip, never fabricate a key
+                    self.misses.append(reportall_pid or "<no parcel_id>")
+                    continue
+            else:
+                parcel_apn = ingest_key
+                reportall_pid = (r.get("parcel_id") or "").strip() or None
             # mailing: prefer ReportAll's structured fields, fall back to mail_address3
             m_city = (r.get("mail_placename") or "").strip() or None
             m_state = (r.get("mail_statename") or "").strip() or None
@@ -154,7 +240,8 @@ class ReportAllOwnerNormalizer:
                 acreage = _num(r.get("acreage_calc"))
             leads.append({
                 "county_fips": self.county_fips,
-                "parcel_apn": csv_apn,  # canonical: matches landos.signals
+                "parcel_apn": parcel_apn,  # canonical match key (human county APN)
+                "reportall_parcel_id": reportall_pid,  # ReportAll-native ingest id
                 "situs_address": (r.get("address") or "").strip() or None,
                 "situs_lat": _num(r.get("latitude")),
                 "situs_lng": _num(r.get("longitude")),
@@ -168,6 +255,7 @@ class ReportAllOwnerNormalizer:
                 "provenance": f"reportall:{self.cfg['region']}:parcel_id={r.get('parcel_id')}",
                 "raw_meta": {
                     "reportall_parcel_id": r.get("parcel_id"),
+                    "alt_id_1": r.get("alt_id_1"),
                     "alt_id_2": r.get("alt_id_2"),
                     "robust_id": r.get("robust_id"),
                     # situs locality kept here for the absentee scorer (no dedicated columns)
@@ -189,12 +277,14 @@ class ReportAllOwnerNormalizer:
             cur.execute(
                 """
                 insert into landos.owner_leads
-                  (tenant_id, county_fips, parcel_apn, situs_address, situs_lat, situs_lng,
+                  (tenant_id, county_fips, parcel_apn, reportall_parcel_id,
+                   situs_address, situs_lat, situs_lng,
                    owner_name, owner_mailing_address, owner_mailing_city,
                    owner_mailing_state, owner_mailing_zip, land_use_class, acreage,
                    source, provenance, raw_meta, updated_at)
-                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+                values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
                 on conflict (tenant_id, county_fips, parcel_apn) do update set
+                  reportall_parcel_id=excluded.reportall_parcel_id,
                   situs_address=excluded.situs_address, situs_lat=excluded.situs_lat,
                   situs_lng=excluded.situs_lng, owner_name=excluded.owner_name,
                   owner_mailing_address=excluded.owner_mailing_address,
@@ -205,11 +295,11 @@ class ReportAllOwnerNormalizer:
                   source=excluded.source, provenance=excluded.provenance,
                   raw_meta=excluded.raw_meta, updated_at=now()
                 """,
-                (self.tenant_id, d["county_fips"], d["parcel_apn"], d["situs_address"],
-                 d["situs_lat"], d["situs_lng"], d["owner_name"], d["owner_mailing_address"],
-                 d["owner_mailing_city"], d["owner_mailing_state"], d["owner_mailing_zip"],
-                 d["land_use_class"], d["acreage"], self.source, d["provenance"],
-                 Jsonb(d["raw_meta"])),
+                (self.tenant_id, d["county_fips"], d["parcel_apn"], d.get("reportall_parcel_id"),
+                 d["situs_address"], d["situs_lat"], d["situs_lng"], d["owner_name"],
+                 d["owner_mailing_address"], d["owner_mailing_city"], d["owner_mailing_state"],
+                 d["owner_mailing_zip"], d["land_use_class"], d["acreage"], self.source,
+                 d["provenance"], Jsonb(d["raw_meta"])),
             )
             n += 1
         return n
@@ -222,12 +312,17 @@ class ReportAllOwnerNormalizer:
             (self.tenant_id, self.source, self.county_fips, row_count, status, notes),
         )
 
+    def collect(self) -> List[RawHit]:
+        """Mode-aware raw pull: per-APN fetch (strip_prefix) or owner-search discovery
+        (reportall_native, for a county with no pre-existing APN source)."""
+        return self.discover() if self.id_mode == "reportall_native" else self.fetch()
+
     def run(self, conn) -> int:
-        """fetch -> normalize -> upsert -> audit-log, committed together. On any
-        fatal fetch error the failure is audit-logged and re-raised (run STOPS)."""
+        """collect -> normalize -> upsert -> audit-log, committed together. On any
+        fatal error the failure is audit-logged and re-raised (run STOPS)."""
         with conn.cursor() as cur:
             try:
-                raw = self.fetch()
+                raw = self.collect()
                 leads = self.normalize(raw)
             except Exception as e:  # noqa: BLE001 - audit the failure, then surface it
                 self.log_import(cur, 0, "error",
@@ -235,10 +330,11 @@ class ReportAllOwnerNormalizer:
                 conn.commit()
                 raise
             n = self.upsert(cur, leads)
+            n_input = len(self.apns) if self.id_mode != "reportall_native" else len(raw)
             self.log_import(
                 cur, n, "ok" if n else "empty",
-                f"reportall {self.cfg['region']}: {n} leads from {len(self.apns)} APNs, "
-                f"{len(self.misses)} miss, {self.calls_made} API calls",
+                f"reportall {self.cfg['region']} ({self.id_mode}): {n} leads from "
+                f"{n_input} records, {len(self.misses)} miss, {self.calls_made} API calls",
             )
         conn.commit()
         return n
