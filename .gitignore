@@ -1,0 +1,11 @@
+.env
+.env.*
+*.env
+data/*.csv
+data/*.manifest.json
+reports/
+/tmp/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
