@@ -364,11 +364,22 @@ def score_lead(
     signal_types: Iterable[str],
     oz_hit: Optional[Dict[str, Any]] = None,
     county_geo: Optional[Dict[str, Any]] = None,
+    homestead_present: bool = False,
 ) -> Dict[str, Any]:
     """Compute every absentee field for one owner lead.
 
     `lead` carries situs + mailing fields (the script pulls situs locality out of
-    raw_meta). Returns the columns scripts/owner_leads.py writes back."""
+    raw_meta). Returns the columns scripts/owner_leads.py writes back.
+
+    `homestead_present` is an OPTIONAL corroborating signal, never an input to the
+    tier — the mailing/situs comparison is authoritative and decides absentee status
+    on its own. A homestead exemption sitting on a parcel whose owner mails off-parcel
+    is a STALE exemption the county hasn't stripped yet: it does NOT make the owner
+    occupant, it confirms they aren't (and is marginally stronger evidence of an
+    inattentive/absentee owner). So when the tier is off-parcel we surface it as
+    `stale_homestead=True`; on owner_occupied/unknown tiers homestead merely agrees
+    with what the address comparison already found and the flag stays False. Homestead
+    can NEVER pull a lead toward owner_occupied, and it does not move the score."""
     situs = {
         "address": lead.get("situs_address"),
         "city": lead.get("situs_city"),
@@ -384,15 +395,22 @@ def score_lead(
     }
     owner_type = classify_owner_type(lead.get("owner_name"))
     tier = classify_absentee_tier(situs, mailing, county_geo)
+    a_flag = absentee_flag(tier)            # True only for off-parcel tiers
     a_score = absentee_score(tier, owner_type)
     overlap = build_signal_overlap(signal_types, oz_hit)
     f_score = final_lead_score(a_score, overlap)
+    # Homestead is an annotation on top of the tier, not an input to it. An off-parcel
+    # owner (a_flag True) still carrying a homestead exemption = a stale exemption the
+    # county hasn't stripped -> still absentee, marginally stronger. On owner_occupied/
+    # unknown tiers it only corroborates and is left False (never forces owner_occupied).
+    stale_homestead = bool(homestead_present and a_flag)
     return {
         "owner_type": owner_type,
         "absentee_tier": tier,
-        "absentee_flag": absentee_flag(tier),
+        "absentee_flag": a_flag,
         "absentee_score": a_score,
         "signal_overlap": overlap,
         "final_lead_score": f_score,            # clamped 0–100 (per-lead, legacy)
         "raw_fused_score": raw_fused_score(a_score, overlap),  # unclamped (v1.1.0)
+        "stale_homestead": stale_homestead,
     }

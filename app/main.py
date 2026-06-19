@@ -14,6 +14,7 @@ is the trust boundary: only callers who hold it (your APG deployment) get in.
 Run it with:  uvicorn app.main:app --host 0.0.0.0 --port 8400
 """
 import json
+from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Depends
 from psycopg.types.json import Jsonb
@@ -25,6 +26,9 @@ from .models import (
     ClaimRequest,
     ReleaseRequest,
     FeedbackRequest,
+    EmergingHeatMapRequest,
+    EmergingHeatMapResponse,
+    EmergingOpportunity,
 )
 from .scoring import score_parcel, DEFAULT_WEIGHTS, EDGE_PROFILE
 
@@ -331,3 +335,121 @@ def leads_top(tenant_id: str, limit: int = 25, _=Depends(auth)):
         for r in rows
     ]
     return {"tenant_id": tenant_id, "count": len(leads), "leads": leads}
+
+
+@app.get("/emerging/heat-map", response_model=EmergingHeatMapResponse)
+def emerging_heat_map(
+    tenant_id: str,
+    county_fips: Optional[str] = None,
+    min_emerging_score: float = 50.0,
+    include_dale_local: bool = True,
+    limit: int = 500,
+    _=Depends(auth),
+):
+    """
+    Heat map data for emerging pre-market boomer opportunities.
+    Returns scored opportunities with signal breakdown for CRM map layers
+    (permit_delta, satellite_delta, negative_space, boomer_life_event, dale_local).
+
+    This powers the explicit emerging layers in the CRM MapView and /emerging module.
+    Data is the fusion of LandOS discovery adapters (deltas, negative space, life events)
+    + DALE local intel. The 'emerging_score' is the blended pre-market motivation score.
+    """
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            # Query owner_leads joined with recent discovery_signals for emerging signals.
+            # In production the ingest_emerging script also materializes a denormalized view
+            # or table; this is the live query version for the API.
+            where = ["ol.tenant_id = %s"]
+            params: list = [tenant_id]
+            if county_fips:
+                where.append("ol.county_fips = %s")
+                params.append(county_fips)
+            if not include_dale_local:
+                where.append("(coalesce( (ol.raw_meta->>'dale_local')::bool , false) = false )")
+
+            sql = f"""
+                select 
+                    ol.lead_id,
+                    ol.parcel_apn,
+                    ol.owner_name,
+                    ol.situs_address,
+                    ol.county_fips,
+                    ol.final_lead_score as base_score,
+                    -- Emerging score: blend base LandOS score with strongest recent signal confidence.
+                    -- Real production version comes pre-computed from the emerging ingest pipeline.
+                    greatest(
+                        ol.final_lead_score,
+                        60 + 40 * coalesce((
+                            select max( (ds.raw_payload->>'confidence')::float )
+                            from landos.discovery_signals ds
+                            where ds.matched_lead_id = ol.lead_id
+                              and ds.signal_date > now() - interval '180 days'
+                        ), 0)
+                    ) as emerging_score,
+                    -- Build signals json from recent discovery rows (one per type for demo)
+                    jsonb_object_agg(
+                        ds.source_type,
+                        jsonb_build_object(
+                            'date', ds.signal_date,
+                            'confidence', (ds.raw_payload->>'confidence')::float,
+                            'raw', ds.raw_payload
+                        )
+                    ) filter (where ds.id is not null) as emerging_signals,
+                    exists (
+                        select 1 from landos.discovery_signals ds2
+                        where ds2.matched_lead_id = ol.lead_id and ds2.source_type like 'dale%'
+                    ) as dale_local,
+                    ol.situs_lat, ol.situs_lng,
+                    (select max(ds.signal_date) from landos.discovery_signals ds where ds.matched_lead_id = ol.lead_id) as last_signal_date
+                from landos.owner_leads ol
+                left join lateral (
+                    select * from landos.discovery_signals ds
+                    where ds.matched_lead_id = ol.lead_id
+                    order by ds.signal_date desc
+                    limit 5
+                ) ds on true
+                where {" and ".join(where)}
+                group by ol.lead_id
+                having greatest(
+                    ol.final_lead_score,
+                    60 + 40 * coalesce((
+                        select max( (ds.raw_payload->>'confidence')::float )
+                        from landos.discovery_signals ds
+                        where ds.matched_lead_id = ol.lead_id
+                          and ds.signal_date > now() - interval '180 days'
+                    ), 0)
+                ) >= %s
+                order by emerging_score desc
+                limit %s
+            """
+            params.extend([min_emerging_score, limit])
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+    opps = []
+    for r in rows:
+        opps.append(EmergingOpportunity(
+            lead_id=str(r["lead_id"]),
+            parcel_apn=r["parcel_apn"],
+            owner_name=r["owner_name"],
+            situs_address=r["situs_address"],
+            county_fips=r["county_fips"],
+            base_score=float(r["base_score"]) if r["base_score"] is not None else None,
+            emerging_score=float(r["emerging_score"]),
+            emerging_signals=r["emerging_signals"] or {},
+            dale_local=bool(r["dale_local"]),
+            lat=float(r["situs_lat"]) if r["situs_lat"] is not None else None,
+            lng=float(r["situs_lng"]) if r["situs_lng"] is not None else None,
+            last_signal_date=r["last_signal_date"].isoformat() if r["last_signal_date"] else None,
+        ))
+
+    return EmergingHeatMapResponse(
+        tenant_id=tenant_id,
+        count=len(opps),
+        opportunities=opps,
+    )
+
+
+if __name__ == "__main__":
+    main()

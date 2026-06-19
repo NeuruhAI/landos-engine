@@ -64,3 +64,34 @@ class FeedbackRequest(BaseModel):
     projected_multiple: Optional[float] = None
     actual_multiple: Optional[float] = None
     notes: Optional[str] = None
+
+
+# --- Emerging / Heat Map models (for pre-market boomer opportunities) ---
+class EmergingHeatMapRequest(BaseModel):
+    tenant_id: str
+    county_fips: Optional[str] = None
+    min_emerging_score: float = 50.0
+    include_dale_local: bool = True
+    limit: int = 500
+
+
+class EmergingOpportunity(BaseModel):
+    lead_id: str
+    parcel_apn: Optional[str] = None
+    owner_name: Optional[str] = None
+    situs_address: Optional[str] = None
+    county_fips: Optional[str] = None
+    base_score: Optional[float] = None
+    emerging_score: float
+    emerging_signals: dict = {}
+    dale_local: bool = False
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    last_signal_date: Optional[str] = None
+
+
+class EmergingHeatMapResponse(BaseModel):
+    tenant_id: str
+    count: int
+    opportunities: list[EmergingOpportunity]
+    note: str = "Emerging signals from LandOS discovery (deltas, negative space, boomer life events, DALE local). Use for heat map layers in CRM. Scoring/fusion in LandOS."
