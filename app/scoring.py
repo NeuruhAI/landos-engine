@@ -29,6 +29,7 @@ DEFAULT_WEIGHTS: Dict[str, Dict[str, float]] = {
         "code_violation": 0.10,
         "vacancy": 0.10,
         "long_hold": 0.10,
+        "environmental": 0.15,  # MI Part 201 / brownfield — second-tier distress (added default v3)
     },
     "owner": {
         "out_of_state": 0.30,
@@ -48,6 +49,7 @@ LABELS = {
     "code_violation": "Code violation",
     "vacancy": "Vacancy",
     "long_hold": "Long-term hold",
+    "environmental": "Environmental (Part 201 / brownfield)",
 }
 
 
