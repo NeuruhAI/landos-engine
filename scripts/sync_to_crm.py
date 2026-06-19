@@ -34,6 +34,7 @@ from collections import Counter, defaultdict
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from app.config import DATABASE_URL
 
@@ -69,6 +70,25 @@ def main() -> None:
                where tenant_id = %s and not discovery_seed""", (TENANT,))
         leads = cur.fetchall()
 
+        # latest composite score per lead — for the score_* projection (one-way,
+        # landos -> CRM). NULL components stay NULL (arbitrage = "no comps yet", not 0).
+        cur.execute("""
+            with latest as (
+              select distinct on (identity_node_id) identity_node_id, score,
+                     owner_component, distress_component, arbitrage_component,
+                     top_factors, weights_version, inputs_snapshot, computed_at
+              from landos.scores where tenant_id = %s
+              order by identity_node_id, computed_at desc)
+            select ol.lead_id, l.score, l.owner_component, l.distress_component,
+                   l.arbitrage_component, l.top_factors, l.weights_version,
+                   l.inputs_snapshot, l.computed_at
+            from landos.owner_leads ol
+            join landos.identity_nodes n on n.tenant_id = %s and n.parcel_apn = ol.parcel_apn
+            join latest l on l.identity_node_id = n.id
+            where ol.tenant_id = %s and not ol.discovery_seed""",
+            (TENANT, TENANT, TENANT))
+        scores = {row["lead_id"]: row for row in cur.fetchall()}
+
         # ---- portfolio hubs across the qualified set -------------------------
         groups = defaultdict(lambda: {"count": 0, "variants": Counter()})
         for r in leads:
@@ -81,7 +101,7 @@ def main() -> None:
                      for k, g in groups.items() if g["count"] > 1}
 
         enriched = phones_set = phones_cleared = hubs_stamped = unmatched = 0
-        dnc_suppressed = bea_flagged = 0
+        dnc_suppressed = bea_flagged = score_projected = 0
         for r in leads:
             # DNC GATE (compliance, hard): a lead scrubbed 'do_not_call' NEVER
             # becomes callable — phones are not projected regardless of trace
@@ -116,6 +136,28 @@ def main() -> None:
             contamination_kind = ("part201" if "environmental_part201" in stack
                                   else "brownfield" if "brownfield" in stack else None)
 
+            # Composite component projection (ONE-WAY landos -> CRM). NULL stays NULL
+            # (arbitrage NULL = "no comps yet", never a priced 0). The blended composite
+            # lives inside score_signals.composite_score; final_lead_score (absentee rank)
+            # is NEVER touched. score_signals (jsonb) carries the per-lead basis.
+            sc = scores.get(r["lead_id"])
+            if sc is not None:
+                snap = sc["inputs_snapshot"] or {}
+                s_owner, s_distress = sc["owner_component"], sc["distress_component"]
+                s_arb = sc["arbitrage_component"]            # NULL = no comps yet, never 0
+                s_signals = Jsonb({
+                    "composite_score": float(sc["score"]) if sc["score"] is not None else None,
+                    "weights_version": sc["weights_version"],
+                    "confidence": snap.get("confidence"),
+                    "coverage": snap.get("coverage"),
+                    "top_factors": sc["top_factors"],
+                    "requires_bea": snap.get("requires_bea"),
+                    "contamination_kind": snap.get("contamination_kind"),
+                    "computed_at": sc["computed_at"].isoformat() if sc["computed_at"] else None,
+                })
+            else:
+                s_owner = s_distress = s_arb = s_signals = None
+
             cur.execute(
                 """update public.acquisition_leads set
                      outreach_recipe = %s, controlling_human = %s,
@@ -123,11 +165,14 @@ def main() -> None:
                      situs_lat = %s, situs_lng = %s,
                      phone_1 = %s, phone_1_type = %s, phone_2 = %s,
                      contact_confidence = %s,
-                     requires_bea = %s, contamination_kind = %s
+                     requires_bea = %s, contamination_kind = %s,
+                     score_owner = %s, score_distress = %s,
+                     score_arbitrage = %s, score_signals = %s
                    where source_lead_id = %s""",
                 (r["recipe"], r["ch_name"], r["caf"], hub,
                  r["situs_lat"], r["situs_lng"], p1, p1t, p2, conf,
-                 requires_bea, contamination_kind, r["lead_id"]))
+                 requires_bea, contamination_kind,
+                 s_owner, s_distress, s_arb, s_signals, r["lead_id"]))
             if cur.rowcount == 0:
                 unmatched += 1
                 print(f"  WARN no acquisition_leads row for {r['owner_name']!r} "
@@ -136,6 +181,8 @@ def main() -> None:
             enriched += 1
             if requires_bea:
                 bea_flagged += 1
+            if sc is not None and s_owner is not None:
+                score_projected += 1
             if p1:
                 phones_set += 1
             elif r["skip_trace_status"] != "not_traced":
@@ -146,7 +193,8 @@ def main() -> None:
 
     print(f"\nsync summary: enriched={enriched} phones_projected={phones_set} "
           f"non-callable_kept_phoneless={phones_cleared} dnc_suppressed={dnc_suppressed} "
-          f"hub_labeled={hubs_stamped} bea_flagged={bea_flagged} unmatched={unmatched}")
+          f"hub_labeled={hubs_stamped} bea_flagged={bea_flagged} "
+          f"score_projected={score_projected} unmatched={unmatched}")
     print(f"hubs in effect ({len(hub_label)}):")
     for k in sorted(hub_label, key=lambda k: -groups[k]["count"]):
         print(f"  {hub_label[k]}")
