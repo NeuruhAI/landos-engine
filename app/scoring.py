@@ -109,17 +109,26 @@ def score_parcel(inputs: Dict[str, Any], weights: Dict[str, Any]) -> Dict[str, A
     # ---------- ARBITRAGE component (0..100) ----------
     aw = weights["arbitrage"]
     a = inputs.get("arbitrage", {})
-    mppa = a.get("market_price_per_acre", 0) or 0
-    lppa = a.get("list_price_per_acre", 0) or 0
-    discount = _clamp((mppa - lppa) / mppa) if (mppa > 0 and lppa > 0) else 0.0
+    # Deal-quality term (weight slot aw["discount"]). Prefer the comps-derived
+    # FEASIBILITY signal (net-of-ARV spread from compute_max_bid — the cold-scoring,
+    # list-price-FREE signal for off-market land); fall back to the legacy
+    # list-vs-market DISCOUNT when a list price is known (/evaluate listed deals).
+    if a.get("feasibility") is not None:
+        deal_q = _clamp(float(a["feasibility"]))
+        deal_label = f"{round(deal_q * 100)}% net-of-ARV deal room"
+    else:
+        mppa = a.get("market_price_per_acre", 0) or 0
+        lppa = a.get("list_price_per_acre", 0) or 0
+        deal_q = _clamp((mppa - lppa) / mppa) if (mppa > 0 and lppa > 0) else 0.0
+        deal_label = f"{round(deal_q * 100)}% below market"
     subs = a.get("subdivisions_to_2x", 10) or 10
     # Fewer subdivisions to double = better. 1 split -> 1.0, 10+ splits -> 0.
     subdiv_score = _clamp(1 - (max(1, subs) - 1) / 9.0)
     carry = 1.0 if a.get("carry_feasible_90d") else 0.0
-    arb_unit = _clamp(discount * aw["discount"] + subdiv_score * aw["subdivision"] + carry * aw["carry"])
+    arb_unit = _clamp(deal_q * aw["discount"] + subdiv_score * aw["subdivision"] + carry * aw["carry"])
     arbitrage_component = 100 * arb_unit
-    if discount > 0:
-        factors.append((f"{round(discount * 100)}% below market", 100 * discount * aw["discount"] * cw["arbitrage"]))
+    if deal_q > 0:
+        factors.append((deal_label, 100 * deal_q * aw["discount"] * cw["arbitrage"]))
     if subdiv_score > 0:
         factors.append(("Subdivision upside", 100 * subdiv_score * aw["subdivision"] * cw["arbitrage"]))
     if carry > 0:

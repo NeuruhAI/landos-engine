@@ -42,7 +42,6 @@ from psycopg.types.json import Jsonb
 from app.config import DATABASE_URL
 from app.scoring import score_parcel, DEFAULT_WEIGHTS
 from app.composite_inputs import assemble
-from app.comps import compute_arv
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 BATCH_TAG = "composite_136_v1"
@@ -97,17 +96,6 @@ def distress_tokens(signal_overlap, discovery_types) -> list[str]:
     return out
 
 
-def market_ppa_from_comps(comps_rows, acreage) -> tuple[float | None, int]:
-    """Per-acre market value from comps via app.comps.compute_arv. Returns
-    (market_price_per_acre | None, usable_comp_count). Dormant until comps land."""
-    if not comps_rows:
-        return None, 0
-    arv = compute_arv(acreage, comps_rows, date.today())
-    if arv.get("basis") == "per_acre" and arv.get("weighted_unit"):
-        return float(arv["weighted_unit"]), int(arv.get("n") or 0)
-    return None, int(arv.get("n") or 0)
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="write to landos.scores (default: dry-run)")
@@ -155,6 +143,7 @@ def main() -> None:
                   f"batch_tag={BATCH_TAG}")
 
             # ---- score every lead ------------------------------------------
+            as_of = date.today()
             results = []
             for r in leads:
                 stm = r["skip_trace_meta"] or {}
@@ -164,8 +153,6 @@ def main() -> None:
                     except ValueError:
                         stm = {}
                 deceased = stm.get("deceased") if isinstance(stm, dict) else None
-                mppa, comps_n = market_ppa_from_comps(
-                    comps_by_apn.get(r["parcel_apn"]), r["acreage"])
                 lead = {
                     "absentee_tier": r["absentee_tier"],
                     "owner_type": r["owner_type"],
@@ -174,9 +161,8 @@ def main() -> None:
                                     False if deceased is False else None),
                     "distress_tokens": distress_tokens(r["signal_overlap"], disc.get(r["lead_id"])),
                     "acreage": r["acreage"],
-                    "market_ppa": mppa,
-                    "list_ppa": None,           # no listing-price source for these leads
-                    "comps_n": comps_n,
+                    "comps": comps_by_apn.get(r["parcel_apn"]) or [],  # raw comp rows; assembler computes feasibility
+                    "as_of": as_of,
                 }
                 a = assemble(lead, weights)
                 res = score_parcel(a["inputs"], weights)

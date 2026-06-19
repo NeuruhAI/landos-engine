@@ -32,6 +32,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from app.comps import arbitrage_feasibility  # pure (no DB/network), like this module
+
 
 # Engine distress token  ->  composite distress key (app.scoring DEFAULT_WEIGHTS["distress"]).
 # Only EXACT-or-family matches belong here. Anything not in this map is treated
@@ -57,6 +59,27 @@ OWNER_UNOBSERVABLE = ("age_senior", "age_boomer")  # no age/DOB source on owner_
 
 def _owner_weight_total(owner_weights: Dict[str, float]) -> float:
     return sum(float(v) for v in owner_weights.values()) or 1.0
+
+
+# Subdivision-from-acreage: DORMANT (not wired into scoring). Deriving a split count
+# from acreage alone manufactures the input the model wants when the real source —
+# county min-lot-size / zoning — is MISSING; the HARD RULE forbids that, so the
+# arbitrage axis floors subdivision to absent (like carry) at cold-score. Kept
+# dormant-but-ready (house style, like compute_max_bid before comps): wire it in only
+# when a min-lot/zoning adapter lands, and only as a flagged, zoning-grounded input.
+SUBDIV_MIN_ACRES = 2.0
+SUBDIV_FULL_ACRES = 40.0
+
+
+def subdivisions_from_acreage(acreage: Any) -> int:
+    """DORMANT — not called by assemble() today (see note above). acreage ->
+    subdivisions_to_2x in [1,10] (fewer = more upside). <2ac -> 10 (no upside);
+    >=40ac -> 1. Heuristic; wires in when a zoning/min-lot source exists."""
+    a = float(acreage or 0)
+    if a < SUBDIV_MIN_ACRES:
+        return 10
+    f = min(1.0, (a - SUBDIV_MIN_ACRES) / (SUBDIV_FULL_ACRES - SUBDIV_MIN_ACRES))
+    return max(1, round(10 - 9 * f))
 
 
 def assemble(lead: Dict[str, Any], weights: Dict[str, Any]) -> Dict[str, Any]:
@@ -172,41 +195,48 @@ def assemble(lead: Dict[str, Any], weights: Dict[str, Any]) -> Dict[str, Any]:
         "facts": dict(distress_inputs),
     }
 
-    # ---------------- ARBITRAGE axis ------------------------------------------
-    market_ppa = lead.get("market_ppa")
-    list_ppa = lead.get("list_ppa")
-    comps_n = int(lead.get("comps_n") or 0)
+    # ---------------- ARBITRAGE axis (basis A: comps-only, list-price-free) ----
+    # Grounds on a REAL comp set: ARV(per-acre comps) -> net-of-ARV feasibility.
+    # subdivision = acreage heuristic (flagged); carry has NO source -> absent
+    # (contributes 0, flagged, NOT renormalized — conservative floor). No usable
+    # comp -> absent -> NULL (HARD RULE, unchanged).
+    acreage = lead.get("acreage")
+    comps = lead.get("comps") or []
+    as_of = lead.get("as_of")
+    feas = (arbitrage_feasibility(acreage, comps, as_of)
+            if as_of is not None
+            else {"feasibility": None, "n": 0, "confidence": "none", "arv": None})
     arb_inputs: Dict[str, Any] = {}
     arb_present: List[str] = []
     arb_missing: List[str] = []
-    if market_ppa and comps_n > 0:
-        arb_inputs["market_price_per_acre"] = float(market_ppa)
-        arb_present.append("market_price_per_acre")
+    arb_conf_factor = 0.0
+    if feas.get("feasibility") is not None:
+        arb_inputs["feasibility"] = feas["feasibility"]
+        arb_present.append("feasibility(comps-ARV net spread)")
+        # subdivision + carry: NO real source (county min-lot/zoning; market velocity).
+        # Both are floored to absent — left unset so scoring.py defaults them to 0
+        # (subs=10 -> subdiv_score 0; carry 0), NOT renormalized. Deriving subdivisions
+        # from acreage alone would manufacture the missing input (HARD RULE). Arbitrage
+        # grounds on feasibility alone at cold-score.
+        arb_missing.append("subdivisions_to_2x")          # no zoning/min-lot source -> absent (0, floored)
+        arb_missing.append("carry_feasible_90d")          # no velocity source -> absent (0, floored)
+        arb_scorable = True
+        arb_conf_factor = 1.0 if feas.get("confidence") == "normal" else 0.6  # low (<3 comps)
     else:
-        arb_missing.append("market_price_per_acre")
-    if list_ppa:
-        arb_inputs["list_price_per_acre"] = float(list_ppa)
-        arb_present.append("list_price_per_acre")
-    else:
-        arb_missing.append("list_price_per_acre")
-    if lead.get("acreage"):
-        arb_inputs["acreage"] = float(lead["acreage"])
-        arb_present.append("acreage")
-    else:
-        arb_missing.append("acreage")
-    # The discount term needs BOTH market and list price; without them the axis
-    # cannot produce a real arbitrage component (acreage alone is not enough).
-    arb_scorable = "market_price_per_acre" in arb_present and "list_price_per_acre" in arb_present
+        arb_missing.extend(["feasibility(comps-ARV net spread)",
+                            "subdivisions_to_2x", "carry_feasible_90d"])
+        arb_scorable = False
     arb_status = "grounded" if arb_scorable else "absent"
     arbitrage_coverage = {
         "status": arb_status,
         "present_inputs": arb_present,
         "missing_inputs": arb_missing,
-        "comps_n": comps_n,
-        "facts": {k: v for k, v in arb_inputs.items()},
+        "comps_n": feas.get("n", 0),
+        "comp_confidence": feas.get("confidence"),
+        "arv": feas.get("arv"),
+        "subdivision_basis": None,   # absent: no zoning/min-lot source (see missing_inputs)
+        "facts": dict(arb_inputs),
     }
-    if not arb_scorable:
-        arb_inputs = {k: v for k, v in arb_inputs.items() if k == "acreage"}  # acreage harmless, scores 0
 
     # ---------------- null-component map + confidence -------------------------
     null_components = {
@@ -220,7 +250,7 @@ def assemble(lead: Dict[str, Any], weights: Dict[str, Any]) -> Dict[str, Any]:
     conf = (
         float(cw.get("owner", 0.0)) * (owner_fraction if owner_status == "grounded" else 0.0)
         + float(cw.get("distress", 0.0)) * (1.0 if distress_status == "grounded" else 0.0)
-        + float(cw.get("arbitrage", 0.0)) * (1.0 if arb_status == "grounded" else 0.0)
+        + float(cw.get("arbitrage", 0.0)) * (arb_conf_factor if arb_status == "grounded" else 0.0)
     )
 
     return {

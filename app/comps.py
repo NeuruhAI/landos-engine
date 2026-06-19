@@ -95,6 +95,46 @@ def compute_arv(subject_acreage: Any, comps: List[Dict[str, Any]], as_of: date) 
     }
 
 
+def arbitrage_feasibility(subject_acreage: Any, comps: List[Dict[str, Any]],
+                          as_of: date, net_floor: float = 10000.0) -> Dict[str, Any]:
+    """Comps-only, list-price-FREE arbitrage signal for cold-scoring off-market land.
+
+    ARV from per-acre comps -> compute_max_bid -> the net-of-ARV spread at the max
+    feasible bid, as a 0..1 'how good is the math' score:
+        feasibility = clamp(net_at_high / arv)   (0 if no acquisition nets >= net_floor)
+
+    GROUNDED only on >=1 usable comp with acreage>0 (a per-acre ARV); comps without
+    acreage are dropped (flagged) so the basis is always per_acre. No usable comp ->
+    feasibility=None (the axis is ABSENT -> NULL upstream; never a fabricated 0).
+    Confidence is DERIVED from comp count (compute_arv: 'low (<3 comps)' vs 'normal').
+    """
+    subj = _to_float(subject_acreage)
+    usable = [c for c in (comps or [])
+              if (_to_float(c.get("sale_price")) or 0) > 0
+              and (_to_float(c.get("acreage")) or 0) > 0]
+    if not subj or subj <= 0 or not usable:
+        return {"feasibility": None, "arv": None, "n": len(usable),
+                "basis": "n/a", "confidence": "none", "max_bid_feasible": None}
+    arv_res = compute_arv(subj, usable, as_of)          # all usable have acreage -> per_acre
+    arv = arv_res.get("arv")
+    if not arv or arv <= 0:
+        return {"feasibility": None, "arv": arv, "n": arv_res.get("n", 0),
+                "basis": arv_res.get("basis"), "confidence": "none", "max_bid_feasible": None}
+    bid = compute_max_bid(arv, net_floor=net_floor)
+    feas = (bid["net_at_high"] / arv) if bid["feasible"] else 0.0
+    feas = max(0.0, min(1.0, feas))
+    return {
+        "feasibility": round(feas, 4),
+        "arv": round(arv, 2),
+        "n": arv_res.get("n", 0),
+        "basis": arv_res.get("basis"),
+        "confidence": arv_res.get("confidence"),
+        "max_bid_feasible": bid["feasible"],
+        "net_at_high": bid["net_at_high"],
+        "bid_high": bid["bid_high"],
+    }
+
+
 def apg_tier(arv: float):
     """(label, initial_pct, max_pct) — APG's documented offer thresholds."""
     if arv < 50000:

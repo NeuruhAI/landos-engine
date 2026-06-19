@@ -2,16 +2,24 @@
 test_composite_inputs.py — the assembler's HARD-RULE contract: MISSING is
 first-class (NULL, low confidence), never a fabricated 0.
 """
+from datetime import date
+
 from app.scoring import DEFAULT_WEIGHTS as W, score_parcel
 from app.composite_inputs import assemble
+
+AS_OF = date(2026, 6, 19)
 
 
 def _lead(**kw):
     base = {"absentee_tier": None, "owner_type": None, "skip_traced": False,
             "is_deceased": None, "distress_tokens": [], "acreage": None,
-            "market_ppa": None, "list_ppa": None, "comps_n": 0}
+            "comps": [], "as_of": AS_OF}
     base.update(kw)
     return base
+
+
+def _comp(price, acreage, mi=1.0, sale="2025-06-01"):
+    return {"sale_price": price, "acreage": acreage, "sale_date": sale, "distance_mi": mi}
 
 
 # ---- distress: grounded / unmodeled / absent are three DISTINCT states --------
@@ -69,18 +77,53 @@ def test_no_distress_token_is_absent():
     assert a["null_components"]["distress"] is True
 
 
-# ---- arbitrage: absent without comps, grounded with market+list --------------
+# ---- arbitrage (basis A): comps-only feasibility; absent->NULL without comps ----
 def test_arbitrage_absent_without_comps():
-    a = assemble(_lead(acreage=40), W)  # acreage alone is not enough
+    a = assemble(_lead(acreage=40), W)  # as_of set, but no comp set
     assert a["coverage"]["arbitrage"]["status"] == "absent"
     assert a["null_components"]["arbitrage"] is True
+    assert a["inputs"]["arbitrage"] == {}  # nothing fabricated
 
 
-def test_arbitrage_grounded_with_market_and_list():
-    a = assemble(_lead(acreage=10, market_ppa=9000, list_ppa=3000, comps_n=4), W)
-    assert a["coverage"]["arbitrage"]["status"] == "grounded"
+def test_arbitrage_grounded_from_comps_feasibility():
+    comps = [_comp(80000, 10), _comp(90000, 11), _comp(75000, 9)]  # 3 comps -> 'normal'
+    a = assemble(_lead(acreage=10, comps=comps), W)
+    cov = a["coverage"]["arbitrage"]
+    assert cov["status"] == "grounded"
     assert a["null_components"]["arbitrage"] is False
+    assert "feasibility" in a["inputs"]["arbitrage"]
+    assert cov["arv"] is not None and cov["comps_n"] == 3
     assert score_parcel(a["inputs"], W)["arbitrage_component"] > 0
+
+
+def test_arbitrage_carry_absent_never_fabricated():
+    comps = [_comp(80000, 10), _comp(90000, 11)]
+    a = assemble(_lead(acreage=10, comps=comps), W)
+    cov = a["coverage"]["arbitrage"]
+    assert "carry_feasible_90d" in cov["missing_inputs"]      # flagged absent
+    assert "carry_feasible_90d" not in a["inputs"]["arbitrage"]  # not fabricated as 0
+    assert cov["comp_confidence"] == "low (<3 comps)"         # 2 comps -> low confidence
+
+
+def test_arbitrage_subdivision_floored_absent_no_zoning_source():
+    """subdivision is NOT derived from acreage (that would fabricate the missing
+    zoning input) — it stays absent/floored like carry; arbitrage grounds on
+    feasibility alone."""
+    comps = [_comp(80000, 10), _comp(90000, 11)]
+    a = assemble(_lead(acreage=40, comps=comps), W)
+    arb, cov = a["inputs"]["arbitrage"], a["coverage"]["arbitrage"]
+    assert "subdivisions_to_2x" not in arb               # not fabricated from acreage
+    assert "subdivisions_to_2x" in cov["missing_inputs"]
+    assert cov["subdivision_basis"] is None
+    assert arb == {"feasibility": arb["feasibility"]}     # feasibility is the only arb input
+    assert score_parcel(a["inputs"], W)["arbitrage_component"] > 0  # grounded on feasibility x 0.50
+
+
+def test_comps_without_acreage_do_not_ground_per_acre():
+    comps = [{"sale_price": 80000, "acreage": None, "sale_date": "2025-06-01", "distance_mi": 1.0}]
+    a = assemble(_lead(acreage=10, comps=comps), W)
+    assert a["coverage"]["arbitrage"]["status"] == "absent"   # per-acre ARV needs comp acreage
+    assert a["null_components"]["arbitrage"] is True
 
 
 # ---- owner: always grounded (tier+type), age never, govt != entity -----------
