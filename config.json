@@ -1,0 +1,36 @@
+{
+  "landos_engine_path": "~/Documents/landos-engine",
+  "counties": {
+    "st_joseph": {
+      "source_type": "arcgis_rest",
+      "county_fips": "18141",
+      "query_url": "https://gis.southbendin.gov/arcgis/rest/services/LandRecords/Parcels/MapServer/1/query",
+      "oid_field": "OBJECTID",
+      "page_size": 1000,
+      "state": "IN",
+      "fields": {
+        "parcel_id": "PARCELID",
+        "owner_name": "NAME_1",
+        "prop_addr": "PROP_ADDR",
+        "prop_city": "PROP_CITY",
+        "prop_state": "PROP_STATE",
+        "prop_zip": "PROP_ZIP",
+        "mail_addr": "MAILINGADD",
+        "mail_city": "MAILINGCIT",
+        "mail_state": "MAILINGSTA",
+        "mail_zip": "MAILINGZIP",
+        "land_value": "REALLANDVA",
+        "improvement_value": "REALIMPROV",
+        "class_code": "CLASSCODE",
+        "acreage": "ACREAGE",
+        "sale_date": "SALESDATE",
+        "township": "TOWNSHIP",
+        "homestead_flags": ["EXEMPT1","EXEMPT2","EXEMPT3","EXEMPT4","EXEMPT5","EXEMPT6"]
+      },
+      "towns": {
+        "new_carlisle": "UPPER(PROP_CITY) LIKE '%NEW CARLISLE%' OR PROP_ZIP LIKE '46552%'",
+        "lydick": "UPPER(PROP_CITY) LIKE '%LYDICK%' OR (PROP_ZIP LIKE '46628%' AND UPPER(TOWNSHIP) LIKE '%WARREN%')"
+      }
+    }
+  }
+}

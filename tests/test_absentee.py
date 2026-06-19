@@ -212,6 +212,54 @@ def test_score_lead_owner_occupied_low():
     assert res["final_lead_score"] == 20.0
 
 
+# ---- homestead corroboration (annotation only; never moves the tier) -------
+def test_score_lead_out_of_state_with_homestead_still_absentee():
+    # A stale homestead exemption on an out-of-state owner does NOT make them an
+    # occupant: the mailing/situs comparison is authoritative, so the tier stays
+    # out_of_state, the lead is still flagged absentee, and the un-stripped exemption
+    # is surfaced as stale_homestead -> still absentee, marginally stronger.
+    lead = dict(owner_name="SMITH JOHN", situs_address="73 W MAIN St",
+                situs_city="BENTON HARBOR", situs_county="Berrien", situs_state="MI",
+                situs_zip="49022", owner_mailing_address="100 STATE ST",
+                owner_mailing_city="CHICAGO", owner_mailing_state="IL", owner_mailing_zip="60601")
+    res = score_lead(lead, [], None, BERRIEN, homestead_present=True)
+    assert res["absentee_tier"] == "out_of_state"   # homestead did NOT change the tier
+    assert res["absentee_flag"] is True             # still absentee
+    assert res["stale_homestead"] is True           # stale exemption surfaced
+
+
+def test_score_lead_homestead_does_not_force_owner_occupied_and_only_corroborates():
+    # Genuinely owner-occupied (same address both sides). Homestead agrees with what the
+    # address comparison already found, so it must NOT trip the "stale" flag (only off-
+    # parcel exemptions are stale) and must NOT change the score.
+    lead = dict(owner_name="SMITH JOHN", situs_address="100 ELM ST", situs_city="BENTON HARBOR",
+                situs_county="Berrien", situs_state="MI", situs_zip="49022",
+                owner_mailing_address="100 ELM ST", owner_mailing_city="BENTON HARBOR",
+                owner_mailing_state="MI", owner_mailing_zip="49022")
+    res = score_lead(lead, [], None, BERRIEN, homestead_present=True)
+    assert res["absentee_tier"] == "owner_occupied"  # homestead can't flip it off-parcel...
+    assert res["absentee_flag"] is False             # ...and can't make it absentee either
+    assert res["stale_homestead"] is False           # corroborates only; not "stale"
+    assert res["final_lead_score"] == 20.0           # score unchanged
+
+
+def test_score_lead_homestead_is_annotation_only_not_a_score_change():
+    # Off-parcel lead scored with vs without homestead: the ONLY difference is the
+    # stale_homestead flag. Defaults to False (back-compat), and tier/scores are identical.
+    lead = dict(owner_name="SMITH JOHN", situs_address="73 W MAIN St",
+                situs_city="BENTON HARBOR", situs_county="Berrien", situs_state="MI",
+                situs_zip="49022", owner_mailing_address="100 STATE ST",
+                owner_mailing_city="CHICAGO", owner_mailing_state="IL", owner_mailing_zip="60601")
+    without = score_lead(lead, [], None, BERRIEN)                          # param defaults False
+    with_hs = score_lead(lead, [], None, BERRIEN, homestead_present=True)
+    assert without["stale_homestead"] is False
+    assert with_hs["stale_homestead"] is True
+    assert without["absentee_tier"] == with_hs["absentee_tier"] == "out_of_state"
+    assert without["absentee_score"] == with_hs["absentee_score"]
+    assert without["final_lead_score"] == with_hs["final_lead_score"]
+    assert without["raw_fused_score"] == with_hs["raw_fused_score"]
+
+
 # ---- ReportAll APN mapping + normalize (real-data-only) --------------------
 def test_reportall_parcel_id_strips_county_prefix():
     assert reportall_parcel_id("11-54-0340-0145-00-9", "11-") == "54-0340-0145-00-9"
