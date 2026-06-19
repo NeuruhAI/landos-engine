@@ -28,6 +28,9 @@ TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 BERRIEN_TAX_CATALOGS = [
     (2906, "Berrien DNR / state land — Aug 6 2026 sale", 2026),
     (2049, "Berrien main county tax-foreclosure (2022 cycle)", 2022),
+    (1811, "Berrien main county tax-foreclosure (2020 cycle, Sep 26 2020 sale)", 2020),
+    # 2026 main county Treasurer catalog still "Coming Soon" on tax-sale.info (no id
+    # yet as of 2026-06-05); DNR 2906 is the only Ready-to-Browse 2026 Berrien catalog.
     # (XXXX, "Berrien main county — Aug 6 2026 sale", 2026),  # add when posted
 ]
 

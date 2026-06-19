@@ -130,6 +130,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--county", required=True, help="county alias or FIPS, e.g. berrien / 26021")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--include-discovery", action="store_true",
+                    help="include discovery_seed leads in the ranked queue (default: excluded — "
+                         "they are a bootstrap surname-seed kept only as the validator test set)")
     args = ap.parse_args()
 
     fips = county_alias_to_fips(args.county)
@@ -179,6 +182,7 @@ def main() -> None:
                 "_raw": res["raw_fused_score"],
                 "skip_trace_status": lead.get("skip_trace_status") or "not_traced",
                 "push_status": lead.get("push_status") or "not_pushed",
+                "discovery_seed": bool(lead.get("discovery_seed")),
             })
 
         # De-compress: normalize the batch's raw scores to 0–100 against the actual
@@ -214,6 +218,14 @@ def main() -> None:
                 )
         conn.commit()
 
+    # LIVE QUEUE = exclude discovery_seed bootstrap leads (kept scored in the DB as the
+    # validator test set, but never shown as live). All leads were scored above; only
+    # the ranked OUTPUT is filtered. --include-discovery overrides.
+    excluded = [r for r in scored if r["discovery_seed"]]
+    live = scored if args.include_discovery else [r for r in scored if not r["discovery_seed"]]
+    for i, r in enumerate(live, 1):
+        r["rank"] = i
+
     out = args.out or os.path.join(
         os.path.expanduser("~/Documents/landos-engine/data"),
         f"owner_leads_{args.county.lower()}.csv",
@@ -221,7 +233,7 @@ def main() -> None:
     with open(out, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=OUT_FIELDS, extrasaction="ignore")
         w.writeheader()
-        w.writerows(scored)
+        w.writerows(live)
 
     # ---- tamper-evident run manifest + append-only run_log -------------------
     generated_at = utc_now()
@@ -234,13 +246,13 @@ def main() -> None:
         git_info=git_commit_info(REPO_DIR),
         scorer_version=__VERSION__,
         weights_snapshot=weights_snapshot(),
-        row_count=len(scored),
+        row_count=len(live),
         input_apn_count=len(leads),
         reportall_calls=None,  # this run makes no ReportAll calls (see owner_leads_import_log)
         csv_path=out,
         csv_sha256=csv_sha256,
         top_5=[{"rank": r["rank"], "owner_name": r["owner_name"], "apn": r["apn"],
-                "final_lead_score": r["final_lead_score"]} for r in scored[:5]],
+                "final_lead_score": r["final_lead_score"]} for r in live[:5]],
     )
     manifest_path = write_manifest(os.path.dirname(out), args.county.lower(), manifest, generated_at)
     with psycopg.connect(DATABASE_URL) as conn:
@@ -248,18 +260,21 @@ def main() -> None:
             insert_run_log(cur, TENANT, manifest, manifest_path)
         conn.commit()
 
-    # tier breakdown
+    # tier breakdown (live queue only)
     tiers: Dict[str, int] = defaultdict(int)
     overlap_n = 0
-    for r in scored:
+    for r in live:
         tiers[r["absentee_tier"]] += 1
         if r["signal_overlap"] != "none":
             overlap_n += 1
-    print("\ntier breakdown: " + ", ".join(f"{k}={v}" for k, v in sorted(tiers.items())))
-    print(f"leads with signal overlap: {overlap_n}/{len(scored)}")
-    print(f"\n========  TOP 20 — county={args.county}  (score=normalized 0-100, raw=unclamped)  ========")
+    if excluded and not args.include_discovery:
+        print(f"\nexcluded {len(excluded)} discovery_seed leads from live queue "
+              f"(kept scored in DB as validator test set; --include-discovery to show)")
+    print("tier breakdown (live): " + ", ".join(f"{k}={v}" for k, v in sorted(tiers.items())))
+    print(f"leads with signal overlap: {overlap_n}/{len(live)}")
+    print(f"\n========  TOP 20 LIVE — county={args.county}  (score=normalized 0-100, raw=unclamped)  ========")
     print(f"{'#':>2} {'score':>6} {'raw':>7} {'abss':>4} {'tier':<13}{'type':<11}{'#sg':>3} {'acre':>6}  owner / situs [overlap]")
-    for r in scored[:20]:
+    for r in live[:20]:
         nd = len(r["_overlap_obj"].get("distress_stack") or [])
         ac = r["acreage"] if r["acreage"] != "" else 0.0
         print(f'{r["rank"]:>2} {r["final_lead_score"]:>6.2f} {r["_raw"]:>7.2f} {r["absentee_score"]:>4.0f} '
