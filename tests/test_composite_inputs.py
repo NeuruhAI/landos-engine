@@ -48,6 +48,21 @@ def test_environmental_and_brownfield_map_to_environmental_key():
         assert score_parcel(a["inputs"], W)["distress_component"] == 15.0, tok
 
 
+def test_requires_bea_badge_and_gross_of_remediation():
+    """Part-201/brownfield -> requires_bea + contamination_kind, and the arbitrage axis
+    is flagged GROSS-of-remediation so a comp spread is never read as a clean net."""
+    p = assemble(_lead(distress_tokens=["environmental_part201"]), W)
+    assert p["requires_bea"] is True and p["contamination_kind"] == "part201"
+    assert p["coverage"]["arbitrage"]["gross_of_remediation"] is True
+    assert p["coverage"]["arbitrage"]["remediation_note"]
+    b = assemble(_lead(distress_tokens=["brownfield"]), W)
+    assert b["requires_bea"] is True and b["contamination_kind"] == "brownfield"
+    clean = assemble(_lead(distress_tokens=["tax_delinquent"]), W)
+    assert clean["requires_bea"] is False and clean["contamination_kind"] is None
+    assert clean["coverage"]["arbitrage"]["gross_of_remediation"] is False
+    assert clean["coverage"]["arbitrage"]["remediation_note"] is None
+
+
 def test_unmapped_distress_token_stays_unmodeled_not_zero():
     """A token with NO model slot must still NULL the component and record the
     signal — never assert 'no distress' by scoring 0."""

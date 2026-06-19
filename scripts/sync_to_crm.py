@@ -28,6 +28,7 @@ Two layers, different gates:
     actively NULLed, so a row that falls below callable loses its projected
     phones on the next sync (the projection never serves stale dialables).
 """
+import json
 import re
 from collections import Counter, defaultdict
 
@@ -62,7 +63,8 @@ def main() -> None:
                       skip_trace_meta->'controlling_human'->>'name'        as ch_name,
                       (skip_trace_meta->>'commercial_agent_flag')::boolean as caf,
                       skip_trace_meta->>'dnc_status'                       as dnc_status,
-                      skip_trace_meta->'phones'                            as phones
+                      skip_trace_meta->'phones'                            as phones,
+                      signal_overlap
                from landos.owner_leads
                where tenant_id = %s and not discovery_seed""", (TENANT,))
         leads = cur.fetchall()
@@ -79,7 +81,7 @@ def main() -> None:
                      for k, g in groups.items() if g["count"] > 1}
 
         enriched = phones_set = phones_cleared = hubs_stamped = unmatched = 0
-        dnc_suppressed = 0
+        dnc_suppressed = bea_flagged = 0
         for r in leads:
             # DNC GATE (compliance, hard): a lead scrubbed 'do_not_call' NEVER
             # becomes callable — phones are not projected regardless of trace
@@ -102,22 +104,38 @@ def main() -> None:
                     conf = float(r["confidence_score"])
             hub = hub_label.get(hub_key(r["ch_name"])) if r["ch_name"] else None
 
+            # Part-201 / brownfield BEA badge (HARD SCOPE: only these two columns).
+            so = r["signal_overlap"]
+            if isinstance(so, str):
+                try:
+                    so = json.loads(so)
+                except ValueError:
+                    so = {}
+            stack = (so.get("distress_stack") if isinstance(so, dict) else None) or []
+            requires_bea = any(t in ("environmental_part201", "brownfield") for t in stack)
+            contamination_kind = ("part201" if "environmental_part201" in stack
+                                  else "brownfield" if "brownfield" in stack else None)
+
             cur.execute(
                 """update public.acquisition_leads set
                      outreach_recipe = %s, controlling_human = %s,
                      commercial_agent_flag = %s, portfolio_hub = %s,
                      situs_lat = %s, situs_lng = %s,
                      phone_1 = %s, phone_1_type = %s, phone_2 = %s,
-                     contact_confidence = %s
+                     contact_confidence = %s,
+                     requires_bea = %s, contamination_kind = %s
                    where source_lead_id = %s""",
                 (r["recipe"], r["ch_name"], r["caf"], hub,
-                 r["situs_lat"], r["situs_lng"], p1, p1t, p2, conf, r["lead_id"]))
+                 r["situs_lat"], r["situs_lng"], p1, p1t, p2, conf,
+                 requires_bea, contamination_kind, r["lead_id"]))
             if cur.rowcount == 0:
                 unmatched += 1
                 print(f"  WARN no acquisition_leads row for {r['owner_name']!r} "
                       f"({r['lead_id']}) — not inserted (CRM owns its row set)")
                 continue
             enriched += 1
+            if requires_bea:
+                bea_flagged += 1
             if p1:
                 phones_set += 1
             elif r["skip_trace_status"] != "not_traced":
@@ -128,7 +146,7 @@ def main() -> None:
 
     print(f"\nsync summary: enriched={enriched} phones_projected={phones_set} "
           f"non-callable_kept_phoneless={phones_cleared} dnc_suppressed={dnc_suppressed} "
-          f"hub_labeled={hubs_stamped} unmatched={unmatched}")
+          f"hub_labeled={hubs_stamped} bea_flagged={bea_flagged} unmatched={unmatched}")
     print(f"hubs in effect ({len(hub_label)}):")
     for k in sorted(hub_label, key=lambda k: -groups[k]["count"]):
         print(f"  {hub_label[k]}")

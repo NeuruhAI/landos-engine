@@ -166,6 +166,11 @@ def assemble(lead: Dict[str, Any], weights: Dict[str, Any]) -> Dict[str, Any]:
 
     # ---------------- DISTRESS axis -------------------------------------------
     tokens = [str(t).strip().lower() for t in (lead.get("distress_tokens") or []) if t]
+    # Part-201 / brownfield contamination badge: drives the BEA gate and marks the
+    # arbitrage axis GROSS-of-remediation (a comp-grounded spread is NOT net of cleanup).
+    requires_bea = any(t in ("environmental_part201", "brownfield") for t in tokens)
+    contamination_kind = ("part201" if "environmental_part201" in tokens
+                          else "brownfield" if "brownfield" in tokens else None)
     distress_inputs: Dict[str, bool] = {}
     modeled: List[str] = []
     unmodeled: List[str] = []
@@ -235,6 +240,9 @@ def assemble(lead: Dict[str, Any], weights: Dict[str, Any]) -> Dict[str, Any]:
         "comp_confidence": feas.get("confidence"),
         "arv": feas.get("arv"),
         "subdivision_basis": None,   # absent: no zoning/min-lot source (see missing_inputs)
+        "gross_of_remediation": requires_bea,
+        "remediation_note": ("GROSS of Part-201/brownfield remediation — net via the BEA "
+                             "gate; never present as a clean spread") if requires_bea else None,
         "facts": dict(arb_inputs),
     }
 
@@ -266,4 +274,6 @@ def assemble(lead: Dict[str, Any], weights: Dict[str, Any]) -> Dict[str, Any]:
         },
         "null_components": null_components,
         "confidence": round(conf, 4),
+        "requires_bea": requires_bea,
+        "contamination_kind": contamination_kind,
     }

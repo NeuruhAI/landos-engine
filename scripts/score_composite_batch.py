@@ -185,6 +185,8 @@ def main() -> None:
                     "coverage": a["coverage"],
                     "modeled_inputs": a["inputs"],
                     "weights_version": version,
+                    "requires_bea": a["requires_bea"],
+                    "contamination_kind": a["contamination_kind"],
                 }
                 results.append({
                     "lead": r, "score": res["score"], "comp": comp,
