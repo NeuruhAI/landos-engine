@@ -28,15 +28,18 @@ Two layers, different gates:
     actively NULLed, so a row that falls below callable loses its projected
     phones on the next sync (the projection never serves stale dialables).
 """
+import argparse
 import json
 import re
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.config import DATABASE_URL
+from app.jarvis_brief import compose_brief
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 THRESHOLD = 0.6  # {{CONFIDENCE_THRESHOLD}} — same cutoff the importer validates
@@ -55,7 +58,7 @@ def display_name(variants: Counter) -> str:
     return " ".join(w.capitalize() for w in raw.split())
 
 
-def main() -> None:
+def main(dry_run: bool = False) -> None:
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute(
             """select lead_id, owner_name, situs_lat, situs_lng, skip_trace_status,
@@ -65,7 +68,7 @@ def main() -> None:
                       (skip_trace_meta->>'commercial_agent_flag')::boolean as caf,
                       skip_trace_meta->>'dnc_status'                       as dnc_status,
                       skip_trace_meta->'phones'                            as phones,
-                      signal_overlap
+                      signal_overlap, owner_type
                from landos.owner_leads
                where tenant_id = %s and not discovery_seed""", (TENANT,))
         leads = cur.fetchall()
@@ -89,6 +92,21 @@ def main() -> None:
             (TENANT, TENANT, TENANT))
         scores = {row["lead_id"]: row for row in cur.fetchall()}
 
+        # kin / heirs (contact_relations) for the Jarvis brief — sparse (MISSING -> []).
+        cur.execute("""
+            select cr.owner_lead_id, cr.relative_name, cr.relationship, cr.is_heir
+            from landos.contact_relations cr
+            join landos.owner_leads ol on ol.lead_id = cr.owner_lead_id
+            where ol.tenant_id = %s and not ol.discovery_seed""", (TENANT,))
+        kin_map = defaultdict(list)
+        for kr in cur.fetchall():
+            kin_map[kr["owner_lead_id"]].append(
+                {"name": kr["relative_name"], "relationship": kr["relationship"],
+                 "is_heir": kr["is_heir"]})
+
+        as_of = datetime.now(timezone.utc).isoformat()
+        jarvis_briefs = []
+
         # ---- portfolio hubs across the qualified set -------------------------
         groups = defaultdict(lambda: {"count": 0, "variants": Counter()})
         for r in leads:
@@ -101,7 +119,7 @@ def main() -> None:
                      for k, g in groups.items() if g["count"] > 1}
 
         enriched = phones_set = phones_cleared = hubs_stamped = unmatched = 0
-        dnc_suppressed = bea_flagged = score_projected = 0
+        dnc_suppressed = bea_flagged = score_projected = jarvis_composed = 0
         for r in leads:
             # DNC GATE (compliance, hard): a lead scrubbed 'do_not_call' NEVER
             # becomes callable — phones are not projected regardless of trace
@@ -145,7 +163,7 @@ def main() -> None:
                 snap = sc["inputs_snapshot"] or {}
                 s_owner, s_distress = sc["owner_component"], sc["distress_component"]
                 s_arb = sc["arbitrage_component"]            # NULL = no comps yet, never 0
-                s_signals = Jsonb({
+                signals_dict = {
                     "composite_score": float(sc["score"]) if sc["score"] is not None else None,
                     "weights_version": sc["weights_version"],
                     "confidence": snap.get("confidence"),
@@ -154,9 +172,25 @@ def main() -> None:
                     "requires_bea": snap.get("requires_bea"),
                     "contamination_kind": snap.get("contamination_kind"),
                     "computed_at": sc["computed_at"].isoformat() if sc["computed_at"] else None,
-                })
+                }
+                s_signals = Jsonb(signals_dict)
+                alt_use = (((snap.get("strategy_fit") or {}).get("alt_use_fitness") or {}).get("score"))
             else:
-                s_owner = s_distress = s_arb = s_signals = None
+                s_owner = s_distress = s_arb = s_signals = signals_dict = alt_use = None
+
+            # ---- Jarvis brief (engine-composed; projected, NOT an LLM call here) ----
+            brief = compose_brief({
+                "controlling_human": r["ch_name"], "portfolio_hub": hub,
+                "recipe": r["recipe"], "owner_type": r["owner_type"], "owner_name": r["owner_name"],
+                "score_owner": s_owner, "score_distress": s_distress, "score_signals": signals_dict,
+                "score_arbitrage": s_arb, "alt_use_fitness": alt_use,
+                "requires_bea": requires_bea, "contamination_kind": contamination_kind,
+                "kin": kin_map.get(r["lead_id"], []),
+            }, as_of)
+            jarvis_briefs.append((r, brief))
+
+            if dry_run:
+                continue   # compose-only preview; no write
 
             cur.execute(
                 """update public.acquisition_leads set
@@ -167,18 +201,20 @@ def main() -> None:
                      contact_confidence = %s,
                      requires_bea = %s, contamination_kind = %s,
                      score_owner = %s, score_distress = %s,
-                     score_arbitrage = %s, score_signals = %s
+                     score_arbitrage = %s, score_signals = %s,
+                     jarvis_brief = %s
                    where source_lead_id = %s""",
                 (r["recipe"], r["ch_name"], r["caf"], hub,
                  r["situs_lat"], r["situs_lng"], p1, p1t, p2, conf,
                  requires_bea, contamination_kind,
-                 s_owner, s_distress, s_arb, s_signals, r["lead_id"]))
+                 s_owner, s_distress, s_arb, s_signals, Jsonb(brief), r["lead_id"]))
             if cur.rowcount == 0:
                 unmatched += 1
                 print(f"  WARN no acquisition_leads row for {r['owner_name']!r} "
                       f"({r['lead_id']}) — not inserted (CRM owns its row set)")
                 continue
             enriched += 1
+            jarvis_composed += 1
             if requires_bea:
                 bea_flagged += 1
             if sc is not None and s_owner is not None:
@@ -189,12 +225,23 @@ def main() -> None:
                 phones_cleared += 1
             if hub:
                 hubs_stamped += 1
+
+        if dry_run:
+            conn.rollback()
+            print(f"\n=== JARVIS BRIEF DRY-RUN — {len(jarvis_briefs)} composed, NO writes ===")
+            for r, brief in jarvis_briefs[:5]:
+                print(f"\nlead {r['lead_id']}  ({r['owner_name']})")
+                print(f"  headline: {brief['headline']}")
+                print(f"  scores:   {brief['scores']}")
+                print(f"  contamination: {brief['contamination']}   kin: {len(brief['kin'])}")
+            print("\nHARD STOP — dry-run only (nothing written). Re-run without --dry-run to project.")
+            return
         conn.commit()
 
     print(f"\nsync summary: enriched={enriched} phones_projected={phones_set} "
           f"non-callable_kept_phoneless={phones_cleared} dnc_suppressed={dnc_suppressed} "
           f"hub_labeled={hubs_stamped} bea_flagged={bea_flagged} "
-          f"score_projected={score_projected} unmatched={unmatched}")
+          f"score_projected={score_projected} jarvis_composed={jarvis_composed} unmatched={unmatched}")
     print(f"hubs in effect ({len(hub_label)}):")
     for k in sorted(hub_label, key=lambda k: -groups[k]["count"]):
         print(f"  {hub_label[k]}")
@@ -282,4 +329,7 @@ def sync_emerging(conn, tenant_id: str, limit: int = 2000) -> None:
 #     # sync_emerging(conn, tenant_id)
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser(description="landos -> CRM projection (single writer)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="compose + preview Jarvis briefs (5); write nothing")
+    main(dry_run=ap.parse_args().dry_run)
