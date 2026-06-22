@@ -107,7 +107,8 @@ def main(dry_run: bool = False) -> None:
                       skip_trace_meta->>'dnc_status'                       as dnc_status,
                       skip_trace_meta->'phones'                            as phones,
                       signal_overlap, owner_type, emerging_score, emerging_signals,
-                      provenance, parcel_apn, county_fips, raw_meta, situs_address
+                      provenance, parcel_apn, county_fips, raw_meta, situs_address,
+                      owner_mailing_address, owner_mailing_city, owner_mailing_state, owner_mailing_zip
                from landos.owner_leads
                where tenant_id = %s and not discovery_seed""", (TENANT,))
         leads = cur.fetchall()
@@ -233,6 +234,14 @@ def main(dry_run: bool = False) -> None:
             # coalesce(%s, col) in the UPDATE => passing None for the 136 keeps their value.
             is_disc = (r.get("provenance") or "").startswith("discovered")
             pm_dict = parcel_meta_from_raw(r["raw_meta"]) if (is_disc and r["raw_meta"]) else None
+            if pm_dict and r.get("owner_mailing_address"):
+                # owner mailing (step 4d) -> on the card; out-of-state mailing = absentee signal
+                st = (r.get("owner_mailing_state") or "").strip().upper()
+                pm_dict["owner_mailing"] = {"address": r["owner_mailing_address"],
+                                            "city": r.get("owner_mailing_city"),
+                                            "state": r.get("owner_mailing_state"),
+                                            "zip": r.get("owner_mailing_zip")}
+                pm_dict["owner_out_of_state"] = bool(st) and st != "IN"
             pm = Jsonb(pm_dict) if pm_dict else None
             disc_addr = r["situs_address"] if is_disc else None
             # typed, sortable: amount_owed + assessed_total also as numeric cols (kept in pm too)
