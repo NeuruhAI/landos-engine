@@ -68,7 +68,7 @@ def main(dry_run: bool = False) -> None:
                       (skip_trace_meta->>'commercial_agent_flag')::boolean as caf,
                       skip_trace_meta->>'dnc_status'                       as dnc_status,
                       skip_trace_meta->'phones'                            as phones,
-                      signal_overlap, owner_type
+                      signal_overlap, owner_type, emerging_score, emerging_signals
                from landos.owner_leads
                where tenant_id = %s and not discovery_seed""", (TENANT,))
         leads = cur.fetchall()
@@ -202,12 +202,16 @@ def main(dry_run: bool = False) -> None:
                      requires_bea = %s, contamination_kind = %s,
                      score_owner = %s, score_distress = %s,
                      score_arbitrage = %s, score_signals = %s,
+                     emerging_score = %s, emerging_signals = %s,
                      jarvis_brief = %s
                    where source_lead_id = %s""",
                 (r["recipe"], r["ch_name"], r["caf"], hub,
                  r["situs_lat"], r["situs_lng"], p1, p1t, p2, conf,
                  requires_bea, contamination_kind,
-                 s_owner, s_distress, s_arb, s_signals, Jsonb(brief), r["lead_id"]))
+                 s_owner, s_distress, s_arb, s_signals,
+                 r["emerging_score"],
+                 Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
+                 Jsonb(brief), r["lead_id"]))
             if cur.rowcount == 0:
                 unmatched += 1
                 print(f"  WARN no acquisition_leads row for {r['owner_name']!r} "
@@ -247,6 +251,15 @@ def main(dry_run: bool = False) -> None:
         print(f"  {hub_label[k]}")
 
 
+# === DEPRECATED — DO NOT CALL (superseded 2026-06-22, AXON Emergence Loop step 2) ===
+# emerging_score / emerging_signals are now projected by main() above, read STRAIGHT from
+# landos.owner_leads (written by scripts/score_emergence.py — the single source of the moat
+# scoring). The function below FABRICATES its own score (base*0.7 + sig_conf*0.3, with a
+# blanket downweight) across every lead — it violates the never-fabricate / single-source
+# rails and would clobber the real scores on all 136 if wired up. Left in place only for the
+# is_emerging / dale_local heat-map columns it also touches (no producer for those yet).
+# Leave it OFF; do not uncomment the call below.
+#
 # === Emerging Intel / Heat Map extension (fleshed out for CRM module) ===
 # Projects data from LandOS emerging ingest (scripts/ingest_emerging_opportunities.py)
 # into public.acquisition_leads (or dedicated public.emerging_opportunities).
