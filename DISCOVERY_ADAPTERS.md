@@ -38,7 +38,9 @@ source.
 
 Storage: `landos.discovery_signals` (migration 007) — lifecycle
 `new → matched | no_match | va_pending | rejected`, with `matched_lead_id`
-closing the signal→lead loop for match-rate measurement.
+closing the signal→lead loop for match-rate measurement. As of migration 011
+every row also carries `signal_class` (`temporal` | `structural`) — see
+invariant 6, the contract the emergence scorer depends on.
 
 ## 2 — Pipeline invariants (read before writing any adapter)
 
@@ -66,6 +68,23 @@ closing the signal→lead loop for match-rate measurement.
    the P4 sync, like every lead.
 5. **ToS-clean only.** Probe robots.txt + Terms before wiring any fetch. If a
    source forbids automation, the adapter ships `va_fed` — do NOT force it.
+6. **`signal_class` is the temporal/structural contract (migration 011 — AXON
+   Emergence Loop step 1).** Every writer sets `signal_class` EXPLICITLY; there
+   is NO column default, by design:
+   * **`temporal`** — dated real-world events (today `probate_in`; future
+     `taxsale` / `taxdelinquent` / `estate_sale` / `permit` / `rezoning`). The
+     national discovery adapters (CC3) and the ingest pipeline
+     (`app/discovery/base.py`, `scripts/ingest_discovery.py`) write `'temporal'`.
+   * **`structural`** — contact-graph derivations with NO event date
+     (`graph_hub` / `graph_heir_network` / `graph_shared_mailing`). The
+     graph-signal writer (`scripts/graph_contacts.py`) writes `'structural'`.
+   Classify by source_type FAMILY, never by whether `signal_date` is set —
+   `signal_date` being NULL on the graph_* rows today is a data coincidence, not
+   the rule. The emergence scorer (step 2) reads ONLY `signal_class = 'temporal'`;
+   a structural row must NEVER score as "emerging." NULL is the fail-safe: an
+   unlabeled row simply does not emerge. **Until the writers above are updated to
+   stamp signal_class on INSERT, new rows land NULL (safe — they just don't
+   emerge); migration 011 backfilled the existing 14.**
 
 ## 3 — Adapter: `probate_in` (St. Joseph County IN, 18141) — **va_fed**
 
