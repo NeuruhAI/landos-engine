@@ -232,8 +232,12 @@ def main(dry_run: bool = False) -> None:
             # discovered-tier county data (the 87 tax-sale leads only; curated 136 stay NULL).
             # coalesce(%s, col) in the UPDATE => passing None for the 136 keeps their value.
             is_disc = (r.get("provenance") or "").startswith("discovered")
-            pm = Jsonb(parcel_meta_from_raw(r["raw_meta"])) if (is_disc and r["raw_meta"]) else None
+            pm_dict = parcel_meta_from_raw(r["raw_meta"]) if (is_disc and r["raw_meta"]) else None
+            pm = Jsonb(pm_dict) if pm_dict else None
             disc_addr = r["situs_address"] if is_disc else None
+            # typed, sortable: amount_owed + assessed_total also as numeric cols (kept in pm too)
+            owed = pm_dict["amount_owed"] if pm_dict else None
+            assessed = pm_dict["assessed_total"] if pm_dict else None
 
             if dry_run:
                 continue   # compose-only preview; no write
@@ -251,6 +255,8 @@ def main(dry_run: bool = False) -> None:
                      emerging_score = %s, emerging_signals = %s,
                      situs_address = coalesce(%s, situs_address),
                      parcel_meta = coalesce(%s, parcel_meta),
+                     amount_owed = coalesce(%s, amount_owed),
+                     assessed_total = coalesce(%s, assessed_total),
                      jarvis_brief = %s
                    where source_lead_id = %s""",
                 (r["recipe"], r["ch_name"], r["caf"], hub,
@@ -259,7 +265,7 @@ def main(dry_run: bool = False) -> None:
                  s_owner, s_distress, s_arb, s_signals,
                  r["emerging_score"],
                  Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
-                 disc_addr, pm,
+                 disc_addr, pm, owed, assessed,
                  Jsonb(brief), r["lead_id"]))
             if cur.rowcount == 0:
                 # The curated set stays UPDATE-only. The ONE exception: the 'discovered' intake
@@ -272,12 +278,12 @@ def main(dry_run: bool = False) -> None:
                         """insert into public.acquisition_leads
                              (source_lead_id, tenant_id, status, owner_name, parcel_apn, county_fips,
                               situs_lat, situs_lng, situs_address, emerging_score, emerging_signals,
-                              parcel_meta, jarvis_brief)
-                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                              parcel_meta, amount_owed, assessed_total, jarvis_brief)
+                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (r["lead_id"], TENANT, r["owner_name"], r["parcel_apn"], r["county_fips"],
                          r["situs_lat"], r["situs_lng"], disc_addr, r["emerging_score"],
                          Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
-                         pm, Jsonb(brief)))
+                         pm, owed, assessed, Jsonb(brief)))
                     discovered_inserted += 1
                     jarvis_composed += 1
                     continue
