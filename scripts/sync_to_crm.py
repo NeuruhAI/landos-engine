@@ -6,9 +6,13 @@ projection. THE SOLE WRITER of contact/pierce data into public.acquisition_leads
 
 Reads landos.owner_leads (the engine's source of truth — READ-ONLY here) and
 projects onto public.acquisition_leads, matched on
-acquisition_leads.source_lead_id = owner_leads.lead_id. Pure UPDATEs — never
-inserts, never deletes, so the CRM's row set and its RLS/assignment workflow
-are untouched. Idempotent: re-running converges to the same state.
+acquisition_leads.source_lead_id = owner_leads.lead_id. UPDATE-only for the curated set
+(never deletes), so the CRM's row set and its RLS/assignment workflow stay untouched. The
+ONE exception is the 'discovered' intake tier: leads minted from county tax-sale signals
+(provenance='discovered_taxsale') that have no acquisition_leads row yet are INSERTED here
+with status='discovered' — so the single-writer rule holds (this is the only writer of
+acquisition_leads). Every other unmatched owner_lead is still left to the CRM's own intake.
+Idempotent: re-running converges to the same state.
 
 Two layers, different gates:
 
@@ -68,7 +72,8 @@ def main(dry_run: bool = False) -> None:
                       (skip_trace_meta->>'commercial_agent_flag')::boolean as caf,
                       skip_trace_meta->>'dnc_status'                       as dnc_status,
                       skip_trace_meta->'phones'                            as phones,
-                      signal_overlap, owner_type, emerging_score, emerging_signals
+                      signal_overlap, owner_type, emerging_score, emerging_signals,
+                      provenance, parcel_apn, county_fips
                from landos.owner_leads
                where tenant_id = %s and not discovery_seed""", (TENANT,))
         leads = cur.fetchall()
@@ -120,6 +125,7 @@ def main(dry_run: bool = False) -> None:
 
         enriched = phones_set = phones_cleared = hubs_stamped = unmatched = 0
         dnc_suppressed = bea_flagged = score_projected = jarvis_composed = 0
+        discovered_inserted = 0
         for r in leads:
             # DNC GATE (compliance, hard): a lead scrubbed 'do_not_call' NEVER
             # becomes callable — phones are not projected regardless of trace
@@ -213,6 +219,24 @@ def main(dry_run: bool = False) -> None:
                  Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
                  Jsonb(brief), r["lead_id"]))
             if cur.rowcount == 0:
+                # The curated set stays UPDATE-only. The ONE exception: the 'discovered' intake
+                # tier — leads minted from county tax-sale signals (provenance='discovered_taxsale')
+                # are INSERTED here (single-writer rule). status='discovered' keeps them visibly
+                # separate from the curated set; every other unmatched owner_lead is still left to
+                # the CRM's own intake (warn + skip).
+                if (r.get("provenance") or "").startswith("discovered"):
+                    cur.execute(
+                        """insert into public.acquisition_leads
+                             (source_lead_id, tenant_id, status, owner_name, parcel_apn, county_fips,
+                              situs_lat, situs_lng, emerging_score, emerging_signals, jarvis_brief)
+                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (r["lead_id"], TENANT, r["owner_name"], r["parcel_apn"], r["county_fips"],
+                         r["situs_lat"], r["situs_lng"], r["emerging_score"],
+                         Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
+                         Jsonb(brief)))
+                    discovered_inserted += 1
+                    jarvis_composed += 1
+                    continue
                 unmatched += 1
                 print(f"  WARN no acquisition_leads row for {r['owner_name']!r} "
                       f"({r['lead_id']}) — not inserted (CRM owns its row set)")
@@ -242,7 +266,8 @@ def main(dry_run: bool = False) -> None:
             return
         conn.commit()
 
-    print(f"\nsync summary: enriched={enriched} phones_projected={phones_set} "
+    print(f"\nsync summary: enriched={enriched} discovered_inserted={discovered_inserted} "
+          f"phones_projected={phones_set} "
           f"non-callable_kept_phoneless={phones_cleared} dnc_suppressed={dnc_suppressed} "
           f"hub_labeled={hubs_stamped} bea_flagged={bea_flagged} "
           f"score_projected={score_projected} jarvis_composed={jarvis_composed} unmatched={unmatched}")
