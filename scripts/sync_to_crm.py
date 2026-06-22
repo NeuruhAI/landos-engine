@@ -62,6 +62,40 @@ def display_name(variants: Counter) -> str:
     return " ".join(w.capitalize() for w in raw.split())
 
 
+def parcel_meta_from_raw(rm):
+    """Curated county deal-fields for the /map card (the 'discovered' tier) — NOT the whole raw
+    blob. Keys confirmed against owner_leads.raw_meta (county cert-sale payload): normalized
+    top-level land_av/improvement_av/amount_due/prop_type/legal_desc/township/status/acreage/
+    tax_info_url; the cert/pay/lookup URLs under raw_meta->'raw' as PARCPRC/PAYTAXURL/PROVALWBLK."""
+    if not rm:
+        return None
+    raw = rm.get("raw") or {}
+
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    land, improv = num(rm.get("land_av")), num(rm.get("improvement_av"))
+    total = (land or 0) + (improv or 0) if (land is not None or improv is not None) else None
+    return {
+        "assessed_land_value": land,
+        "assessed_improvement_value": improv,
+        "assessed_total": total,
+        "amount_owed": num(rm.get("amount_due")),
+        "prop_type": rm.get("prop_type"),
+        "legal_desc": rm.get("legal_desc"),
+        "township": rm.get("township"),
+        "county_status": rm.get("status"),
+        "acreage": num(rm.get("acreage")),
+        "cert_pdf_url": raw.get("PARCPRC"),
+        "pay_tax_url": raw.get("PAYTAXURL"),
+        "tax_info_url": rm.get("tax_info_url"),
+        "parcel_lookup_url": raw.get("PROVALWBLK"),
+    }
+
+
 def main(dry_run: bool = False) -> None:
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute(
@@ -73,7 +107,7 @@ def main(dry_run: bool = False) -> None:
                       skip_trace_meta->>'dnc_status'                       as dnc_status,
                       skip_trace_meta->'phones'                            as phones,
                       signal_overlap, owner_type, emerging_score, emerging_signals,
-                      provenance, parcel_apn, county_fips
+                      provenance, parcel_apn, county_fips, raw_meta, situs_address
                from landos.owner_leads
                where tenant_id = %s and not discovery_seed""", (TENANT,))
         leads = cur.fetchall()
@@ -195,6 +229,12 @@ def main(dry_run: bool = False) -> None:
             }, as_of)
             jarvis_briefs.append((r, brief))
 
+            # discovered-tier county data (the 87 tax-sale leads only; curated 136 stay NULL).
+            # coalesce(%s, col) in the UPDATE => passing None for the 136 keeps their value.
+            is_disc = (r.get("provenance") or "").startswith("discovered")
+            pm = Jsonb(parcel_meta_from_raw(r["raw_meta"])) if (is_disc and r["raw_meta"]) else None
+            disc_addr = r["situs_address"] if is_disc else None
+
             if dry_run:
                 continue   # compose-only preview; no write
 
@@ -209,6 +249,8 @@ def main(dry_run: bool = False) -> None:
                      score_owner = %s, score_distress = %s,
                      score_arbitrage = %s, score_signals = %s,
                      emerging_score = %s, emerging_signals = %s,
+                     situs_address = coalesce(%s, situs_address),
+                     parcel_meta = coalesce(%s, parcel_meta),
                      jarvis_brief = %s
                    where source_lead_id = %s""",
                 (r["recipe"], r["ch_name"], r["caf"], hub,
@@ -217,6 +259,7 @@ def main(dry_run: bool = False) -> None:
                  s_owner, s_distress, s_arb, s_signals,
                  r["emerging_score"],
                  Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
+                 disc_addr, pm,
                  Jsonb(brief), r["lead_id"]))
             if cur.rowcount == 0:
                 # The curated set stays UPDATE-only. The ONE exception: the 'discovered' intake
@@ -228,12 +271,13 @@ def main(dry_run: bool = False) -> None:
                     cur.execute(
                         """insert into public.acquisition_leads
                              (source_lead_id, tenant_id, status, owner_name, parcel_apn, county_fips,
-                              situs_lat, situs_lng, emerging_score, emerging_signals, jarvis_brief)
-                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s)""",
+                              situs_lat, situs_lng, situs_address, emerging_score, emerging_signals,
+                              parcel_meta, jarvis_brief)
+                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (r["lead_id"], TENANT, r["owner_name"], r["parcel_apn"], r["county_fips"],
-                         r["situs_lat"], r["situs_lng"], r["emerging_score"],
+                         r["situs_lat"], r["situs_lng"], disc_addr, r["emerging_score"],
                          Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
-                         Jsonb(brief)))
+                         pm, Jsonb(brief)))
                     discovered_inserted += 1
                     jarvis_composed += 1
                     continue
