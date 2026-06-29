@@ -12,8 +12,8 @@ degrade to honest NULL so a transient ArcGIS/Nominatim outage never blocks minti
 
   CRITICAL  load_signals            stjoseph + estate (shipped)
   CRITICAL  load_taxsale_county     delaware + vanderburgh + future (additive)
-  CRITICAL  mint_taxsale_inmarket   taxsale signals -> owner_leads, IN-MARKET counties only
-                                     (additive; out-of-market scale-proof signals stay unminted)
+  CRITICAL  mint_taxsale_inmarket   taxsale signals -> owner_leads, ALL counties (allowlist gutted
+                                     2026-06-29; national expansion — delegates to mint_taxsale_leads)
   CRITICAL  score_emergence         emerging_score (shipped, moat IP)
   ENRICH    geocode_taxsale_multi   per-layer parcel centroids (additive; supersedes the
                                      shipped single-layer geocode, which crashes on >1 county)

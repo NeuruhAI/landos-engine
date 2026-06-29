@@ -5,8 +5,10 @@
 #
 #   B  scripts.axon_cycle           load -> mint -> score -> geocode(multi) -> situs ->
 #                                   reverse -> owner-mailing -> sync_to_crm   (one process)
-#   C  scripts.skip_trace_batchdata contactability; NO-SPEND unless BATCHDATA_API_KEY is set
-#                                   (then capped + --confirm-spend). DNC respected downstream.
+#   C  scripts.skip_trace_tracerfy  contactability (LIVE vendor = Tracerfy, $0.02/match); NO-SPEND
+#                                   unless TRACERFY_API_KEY is set (then capped + --confirm-spend).
+#                                   DNC respected at the sync write boundary. (skip_trace_batchdata
+#                                   stays dormant in the repo — not called here.)
 #
 # A (Belinda 8c661c22 geocode) was a one-time loose-end close, already done + idempotent — it is
 # NOT in the daily cadence.
@@ -27,8 +29,8 @@ rc=0
   echo "=== AXON daily run ${TS} (host=$(hostname)) ==="
   echo "--- step B: scripts.axon_cycle ---"
   ( cd "$ENGINE" && "$PY" -m scripts.axon_cycle ) || rc=$?
-  echo "--- step C: scripts.skip_trace_batchdata (discovered_taxsale, limit 200) ---"
-  ( cd "$ENGINE" && "$PY" -m scripts.skip_trace_batchdata --provenance discovered_taxsale --limit 200 ) || rc=$?
+  echo "--- step C: scripts.skip_trace_tracerfy (individuals, limit 200) ---"
+  ( cd "$ENGINE" && "$PY" -m scripts.skip_trace_tracerfy --limit 200 ) || rc=$?
   echo "=== run rc=${rc} ==="
 } >>"$LOG" 2>&1
 
