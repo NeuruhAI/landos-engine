@@ -20,6 +20,7 @@ only signals still status='new' are (re)matched, so re-run re-matches 0. The who
 DELETE (provenance='discovered_taxsale', source='county_taxsale_18141') if it must be removed.
 """
 import argparse
+from datetime import date
 
 import psycopg
 from psycopg.rows import dict_row
@@ -27,6 +28,7 @@ from psycopg.types.json import Jsonb
 
 from app.config import DATABASE_URL
 from app.score_absentee import classify_owner_type   # the EXISTING entity/individual classifier
+from app.freshness import upcoming_taxsale            # tax-sale freshness gate (upcoming-only)
 
 APG_TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"   # St. Joseph 18141 is APG territory
 SOURCE = "county_taxsale_18141"
@@ -34,7 +36,7 @@ PROVENANCE = "discovered_taxsale"
 
 SIGNALS = """
     select signal_id, parcel_apn, owner_name, confidence, county_fips,
-           raw_payload, status, matched_lead_id
+           raw_payload, status, matched_lead_id, signal_date
     from landos.discovery_signals
     where source_type = 'taxsale' and signal_class = 'temporal'
     order by parcel_apn
@@ -67,12 +69,20 @@ def _num(v):
 
 
 def main(dry_run=False):
-    minted = skipped_conflict = signals_matched = 0
+    minted = skipped_conflict = signals_matched = rejected_stale = 0
+    today = date.today()
     preview = []
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute(SIGNALS)
         signals = cur.fetchall()
         for s in signals:
+            # FRESHNESS GATE (defense-in-depth): a consumed/past or already-resolved tax-sale
+            # parcel must NEVER become a candidate — reject loudly, whatever the source/county.
+            ok, why = upcoming_taxsale(s.get("signal_date"), s["raw_payload"], s["owner_name"], today)
+            if not ok:
+                rejected_stale += 1
+                print(f"  REJECT {s['parcel_apn']!r}: {why}")
+                continue
             rp = s["raw_payload"] or {}
             owner_name = s["owner_name"]
             row = {
@@ -113,7 +123,8 @@ def main(dry_run=False):
 
         if dry_run:
             conn.rollback()
-            print(f"\n=== MINT DRY-RUN — {len(signals)} taxsale signal(s) would mint, NO writes ===")
+            print(f"\n=== MINT DRY-RUN — {len(preview)} would mint, {rejected_stale} rejected_stale "
+                  f"(freshness gate), NO writes ===")
             for apn, own, ot, luc, ac in preview[:10]:
                 print(f"  {apn}  {own!r}  [{ot}]  {luc}  {ac} ac")
             if len(preview) > 10:
@@ -123,9 +134,9 @@ def main(dry_run=False):
         conn.commit()
 
     print(f"\nmint summary: minted={minted} skipped_conflict={skipped_conflict} "
-          f"signals_matched={signals_matched} "
-          f"(tenant=APG, source={SOURCE!r}, provenance={PROVENANCE!r}; "
-          f"situs / lat-lng / mailing / absentee / final_lead_score = honest NULL).")
+          f"signals_matched={signals_matched} rejected_stale={rejected_stale} "
+          f"(tenant=APG, source={SOURCE!r}, provenance={PROVENANCE!r}; freshness gate: only "
+          f"upcoming/unresolved mint; situs / lat-lng / mailing / absentee / final_lead_score = honest NULL).")
     print("Next: `python -m scripts.score_emergence` then `python -m scripts.sync_to_crm`.")
 
 

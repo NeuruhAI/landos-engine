@@ -44,6 +44,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.config import DATABASE_URL
+from app.freshness import upcoming_taxsale
 
 SIGNAL_CLASS = "temporal"
 INGEST_ROOT = os.path.expanduser("~/repos/landos-ingest/data/strategy/signals")
@@ -107,13 +108,23 @@ def map_row(rec):
 
 
 def load_file(cur, path, dry_run):
-    read = inserted = skipped = 0
+    read = inserted = skipped = rejected = 0
+    today = date.today()
     with open(path) as fh:                                  # READ-ONLY on CC3's tree
         for line in fh:
             line = line.strip()
             if not line:
                 continue
             rec = json.loads(line)
+            # FRESHNESS GATE (gate-in-data): only UPCOMING, unresolved tax-sale parcels pass.
+            # A consumed/past or already-reverted sale is a spent signal — reject, never load.
+            if rec.get("source_type") == "taxsale":
+                ok, why = upcoming_taxsale(rec.get("event_date"), rec.get("detail_json"),
+                                           rec.get("owner_name"), today)
+                if not ok:
+                    rejected += 1
+                    print(f"  REJECT taxsale {rec.get('signal_id')!r}: {why}")
+                    continue
             row = map_row(rec)
             # RAIL (assert): this loader is TEMPORAL-only. A structural row must never enter.
             assert row["signal_class"] == "temporal", f"non-temporal row {rec.get('signal_id')!r}"
@@ -135,27 +146,27 @@ def load_file(cur, path, dry_run):
                 inserted += 1
             else:
                 skipped += 1
-    return read, inserted, skipped
+    return read, inserted, skipped, rejected
 
 
 def main(sources, dry_run):
-    tot_read = tot_ins = tot_skip = 0
+    tot_read = tot_ins = tot_skip = tot_rej = 0
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         for key in sources:
             path = SOURCES[key]
-            r, i, s = load_file(cur, path, dry_run)
+            r, i, s, rej = load_file(cur, path, dry_run)
             verb = "would_insert" if dry_run else "inserted"
-            print(f"  [{key}] read={r} {verb}={i} skipped_dup={s}")
-            tot_read += r; tot_ins += i; tot_skip += s
+            print(f"  [{key}] read={r} {verb}={i} skipped_dup={s} rejected_stale={rej}")
+            tot_read += r; tot_ins += i; tot_skip += s; tot_rej += rej
         if dry_run:
             conn.rollback()
             print(f"\n=== LOAD DRY-RUN — read {tot_read}, would_insert {tot_ins}, "
-                  f"skipped_dup {tot_skip}. NO writes. ===")
+                  f"skipped_dup {tot_skip}, rejected_stale {tot_rej}. NO writes. ===")
             return
         conn.commit()
     print(f"\nload summary: read={tot_read} inserted={tot_ins} skipped_dup={tot_skip} "
-          f"(signal_class=temporal, status=new, tenant_id=NULL). "
-          f"Resolution (matched_lead_id) is a separate step.")
+          f"rejected_stale={tot_rej} (taxsale freshness gate: only upcoming/unresolved pass; "
+          f"signal_class=temporal, status=new, tenant_id=NULL).")
 
 
 if __name__ == "__main__":

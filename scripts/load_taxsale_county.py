@@ -17,11 +17,13 @@ import argparse
 import glob
 import json
 import os
+from datetime import date
 
 import psycopg
 from psycopg.rows import dict_row
 
 from app.config import DATABASE_URL
+from app.freshness import upcoming_taxsale
 from scripts.load_signals import map_row, INSERT, INGEST_ROOT
 
 STAGED_DIR = os.path.join(INGEST_ROOT, "tax_sale", "staged")
@@ -36,13 +38,22 @@ def discover_files():
 
 
 def load_file(cur, path, dry_run):
-    read = inserted = skipped = 0
+    read = inserted = skipped = rejected = 0
+    today = date.today()
     with open(path) as fh:                                   # READ-ONLY on CC3's tree
         for line in fh:
             line = line.strip()
             if not line:
                 continue
             rec = json.loads(line)
+            # FRESHNESS GATE: only UPCOMING, unresolved tax-sale parcels pass (gate-in-data).
+            if rec.get("source_type") == "taxsale":
+                ok, why = upcoming_taxsale(rec.get("event_date"), rec.get("detail_json"),
+                                           rec.get("owner_name"), today)
+                if not ok:
+                    rejected += 1
+                    print(f"  REJECT taxsale {rec.get('signal_id')!r}: {why}")
+                    continue
             row = map_row(rec)
             assert row["signal_class"] == "temporal", f"non-temporal {rec.get('signal_id')!r}"
             read += 1
@@ -59,26 +70,27 @@ def load_file(cur, path, dry_run):
                 inserted += 1
             else:
                 skipped += 1
-    return read, inserted, skipped
+    return read, inserted, skipped, rejected
 
 
 def main(dry_run=False):
     files = discover_files()
-    tot_read = tot_ins = tot_skip = 0
+    tot_read = tot_ins = tot_skip = tot_rej = 0
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         for path in files:
-            r, i, s = load_file(cur, path, dry_run)
+            r, i, s, rej = load_file(cur, path, dry_run)
             verb = "would_insert" if dry_run else "inserted"
-            print(f"  [{os.path.basename(path)}] read={r} {verb}={i} skipped_dup={s}")
-            tot_read += r; tot_ins += i; tot_skip += s
+            print(f"  [{os.path.basename(path)}] read={r} {verb}={i} skipped_dup={s} rejected_stale={rej}")
+            tot_read += r; tot_ins += i; tot_skip += s; tot_rej += rej
         if dry_run:
             conn.rollback()
             print(f"\n=== LOAD-COUNTY DRY-RUN — files={len(files)} read={tot_read} "
-                  f"would_insert={tot_ins} skipped_dup={tot_skip}. NO writes. ===")
+                  f"would_insert={tot_ins} skipped_dup={tot_skip} rejected_stale={tot_rej}. NO writes. ===")
             return
         conn.commit()
     print(f"\nload-county summary: files={len(files)} read={tot_read} inserted={tot_ins} "
-          f"skipped_dup={tot_skip} (signal_class=temporal, status=new). Next: mint_taxsale_leads")
+          f"skipped_dup={tot_skip} rejected_stale={tot_rej} (taxsale freshness gate active). "
+          f"Next: mint_taxsale_inmarket")
 
 
 if __name__ == "__main__":
