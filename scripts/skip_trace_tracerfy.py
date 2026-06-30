@@ -68,6 +68,7 @@ TRACERFY_TRACE_TYPE = os.environ.get("TRACERFY_TRACE_TYPE", "normal")   # normal
 COST_PER_CREDIT = 0.02         # tracerfy.com/pricing: 1 credit = $0.02; misses free, no minimum
 CREDITS_PER_TRACE = {"normal": 1, "advanced": 2, "custom": 1}
 BATCH_CAP_USD = 10.0           # informational warning threshold (the hard gate is --confirm)
+HARD_CAP_USD = 5.0             # absolute ceiling for an autonomous run (trace + DNC combined)
 POLL_CAP_SECONDS = 180         # total wall-clock budget per queue poll (backoff 2,4,8,16…)
 DEFAULT_CONFIDENCE = 0.7       # Tracerfy's result fields carry NO per-number score; this fixed default
                                # feeds the downstream confidence gate (it is NOT a vendor score).
@@ -420,23 +421,32 @@ def _apply_dnc(recs, dnc_map):
                 or info["dma"] or info["litigator"]
 
 
-def trace_pool(targets, key, do_dnc=False):
+def trace_pool(targets, key, do_dnc=False, dnc_budget_usd=None):
     """Submit ALL targets as ONE multipart batch, poll, map, then (optionally) DNC-scrub the numbers and
-    apply flags at the write boundary. Returns (recs, stats). Raises TracerfyError on any failure."""
+    apply flags at the write boundary. Returns (recs, stats). Raises TracerfyError on any failure.
+    DNC is skipped (not submitted) if its estimated cost exceeds dnc_budget_usd — the trace data is still
+    written, just left unscrubbed (caller reports it) so an autonomous run can never breach the cap."""
     qid, _ = submit_trace(targets, key)
     print(f"  /trace/ accepted {len(targets)} rows -> queue_id={qid}")
     results = poll_queue(qid, key)
     recs = [(t, result_to_contacts(r) if r is not None else {"phones": [], "emails": []})
             for t, r in _pair_results(results, targets)]
-    scrubbed = 0
+    scrubbed, dnc_note = 0, None
     if do_dnc:
         nums = sorted({p["number"] for _, c in recs for p in c["phones"]})
         if nums:
-            dqid, _ = submit_dnc(nums, key)
-            print(f"  /dnc/scrub/ accepted {len(nums)} numbers -> dnc_queue_id={dqid}")
-            _apply_dnc(recs, _dnc_index(poll_dnc(dqid, key)))
-            scrubbed = len(nums)
-    return recs, {"submitted": len(targets), "results": len(results), "dnc_scrubbed": scrubbed}
+            est = len(nums) * COST_PER_CREDIT
+            if dnc_budget_usd is not None and est > dnc_budget_usd:
+                dnc_note = (f"SKIPPED — est ${est:.2f} for {len(nums)} numbers exceeds the "
+                            f"${dnc_budget_usd:.2f} DNC budget; phones left unscrubbed (unchecked)")
+                print(f"  /dnc/scrub/ {dnc_note}")
+            else:
+                dqid, _ = submit_dnc(nums, key)
+                print(f"  /dnc/scrub/ accepted {len(nums)} numbers -> dnc_queue_id={dqid}")
+                _apply_dnc(recs, _dnc_index(poll_dnc(dqid, key)))
+                scrubbed = len(nums)
+    return recs, {"submitted": len(targets), "results": len(results),
+                  "dnc_scrubbed": scrubbed, "dnc_note": dnc_note}
 
 
 # ---------------------------------------------------------------- web-export ingest ($0)
@@ -605,10 +615,11 @@ def run_batch(targets, key, confirm, do_dnc, ts):
         sys.exit("no targets to trace.")
     if worst > BATCH_CAP_USD:
         print(f"WARNING — ${worst:.2f} exceeds the ${BATCH_CAP_USD:.0f} soft cap, proceeding on --confirm.")
-    dnc_note = f"ON (+~${COST_PER_CREDIT}/phone, separate spend)" if do_dnc else "OFF"
-    print(f"BATCH — tracing {len(targets)} records (worst case ${worst:.2f}); DNC={dnc_note}.")
+    dnc_label = f"ON (+~${COST_PER_CREDIT}/phone, separate spend)" if do_dnc else "OFF"
+    print(f"BATCH — tracing {len(targets)} records (worst case ${worst:.2f}); DNC={dnc_label}.")
+    dnc_budget = max(0.0, HARD_CAP_USD - worst - 0.50)   # leave headroom for the probe + any overage
     try:
-        recs, stats = trace_pool(targets, key, do_dnc=do_dnc)
+        recs, stats = trace_pool(targets, key, do_dnc=do_dnc, dnc_budget_usd=dnc_budget)
     except TracerfyError as ex:
         sys.exit(f"BATCH STOPPED (no partial fabrication): {ex}")
     out = os.path.join(OUT_DIR, f"tracerfy_resolved_{ts}.csv")
@@ -616,6 +627,8 @@ def run_batch(targets, key, confirm, do_dnc, ts):
     with_contact = sum(1 for _, c in recs if c["phones"] or c["emails"])
     print(f"\ntracerfy BATCH: submitted={stats['submitted']} results={stats['results']} "
           f"with_contact={with_contact} resolved_written={n} dnc_scrubbed={stats['dnc_scrubbed']} -> {out}")
+    if stats.get("dnc_note"):
+        print(f"  DNC: {stats['dnc_note']}")
     if n:
         import_resolved.run(out)
     print("Next: python -m scripts.sync_to_crm (projects callable phones; DNC suppressed at the boundary).")
