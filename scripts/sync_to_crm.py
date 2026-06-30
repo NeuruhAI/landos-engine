@@ -48,6 +48,33 @@ from app.jarvis_brief import compose_brief
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 THRESHOLD = 0.6  # {{CONFIDENCE_THRESHOLD}} — same cutoff the importer validates
 
+# --- asset_class normalizer (moat boundary: fold any adapter's value to the canonical six) ---
+CANONICAL_ASSET_CLASSES = {"waterfront", "acreage", "vacant_land", "residential", "commercial", "unknown"}
+ASSET_CLASS_ALIASES = {
+    # MI tax-sale.info already emits the canonical six -> no entries needed.
+    # Add ONE line per future-adapter variant when the WARN below surfaces it.
+    # "land": "vacant_land", "vacant": "vacant_land", "house": "residential",
+}
+
+
+def normalize_asset_class(raw, *, source=None, parcel=None, logger=None):
+    """Fold any adapter's asset_class into the canonical six. NULL preserved
+    (legacy/unclassified). 'unknown' is a valid distinct value. Unmapped non-null
+    -> 'unknown' + WARN (surfaces the string for a one-line alias add; never halts).
+    Source-agnostic: when asset_class is promoted to an owner_leads column, only the
+    CALL SITE's source expression changes, not this logic."""
+    if raw is None:
+        return None
+    v = str(raw).strip().lower().replace(" ", "_").replace("-", "_")
+    if v in CANONICAL_ASSET_CLASSES:
+        return v
+    if v in ASSET_CLASS_ALIASES:
+        return ASSET_CLASS_ALIASES[v]
+    msg = (f"[asset_class] unmapped {raw!r} (norm {v!r}) source={source} "
+           f"parcel={parcel} -> 'unknown'; add an alias line")
+    (logger.warning if logger else print)(msg)
+    return "unknown"
+
 
 def hub_key(name: str) -> str:
     """'PETER S. COLOVOS' / 'Peter Colovos' -> 'PETER COLOVOS' (first+last,
@@ -247,6 +274,13 @@ def main(dry_run: bool = False) -> None:
             # typed, sortable: amount_owed + assessed_total also as numeric cols (kept in pm too)
             owed = pm_dict["amount_owed"] if pm_dict else None
             assessed = pm_dict["assessed_total"] if pm_dict else None
+            # asset_class: carried NATIVELY on the discovered tier, normalized to the canonical six.
+            # Source today is raw_meta->>'asset_class' (the mint stows the true six there); when it
+            # graduates to an owner_leads column, only this expression changes. Curated UPDATE path
+            # is left untouched (those 136 have no tax-sale raw_meta -> would normalize to NULL anyway).
+            disc_asset_class = (normalize_asset_class((r["raw_meta"] or {}).get("asset_class"),
+                                                      source="taxsale", parcel=r["parcel_apn"])
+                                if is_disc else None)
 
             if dry_run:
                 continue   # compose-only preview; no write
@@ -287,12 +321,12 @@ def main(dry_run: bool = False) -> None:
                         """insert into public.acquisition_leads
                              (source_lead_id, tenant_id, status, owner_name, parcel_apn, county_fips,
                               situs_lat, situs_lng, situs_address, emerging_score, emerging_signals,
-                              parcel_meta, amount_owed, assessed_total, jarvis_brief)
-                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                              parcel_meta, amount_owed, assessed_total, jarvis_brief, asset_class)
+                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (r["lead_id"], TENANT, r["owner_name"], r["parcel_apn"], r["county_fips"],
                          r["situs_lat"], r["situs_lng"], disc_addr, r["emerging_score"],
                          Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
-                         pm, owed, assessed, Jsonb(brief)))
+                         pm, owed, assessed, Jsonb(brief), disc_asset_class))
                     discovered_inserted += 1
                     jarvis_composed += 1
                     continue
