@@ -55,6 +55,7 @@ import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import psycopg
 from psycopg.rows import dict_row
@@ -64,6 +65,7 @@ from scripts import import_resolved
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 TRACERFY_BASE = os.environ.get("TRACERFY_API_BASE", "https://tracerfy.com/v1/api").rstrip("/")
+_API_HOST = urlparse(TRACERFY_BASE).netloc
 TRACERFY_TRACE_TYPE = os.environ.get("TRACERFY_TRACE_TYPE", "normal")   # normal | advanced | custom
 COST_PER_CREDIT = 0.02         # tracerfy.com/pricing: 1 credit = $0.02; misses free, no minimum
 CREDITS_PER_TRACE = {"normal": 1, "advanced": 2, "custom": 1}
@@ -154,10 +156,15 @@ class TracerfyTimeout(TracerfyError):
     """A queue never reached pending=false inside the poll budget."""
 
 
-def _request(method, url, key, *, body=None, content_type=None, timeout=60):
-    """One Bearer-authed request; returns the raw response bytes. Fails loud on HTTP/network error."""
-    headers = {"Authorization": f"Bearer {key}", "Accept": "application/json",
-               "User-Agent": "landos-engine/1.0"}
+def _request(method, url, key, *, body=None, content_type=None, timeout=60, auth=None):
+    """One request; returns the raw response bytes. Fails loud on HTTP/network error. The Bearer header
+    is sent ONLY to the Tracerfy API host (auto) — NEVER to a presigned download_url, because S3/Spaces
+    rejects an unexpected Authorization header with 400 InvalidArgument."""
+    if auth is None:
+        auth = (urlparse(url).netloc == _API_HOST)
+    headers = {"Accept": "application/json", "User-Agent": "landos-engine/1.0"}
+    if auth:
+        headers["Authorization"] = f"Bearer {key}"
     if content_type:
         headers["Content-Type"] = content_type
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
@@ -274,15 +281,23 @@ def submit_dnc(numbers, key):
     return qid, d
 
 
-def _poll(url, key, cap=POLL_CAP_SECONDS):
-    """Poll a queue with backoff (2,4,8,16…) up to `cap`s. Ready when the body is a non-empty list OR an
-    object with pending=false; results come inline or from download_url (a CSV). Fails loud on timeout."""
+def _poll(url, key, cap=POLL_CAP_SECONDS, settle=2, min_wait=15):
+    """Poll a queue with backoff (2,4,8,16…) up to `cap`s.
+      - object with pending=false  -> results inline or from download_url (a CSV; fetched WITHOUT auth).
+      - bare list (trace results carry NO completion flag and GROW as hits land) -> wait until the row
+        count is STABLE across `settle` consecutive polls AND >= min_wait elapsed before trusting it done
+        (else the first poll — e.g. one probe-cached hit — is mistaken for the whole batch).
+    On cap with a bare list present, returns it best-effort with a warning; else raises TracerfyTimeout."""
     waited, delay = 0.0, 2.0
+    last_len, stable = None, 0
     while True:
         d = _json(_request("GET", url, key))
         if isinstance(d, list):
             if d:
-                return d
+                stable = stable + 1 if len(d) == last_len else 0
+                last_len = len(d)
+                if stable >= settle and waited >= min_wait:
+                    return d
         else:
             pending = d.get("pending")
             done = (pending is False) or (pending is None and (d.get("download_url") or d.get("results")))
@@ -292,10 +307,13 @@ def _poll(url, key, cap=POLL_CAP_SECONDS):
                         return d[k]
                 dl = d.get("download_url")
                 if dl:
-                    return _parse_csv(_request("GET", dl, key).decode("utf-8", "replace"))
+                    return _parse_csv(_request("GET", dl, key, auth=False).decode("utf-8", "replace"))
                 raise TracerfyContractError(
                     f"{url} reports complete but no results list / download_url; keys={list(d)[:8]}")
         if waited >= cap:
+            if isinstance(d, list) and d:
+                print(f"  WARN: {url} did not settle in {int(waited)}s; returning {len(d)} rows best-effort")
+                return d
             raise TracerfyTimeout(f"{url} still pending after {int(waited)}s")
         nap = min(delay, cap - waited)
         time.sleep(nap)
@@ -421,13 +439,18 @@ def _apply_dnc(recs, dnc_map):
                 or info["dma"] or info["litigator"]
 
 
-def trace_pool(targets, key, do_dnc=False, dnc_budget_usd=None):
+def trace_pool(targets, key, do_dnc=False, dnc_budget_usd=None, resume_queue_id=None):
     """Submit ALL targets as ONE multipart batch, poll, map, then (optionally) DNC-scrub the numbers and
     apply flags at the write boundary. Returns (recs, stats). Raises TracerfyError on any failure.
     DNC is skipped (not submitted) if its estimated cost exceeds dnc_budget_usd — the trace data is still
-    written, just left unscrubbed (caller reports it) so an autonomous run can never breach the cap."""
-    qid, _ = submit_trace(targets, key)
-    print(f"  /trace/ accepted {len(targets)} rows -> queue_id={qid}")
+    written, just left unscrubbed (caller reports it) so an autonomous run can never breach the cap.
+    resume_queue_id polls an EXISTING trace queue (recover a paid batch after a crash — no re-spend)."""
+    if resume_queue_id:
+        qid = str(resume_queue_id)
+        print(f"  RESUMING trace queue_id={qid} (no new /trace/ submit — no re-spend)")
+    else:
+        qid, _ = submit_trace(targets, key)
+        print(f"  /trace/ accepted {len(targets)} rows -> queue_id={qid}")
     results = poll_queue(qid, key)
     recs = [(t, result_to_contacts(r) if r is not None else {"phones": [], "emails": []})
             for t, r in _pair_results(results, targets)]
@@ -606,7 +629,7 @@ def run_probe(targets, key):
           "(add --dnc only when you want the separate per-phone DNC spend).")
 
 
-def run_batch(targets, key, confirm, do_dnc, ts):
+def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None):
     worst, credits = _est(len(targets))
     if not confirm:
         sys.exit(f"STOP — --batch is GATED. Re-run with --confirm to authorize up to ${worst:.2f} for "
@@ -619,7 +642,8 @@ def run_batch(targets, key, confirm, do_dnc, ts):
     print(f"BATCH — tracing {len(targets)} records (worst case ${worst:.2f}); DNC={dnc_label}.")
     dnc_budget = max(0.0, HARD_CAP_USD - worst - 0.50)   # leave headroom for the probe + any overage
     try:
-        recs, stats = trace_pool(targets, key, do_dnc=do_dnc, dnc_budget_usd=dnc_budget)
+        recs, stats = trace_pool(targets, key, do_dnc=do_dnc, dnc_budget_usd=dnc_budget,
+                                  resume_queue_id=resume_queue_id)
     except TracerfyError as ex:
         sys.exit(f"BATCH STOPPED (no partial fabrication): {ex}")
     out = os.path.join(OUT_DIR, f"tracerfy_resolved_{ts}.csv")
@@ -634,7 +658,8 @@ def run_batch(targets, key, confirm, do_dnc, ts):
     print("Next: python -m scripts.sync_to_crm (projects callable phones; DNC suppressed at the boundary).")
 
 
-def main(mode="dry-run", limit=None, provenance=None, from_export=None, confirm=False, do_dnc=False):
+def main(mode="dry-run", limit=None, provenance=None, from_export=None, confirm=False, do_dnc=False,
+         resume_queue_id=None):
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     if from_export:
         run_from_export(from_export, provenance, limit, ts)
@@ -651,7 +676,7 @@ def main(mode="dry-run", limit=None, provenance=None, from_export=None, confirm=
     if mode == "probe":
         run_probe(targets, key)
     elif mode == "batch":
-        run_batch(targets, key, confirm, do_dnc, ts)
+        run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=resume_queue_id)
     else:
         sys.exit(f"unknown mode: {mode}")
 
@@ -674,6 +699,9 @@ if __name__ == "__main__":
     ap.add_argument("--limit", type=int, help="scope to the first N targets")
     ap.add_argument("--provenance", help="scope to one provenance")
     ap.add_argument("--from-export", help="ingest a Tracerfy web-export CSV instead of calling the API ($0)")
+    ap.add_argument("--resume-queue", type=int,
+                    help="poll an existing trace queue_id instead of a new /trace/ submit (recover a paid "
+                         "batch after a crash — no re-trace spend)")
     a = ap.parse_args()
     main(mode=a.mode, limit=a.limit, provenance=a.provenance, from_export=a.from_export,
-         confirm=a.confirm, do_dnc=a.dnc)
+         confirm=a.confirm, do_dnc=a.dnc, resume_queue_id=a.resume_queue)
