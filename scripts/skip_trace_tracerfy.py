@@ -76,6 +76,9 @@ DEFAULT_CONFIDENCE = 0.7       # Tracerfy's result fields carry NO per-number sc
                                # feeds the downstream confidence gate (it is NOT a vendor score).
 DROP_PATTERNS = ["BENTON HARBOR HOPE%", "LAKELAND HOSPITAL%"]
 OUT_DIR = "data/incoming"
+# Owner-occupant doctrine: a lead surfaced ONLY by surname/parcel match (these provenance prefixes),
+# with no distress event, is NOT a callable lead — route it to mail-only regardless of clean numbers.
+SURNAME_PROVENANCE_PREFIXES = ("reportall",)
 
 RESOLVED_COLS = ["lead_id", "owner_name", "phone_1", "phone_1_type", "phone_1_confidence",
                  "phone_1_source", "phone_2", "phone_2_type", "phone_2_confidence",
@@ -517,12 +520,20 @@ def rows_from_export(path):
 
 
 # ---------------------------------------------------------------- resolved CSV (write boundary)
-def write_resolved(path, recs):
-    """Write the import_resolved-schema CSV. DNC WRITE BOUNDARY: a flagged number is never written as
-    callable. Prefer clean numbers; if the only numbers are flagged, keep the row (lead not dropped) but
-    stamp dnc_status='do_not_call' so sync_to_crm suppresses dialing."""
+def _is_surname_only(t):
+    """True if the lead was surfaced ONLY by surname/parcel match (no distress event) — the
+    owner-occupant failure mode. Forced to mail-only when the signal filter is on."""
+    return (t.get("provenance") or "").lower().startswith(SURNAME_PROVENANCE_PREFIXES)
+
+
+def write_resolved(path, recs, signal_filter=True):
+    """Write the import_resolved-schema CSV. Two write-boundary filters, both via dnc_status='do_not_call'
+    (sync_to_crm suppresses dialing but keeps the row + mailing address = mail-only):
+      DNC filter     — a flagged number is never written callable.
+      SIGNAL filter  — a SURNAME_ONLY lead (no distress signal) is mail-only regardless of clean numbers.
+    Only distress-signal leads with a clean number become callable. Returns (written, breakdown)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    written = 0
+    written = callable_ = mail_signal = mail_dnc = mail_nonum = 0
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=RESOLVED_COLS)
         w.writeheader()
@@ -530,14 +541,26 @@ def write_resolved(path, recs):
             phones, emails = res["phones"], res["emails"]
             clean = [p for p in phones if not p.get("dnc")]
             flagged = [p for p in phones if p.get("dnc")]
-            if clean:
-                use, dnc_status = clean, "unchecked"
+            if signal_filter and _is_surname_only(t):
+                use, dnc_status, reason = (clean or flagged[:1]), "do_not_call", "surname"
+            elif clean:
+                use, dnc_status, reason = clean, "unchecked", "callable"
             elif flagged:
-                use, dnc_status = flagged[:1], "do_not_call"     # only DNC numbers -> keep row, suppress
+                use, dnc_status, reason = flagged[:1], "do_not_call", "dnc"
             else:
-                use, dnc_status = [], "unchecked"
+                use, dnc_status, reason = [], "unchecked", "nonum"
             if not use and not emails:
                 continue
+            if reason == "callable":
+                callable_ += 1
+            elif reason == "surname":
+                mail_signal += 1
+            elif reason == "dnc":
+                mail_dnc += 1
+            else:
+                mail_nonum += 1
+            notes = {"callable": "distress: CALLABLE", "surname": "SURNAME_ONLY: no distress -> mail-only",
+                     "dnc": "DNC-flagged -> mail-only", "nonum": "no phone -> mail/email-only"}
             row = {c: "" for c in RESOLVED_COLS}
             row["lead_id"] = str(t["lead_id"])
             row["owner_name"] = t["owner_name"]
@@ -549,9 +572,11 @@ def write_resolved(path, recs):
             row["email_1"] = emails[0] if emails else ""
             row["verified_via"] = "tracerfy"
             row["dnc_status"] = dnc_status
-            row["va_notes"] = "skip-trace via Tracerfy (async)"
+            row["va_notes"] = f"skip-trace via Tracerfy (async); {notes[reason]}"
             w.writerow(row)
             written += 1
+    print(f"  write_resolved: {written} rows -> CALLABLE(distress+clean)={callable_} | "
+          f"mail-only: surname={mail_signal} dnc={mail_dnc} no-phone={mail_nonum}")
     return written
 
 
@@ -569,7 +594,7 @@ def _select(provenance, limit):
             return select_targets(cur, provenance, limit)
 
 
-def run_from_export(from_export, provenance, limit, ts):
+def run_from_export(from_export, provenance, limit, ts, signal_filter=True):
     if not os.path.exists(from_export):
         sys.exit(f"no such export file: {from_export}")
     targets = _select(provenance, limit)
@@ -582,7 +607,7 @@ def run_from_export(from_export, provenance, limit, ts):
         if t and (e["phones"] or e["emails"]):
             recs.append((t, {"phones": e["phones"], "emails": e["emails"]}))
     out = os.path.join(OUT_DIR, f"tracerfy_resolved_{ts}.csv")
-    n = write_resolved(out, recs)
+    n = write_resolved(out, recs, signal_filter=signal_filter)
     print(f"export ingest ($0): matched={len(recs)} resolved_written={n} -> {out}")
     if n:
         import_resolved.run(out)
@@ -629,7 +654,7 @@ def run_probe(targets, key):
           "(add --dnc only when you want the separate per-phone DNC spend).")
 
 
-def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None):
+def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None, signal_filter=True):
     worst, credits = _est(len(targets))
     if not confirm:
         sys.exit(f"STOP — --batch is GATED. Re-run with --confirm to authorize up to ${worst:.2f} for "
@@ -647,7 +672,7 @@ def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None):
     except TracerfyError as ex:
         sys.exit(f"BATCH STOPPED (no partial fabrication): {ex}")
     out = os.path.join(OUT_DIR, f"tracerfy_resolved_{ts}.csv")
-    n = write_resolved(out, recs)
+    n = write_resolved(out, recs, signal_filter=signal_filter)
     with_contact = sum(1 for _, c in recs if c["phones"] or c["emails"])
     print(f"\ntracerfy BATCH: submitted={stats['submitted']} results={stats['results']} "
           f"with_contact={with_contact} resolved_written={n} dnc_scrubbed={stats['dnc_scrubbed']} -> {out}")
@@ -659,10 +684,10 @@ def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None):
 
 
 def main(mode="dry-run", limit=None, provenance=None, from_export=None, confirm=False, do_dnc=False,
-         resume_queue_id=None):
+         resume_queue_id=None, signal_filter=True):
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     if from_export:
-        run_from_export(from_export, provenance, limit, ts)
+        run_from_export(from_export, provenance, limit, ts, signal_filter=signal_filter)
         return
     targets = _select(provenance, limit)
     print(f"qualified named-individual targets: {len(targets)} "
@@ -676,7 +701,8 @@ def main(mode="dry-run", limit=None, provenance=None, from_export=None, confirm=
     if mode == "probe":
         run_probe(targets, key)
     elif mode == "batch":
-        run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=resume_queue_id)
+        run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=resume_queue_id,
+                  signal_filter=signal_filter)
     else:
         sys.exit(f"unknown mode: {mode}")
 
@@ -702,6 +728,9 @@ if __name__ == "__main__":
     ap.add_argument("--resume-queue", type=int,
                     help="poll an existing trace queue_id instead of a new /trace/ submit (recover a paid "
                          "batch after a crash — no re-trace spend)")
+    ap.add_argument("--no-signal-filter", action="store_false", dest="signal_filter",
+                    help="disable the owner-occupant doctrine (let SURNAME_ONLY leads be callable); "
+                         "by default surname-only leads are forced to mail-only")
     a = ap.parse_args()
     main(mode=a.mode, limit=a.limit, provenance=a.provenance, from_export=a.from_export,
-         confirm=a.confirm, do_dnc=a.dnc, resume_queue_id=a.resume_queue)
+         confirm=a.confirm, do_dnc=a.dnc, resume_queue_id=a.resume_queue, signal_filter=a.signal_filter)
