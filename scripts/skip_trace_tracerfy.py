@@ -70,7 +70,7 @@ TRACERFY_TRACE_TYPE = os.environ.get("TRACERFY_TRACE_TYPE", "normal")   # normal
 COST_PER_CREDIT = 0.02         # tracerfy.com/pricing: 1 credit = $0.02; misses free, no minimum
 CREDITS_PER_TRACE = {"normal": 1, "advanced": 2, "custom": 1}
 BATCH_CAP_USD = 10.0           # informational warning threshold (the hard gate is --confirm)
-HARD_CAP_USD = 5.0             # absolute ceiling for an autonomous run (trace + DNC combined)
+HARD_CAP_USD = 10.0            # absolute ceiling for an autonomous run (trace + DNC combined; operator raise 5->10 2026-07-01)
 POLL_CAP_SECONDS = 180         # total wall-clock budget per queue poll (backoff 2,4,8,16…)
 DEFAULT_CONFIDENCE = 0.7       # Tracerfy's result fields carry NO per-number score; this fixed default
                                # feeds the downstream confidence gate (it is NOT a vendor score).
