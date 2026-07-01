@@ -34,34 +34,62 @@ class CountyRESTProvider(ParcelProvider):
                 f"({cfg.get('note', 'confirm endpoint + fields, then set verified=True')})")
         return cfg
 
-    def _query(self, cfg: dict, where: str) -> List[dict]:
-        params = urllib.parse.urlencode({
-            "where": where, "outFields": "*", "f": "json", "resultRecordCount": 25,
-        })
-        req = urllib.request.Request(f"{cfg['url']}?{params}",
+    def _http(self, cfg: dict, params: dict) -> dict:
+        req = urllib.request.Request(f"{cfg['url']}?{urllib.parse.urlencode(params)}",
                                      headers={"User-Agent": "landos-engine/1.0"})
         try:
             with urllib.request.urlopen(req, timeout=20) as r:
-                data = json.loads(r.read().decode("utf-8", errors="replace"))
+                return json.loads(r.read().decode("utf-8", errors="replace"))
         except Exception as e:
             raise ProviderUnavailable(f"county REST error: {e}") from e
+
+    def _query(self, cfg: dict, where: str) -> List[dict]:
+        params = {"where": where, "outFields": "*", "f": "json", "resultRecordCount": 25}
+        data = self._http(cfg, params)
+        if isinstance(data.get("error"), dict) and "agination" in str(data["error"].get("message", "")):
+            # classic MapServer layers (e.g. Allegan) reject resultRecordCount
+            params.pop("resultRecordCount")
+            data = self._http(cfg, params)
         if "error" in data:
             raise ProviderUnavailable(f"county REST API error: {data['error']}")
         return [f.get("attributes", {}) for f in data.get("features", [])]
 
+    @staticmethod
+    def _attr(attrs: dict, cfg: dict, field_key: str):
+        """Clean string for the attribute cfg[field_key] names, else None.
+        Unmapped keys stay honest-NULL — never composed from guessed fields."""
+        f = cfg.get(field_key)
+        if not f or attrs.get(f) is None:
+            return None
+        return str(attrs[f]).strip() or None
+
     def _to_parcel(self, county_fips: str, cfg: dict, attrs: dict) -> ParcelDict:
+        raw_apn = (str(attrs.get(cfg["apn_field"]) or "").strip() or None)
+        prefix = cfg.get("apn_prefix") or ""
+        # return the CANONICAL county APN (strip the layer-only prefix) so
+        # matches line up with landos.owner_leads.parcel_apn
+        apn = raw_apn[len(prefix):] if (prefix and raw_apn and raw_apn.startswith(prefix)) else raw_apn
         return {
             "county_fips": county_fips,
-            "parcel_apn": (str(attrs.get(cfg["apn_field"]) or "").strip() or None),
-            "owner_name": (str(attrs.get(cfg["owner_field"]) or "").strip() or None),
-            "situs_address": None,
+            "parcel_apn": apn,
+            "owner_name": self._attr(attrs, cfg, "owner_field"),
+            "owner_name2": self._attr(attrs, cfg, "owner2_field"),
+            "owner_mailing_address": self._attr(attrs, cfg, "mail_street_field"),
+            "owner_mailing_city": self._attr(attrs, cfg, "mail_city_field"),
+            "owner_mailing_state": self._attr(attrs, cfg, "mail_state_field"),
+            "owner_mailing_zip": self._attr(attrs, cfg, "mail_zip_field"),
+            "situs_address": self._attr(attrs, cfg, "situs_street_field"),
+            "situs_city": self._attr(attrs, cfg, "situs_city_field"),
+            "situs_state": self._attr(attrs, cfg, "situs_state_field"),
+            "situs_zip": self._attr(attrs, cfg, "situs_zip_field"),
             "provenance": f"county_rest:{cfg['url']}",
             "raw_meta": {"county_rest_attributes": attrs},
         }
 
     def lookup_by_apn(self, county_fips: str, apn: str) -> List[ParcelDict]:
         cfg = self._cfg(county_fips)
-        rows = self._query(cfg, f"{cfg['apn_field']} = '{apn}'")
+        q_apn = (cfg.get("apn_prefix") or "") + apn
+        rows = self._query(cfg, f"{cfg['apn_field']} = '{q_apn.replace(chr(39), chr(39) * 2)}'")
         return [p for p in (self._to_parcel(county_fips, cfg, a) for a in rows)
                 if p["parcel_apn"]]
 
