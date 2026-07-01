@@ -106,6 +106,7 @@ TARGET_QUERY = """
       and (owner_mailing_address is not null or situs_address is not null)
       and owner_name not ilike all(%s)
       {prov}
+      {county}
     order by lead_id
 """
 
@@ -132,10 +133,12 @@ def _norm_name(s):
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
-def select_targets(cur, provenance, limit):
+def select_targets(cur, provenance, limit, county=None):
     prov = "and provenance = %s" if provenance else ""
-    params = [TENANT, DROP_PATTERNS] + ([provenance] if provenance else [])
-    cur.execute(TARGET_QUERY.format(prov=prov), params)
+    cty = "and county_fips = %s" if county else ""
+    params = ([TENANT, DROP_PATTERNS] + ([provenance] if provenance else [])
+              + ([county] if county else []))
+    cur.execute(TARGET_QUERY.format(prov=prov, county=cty), params)
     rows = cur.fetchall()
     return rows[:limit] if limit else rows
 
@@ -586,12 +589,12 @@ def _est(n):
     return n * credits * COST_PER_CREDIT, credits
 
 
-def _select(provenance, limit):
+def _select(provenance, limit, county=None):
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         conn.read_only = True
         with conn.cursor() as cur:
             cur.execute("set statement_timeout = 60000")
-            return select_targets(cur, provenance, limit)
+            return select_targets(cur, provenance, limit, county)
 
 
 def run_from_export(from_export, provenance, limit, ts, signal_filter=True):
@@ -684,14 +687,14 @@ def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None, signal_fi
 
 
 def main(mode="dry-run", limit=None, provenance=None, from_export=None, confirm=False, do_dnc=False,
-         resume_queue_id=None, signal_filter=True):
+         resume_queue_id=None, signal_filter=True, county=None):
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     if from_export:
         run_from_export(from_export, provenance, limit, ts, signal_filter=signal_filter)
         return
-    targets = _select(provenance, limit)
+    targets = _select(provenance, limit, county)
     print(f"qualified named-individual targets: {len(targets)} "
-          f"(provenance={provenance or 'ALL'}, limit={limit or 'none'})")
+          f"(provenance={provenance or 'ALL'}, county={county or 'ALL'}, limit={limit or 'none'})")
     if mode == "dry-run":
         run_dry(targets)
         return
@@ -724,6 +727,7 @@ if __name__ == "__main__":
                     help="also run the DNC scrub (SEPARATE ~$0.02/phone spend; off by default)")
     ap.add_argument("--limit", type=int, help="scope to the first N targets")
     ap.add_argument("--provenance", help="scope to one provenance")
+    ap.add_argument("--county", help="scope to one county_fips (stratified runs)")
     ap.add_argument("--from-export", help="ingest a Tracerfy web-export CSV instead of calling the API ($0)")
     ap.add_argument("--resume-queue", type=int,
                     help="poll an existing trace queue_id instead of a new /trace/ submit (recover a paid "
@@ -733,4 +737,5 @@ if __name__ == "__main__":
                          "by default surname-only leads are forced to mail-only")
     a = ap.parse_args()
     main(mode=a.mode, limit=a.limit, provenance=a.provenance, from_export=a.from_export,
-         confirm=a.confirm, do_dnc=a.dnc, resume_queue_id=a.resume_queue, signal_filter=a.signal_filter)
+         confirm=a.confirm, do_dnc=a.dnc, resume_queue_id=a.resume_queue, signal_filter=a.signal_filter,
+         county=a.county)
