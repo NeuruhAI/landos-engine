@@ -3,7 +3,7 @@ mint_taxsale_leads.py — CC2 step 4: the NO-SPEND MINTER (AXON Emergence Loop).
 
     python -m scripts.mint_taxsale_leads [--dry-run]
 
-Mints the St. Joseph county tax-sale parcels (loaded by scripts/load_signals.py) into
+Mints county tax-sale parcels (loaded by scripts/load_signals.py / load_taxsale_county.py) into
 landos.owner_leads straight from the staged county data already in
 discovery_signals.raw_payload, then matches each tax-sale signal to its new lead so the
 emergence scorer can light it.
@@ -17,7 +17,7 @@ is the ONLY score they get, written next by score_emergence.py.
 
 Idempotent: ON CONFLICT (tenant_id, county_fips, parcel_apn) DO NOTHING — re-run mints 0 dups;
 only signals still status='new' are (re)matched, so re-run re-matches 0. The whole batch is one
-DELETE (provenance='discovered_taxsale', source='county_taxsale_18141') if it must be removed.
+DELETE (provenance='discovered_taxsale', source='county_taxsale_<county_fips>') if it must be removed.
 """
 import argparse
 from datetime import date
@@ -31,7 +31,7 @@ from app.score_absentee import classify_owner_type   # the EXISTING entity/indiv
 from app.freshness import upcoming_taxsale            # tax-sale freshness gate (upcoming-only)
 
 APG_TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"   # St. Joseph 18141 is APG territory
-SOURCE = "county_taxsale_18141"
+SOURCE_PREFIX = "county_taxsale_"   # per-row source = prefix + the signal's county_fips
 PROVENANCE = "discovered_taxsale"
 
 SIGNALS = """
@@ -93,7 +93,7 @@ def main(dry_run=False):
                 "land_use_class": (rp.get("raw") or {}).get("PROPTYPE") or rp.get("prop_type"),
                 "acreage": _num(rp.get("acreage")),
                 "owner_type": classify_owner_type(owner_name),
-                "source": SOURCE,
+                "source": SOURCE_PREFIX + s["county_fips"],
                 "provenance": PROVENANCE,
                 "confidence_score": s["confidence"],
                 "raw_meta": Jsonb(rp),
@@ -135,7 +135,7 @@ def main(dry_run=False):
 
     print(f"\nmint summary: minted={minted} skipped_conflict={skipped_conflict} "
           f"signals_matched={signals_matched} rejected_stale={rejected_stale} "
-          f"(tenant=APG, source={SOURCE!r}, provenance={PROVENANCE!r}; freshness gate: only "
+          f"(tenant=APG, source={SOURCE_PREFIX!r}+county_fips, provenance={PROVENANCE!r}; freshness gate: only "
           f"upcoming/unresolved mint; situs / lat-lng / mailing / absentee / final_lead_score = honest NULL).")
     print("Next: `python -m scripts.score_emergence` then `python -m scripts.sync_to_crm`.")
 
