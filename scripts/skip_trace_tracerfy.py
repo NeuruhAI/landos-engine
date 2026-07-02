@@ -1,44 +1,61 @@
 """
 skip_trace_tracerfy.py — CONTACTABILITY via Tracerfy skip-trace (AXON, additive). THE live vendor.
 
-    python -m scripts.skip_trace_tracerfy [--limit N] [--provenance P]
-                                          [--from-export FILE.csv] [--confirm-spend] [--dry-run]
+    python -m scripts.skip_trace_tracerfy                 # DRY-RUN (default): select + plan, $0
+    python -m scripts.skip_trace_tracerfy --probe         # trace EXACTLY 1 record (~$0.02), lock shapes
+    python -m scripts.skip_trace_tracerfy --batch --confirm        # trace the full pool (gated on --confirm)
+    python -m scripts.skip_trace_tracerfy --batch --confirm --dnc  # + DNC scrub (separate ~$0.02/PHONE)
+    python -m scripts.skip_trace_tracerfy --from-export FILE.csv    # ingest a web export, $0
 
-Vendor is locked to Tracerfy ($0.02/match, real API, NO minimum — misses are free). This is the
-skip-trace path the scheduler calls; scripts/skip_trace_batchdata.py stays dormant in the repo.
-
-It writes through the EXISTING contact rail (no second writer):
+Vendor is locked to Tracerfy. This writes through the EXISTING contact rail (no second writer):
 
     Tracerfy  ->  resolved CSV (import_resolved schema)  ->  scripts.import_resolved.run()
               ->  landos.owner_leads.skip_trace_meta  ->  sync_to_crm  ->  acquisition_leads
 
-So the DNC gate (sync suppresses do_not_call at the write boundary), the callable/confidence gate,
-idempotency, and the audit manifest are all inherited. Phones are stamped source='tracerfy',
-verified_via='tracerfy'. A phone Tracerfy flags DNC sets dnc_status='do_not_call'.
+So idempotency, the audit manifest, and the DNC gate are inherited. sync_to_crm suppresses any row whose
+skip_trace_meta.dnc_status == 'do_not_call'. Phones are stamped source/verified_via='tracerfy'.
 
-TARGETS = the universe export_skiptrace_targets.py already routes to Tracerfy: tenant, not
-discovery_seed, owner_type='individual' (real people — entities are a separate pierce), a usable
-name, a mailing OR situs address, skip_trace_status='not_traced'. --provenance/--limit scope a batch.
+REAL TRACERFY CONTRACT (verified against tracerfy.com/skip-tracing-api-documentation, 2026-06):
+    1. POST {BASE}/trace/   multipart/form-data:
+         csv_file = <a CSV of the people to trace, header row required>
+         + form fields that MAP your CSV's column headers to Tracerfy's fields:
+           address_column, city_column, state_column, zip_column,
+           first_name_column, last_name_column,
+           mail_address_column, mail_city_column, mail_state_column, mailing_zip_column,
+           trace_type  ('normal'=1 credit/$0.02 | 'advanced'=2 credits | 'custom')
+       -> { "queue_id": <int>, "status":"pending", ... }
+    2. GET  {BASE}/queue/:id   poll; ready when "pending": false, then results come from "download_url"
+       (a CSV) — or inline. Per-record: primary_phone, primary_phone_type, mobile_1..5, landline_1..3,
+       email_1..5 (and echoed first_name/last_name/address for matching).
+    3. DNC is SEPARATE and BILLS PER PHONE (1 credit each): POST {BASE}/dnc/scrub/ accepts JSON
+       {"phones":[...]} -> { "dnc_queue_id": <int> } ; GET {BASE}/dnc/queue/:id -> CSV columns
+       phone,label,national_dnc,state_dnc,dma,litigator,phone_type,is_clean.
+BASE defaults to https://tracerfy.com/v1/api ; Bearer auth from TRACERFY_API_KEY (loaded from .env via
+app.config). TRACERFY_TRACE_TYPE (default 'normal') is env-overridable.
 
-MODES (gate-in-data — never fabricate, never spend without a confirmed credential):
-  1. --from-export FILE.csv : ingest a Tracerfy export (matched to targets by owner name). $0 here.
-  2. TRACERFY_API_KEY set    : call the API; spend APPROVED but capped — over $BATCH_CAP the run
-                               STOPS unless --confirm-spend. RUN IS BLOCKED ON THE KEY (provided
-                               later) — this is built now, armed later.
-  3. neither                 : NO-SPEND. Writes a targets CSV + prints the cost estimate. Nothing faked.
+TARGETS = named individuals only: tenant, not discovery_seed, owner_type='individual', a usable name,
+a mailing OR situs address, skip_trace_status='not_traced', minus DROP_PATTERNS. Property-keyed rows
+(owner_name NULL) are NOT trace-able here — Tracerfy takes name+address, not an APN, and those rows
+carry neither; they need upstream owner/mailing enrichment first (ReportAll/Parcel lane).
 
-NB: the exact Tracerfy request/response contract must be VERIFIED against the account docs before
-the first armed run (see _api_call). Until then the parser FAILS LOUD on any unexpected shape — it
-will never write a fabricated phone.
+FAIL LOUD, NEVER FABRICATE: any API error / timeout / unrecognized shape -> the source STOPS (no partial
+writes). A phone is never invented. DNC write boundary: a number that is not is_clean (national_dnc /
+state_dnc / dma / litigator) is never written callable — it is dropped from the callable slots; if it is
+the only number found the row is kept but stamped dnc_status='do_not_call' so sync suppresses dialing.
 """
 import argparse
 import csv
+import io
 import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
+import uuid
+from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import psycopg
 from psycopg.rows import dict_row
@@ -47,17 +64,36 @@ from app.config import DATABASE_URL
 from scripts import import_resolved
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
-# VERIFY against the Tracerfy account docs before the first armed run (endpoint + auth + body).
-TRACERFY_API_URL = os.environ.get("TRACERFY_API_URL", "https://api.tracerfy.com/v1/skip-trace")
-COST_PER_MATCH = 0.02          # tracerfy.com/pricing: 1 credit/hit = $0.02, misses free, no minimum
-BATCH_CAP_USD = 10.0           # over this, an armed run STOPS unless --confirm-spend
+TRACERFY_BASE = os.environ.get("TRACERFY_API_BASE", "https://tracerfy.com/v1/api").rstrip("/")
+_API_HOST = urlparse(TRACERFY_BASE).netloc
+TRACERFY_TRACE_TYPE = os.environ.get("TRACERFY_TRACE_TYPE", "normal")   # normal | advanced | custom
+COST_PER_CREDIT = 0.02         # tracerfy.com/pricing: 1 credit = $0.02; misses free, no minimum
+CREDITS_PER_TRACE = {"normal": 1, "advanced": 2, "custom": 1}
+BATCH_CAP_USD = 10.0           # informational warning threshold (the hard gate is --confirm)
+HARD_CAP_USD = 5.0             # absolute ceiling for an autonomous run (trace + DNC combined)
+POLL_CAP_SECONDS = 180         # total wall-clock budget per queue poll (backoff 2,4,8,16…)
+DEFAULT_CONFIDENCE = 0.7       # Tracerfy's result fields carry NO per-number score; this fixed default
+                               # feeds the downstream confidence gate (it is NOT a vendor score).
 DROP_PATTERNS = ["BENTON HARBOR HOPE%", "LAKELAND HOSPITAL%"]
 OUT_DIR = "data/incoming"
+# Owner-occupant doctrine: a lead surfaced ONLY by surname/parcel match (these provenance prefixes),
+# with no distress event, is NOT a callable lead — route it to mail-only regardless of clean numbers.
+SURNAME_PROVENANCE_PREFIXES = ("reportall",)
 
 RESOLVED_COLS = ["lead_id", "owner_name", "phone_1", "phone_1_type", "phone_1_confidence",
                  "phone_1_source", "phone_2", "phone_2_type", "phone_2_confidence",
                  "phone_2_source", "email_1", "verified_via", "resolved_at", "va_notes",
                  "dnc_status", "outreach_recipe", "primary_target"]
+
+# Headers we write into the uploaded csv_file, and the form fields that map them for Tracerfy.
+CSV_HEADERS = ["first_name", "last_name", "address", "city", "state", "zip",
+               "mail_address", "mail_city", "mail_state", "mailing_zip"]
+TRACE_COLUMN_MAP = {
+    "first_name_column": "first_name", "last_name_column": "last_name",
+    "address_column": "address", "city_column": "city", "state_column": "state", "zip_column": "zip",
+    "mail_address_column": "mail_address", "mail_city_column": "mail_city",
+    "mail_state_column": "mail_state", "mailing_zip_column": "mailing_zip",
+}
 
 TARGET_QUERY = """
     select lead_id, owner_name, owner_mailing_address, owner_mailing_city, owner_mailing_state,
@@ -74,6 +110,7 @@ TARGET_QUERY = """
 """
 
 
+# ---------------------------------------------------------------- target selection (unchanged)
 def split_name(owner_name):
     n = re.sub(r"\s+", " ", (owner_name or "").strip()).replace(",", " ")
     parts = [p for p in n.split() if p]
@@ -103,64 +140,342 @@ def select_targets(cur, provenance, limit):
     return rows[:limit] if limit else rows
 
 
-# ---------------------------------------------------------------- API mode
-def _api_call(target, key):
-    """One Tracerfy skip-trace request. CONTRACT IS BEST-EFFORT — verify against the account docs
-    before arming. Fails loud on an unrecognized response (never fabricates).
-    Returns {phones:[{number,type,confidence,dnc}], emails:[...]}"""
-    a = addr_parts(target)
-    first, last = split_name(target["owner_name"])
-    body = {k: v for k, v in {
-        "first_name": first, "last_name": last, "name": target["owner_name"],
-        "address": a["street"], "city": a["city"], "state": a["state"], "zip": a["zip"],
-    }.items() if v}
-    req = urllib.request.Request(
-        TRACERFY_API_URL, data=json.dumps(body).encode(),
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                 "Accept": "application/json", "User-Agent": "landos-engine/1.0"},
-        method="POST")
+# ================================================================ Tracerfy async API layer
+class TracerfyError(RuntimeError):
+    """Base — any Tracerfy failure. Caller stops the source (never fabricates a partial result)."""
+
+
+class TracerfyHTTPError(TracerfyError):
+    def __init__(self, code, body, url):
+        self.code, self.body, self.url = code, body, url
+        super().__init__(f"HTTP {code} from {url}: {body[:200]!r}")
+
+
+class TracerfyContractError(TracerfyError):
+    """The response did not match the documented shape — refuse to trust/fabricate it."""
+
+
+class TracerfyTimeout(TracerfyError):
+    """A queue never reached pending=false inside the poll budget."""
+
+
+def _request(method, url, key, *, body=None, content_type=None, timeout=60, auth=None):
+    """One request; returns the raw response bytes. Fails loud on HTTP/network error. The Bearer header
+    is sent ONLY to the Tracerfy API host (auto) — NEVER to a presigned download_url, because S3/Spaces
+    rejects an unexpected Authorization header with 400 InvalidArgument."""
+    if auth is None:
+        auth = (urlparse(url).netloc == _API_HOST)
+    headers = {"Accept": "application/json", "User-Agent": "landos-engine/1.0"}
+    if auth:
+        headers["Authorization"] = f"Bearer {key}"
+    if content_type:
+        headers["Content-Type"] = content_type
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=40) as r:
-            d = json.load(r)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
     except urllib.error.HTTPError as e:
-        raise SystemExit(f"Tracerfy HTTP {e.code} (drop-not-fight): {e.read()[:300]!r}")
-    # tolerate {result|data|...}; require a recognizable phone-bearing structure or fail loud.
-    root = d.get("result") or d.get("data") or d
-    persons = root.get("persons") or root.get("matches") or ([root] if isinstance(root, dict) else None)
-    if persons is None:
-        raise SystemExit(f"Tracerfy response shape unrecognized: keys={list(d)[:8]}. "
-                         f"Verify the contract before trusting output — refusing to fabricate.")
-    phones, emails, found_phone_field = [], [], False
-    for p in persons:
-        plist = p.get("phones") or p.get("phoneNumbers") or p.get("phone_numbers")
-        if plist is not None:
-            found_phone_field = True
-        for ph in (plist or []):
-            num = ph.get("number") or ph.get("phone") if isinstance(ph, dict) else ph
-            if not num:
-                continue
-            conf = ph.get("confidence") or ph.get("score") if isinstance(ph, dict) else None
-            try:
-                conf = float(conf)
-                conf = conf / 100.0 if conf > 1 else conf
-            except (TypeError, ValueError):
-                conf = 0.7
-            phones.append({"number": num,
-                           "type": ((ph.get("type") if isinstance(ph, dict) else None) or "").lower() or None,
-                           "confidence": conf,
-                           "dnc": bool(isinstance(ph, dict) and (ph.get("dnc") or ph.get("doNotCall") or ph.get("litigator")))})
-        for em in (p.get("emails") or []):
-            e = em.get("email") if isinstance(em, dict) else em
-            if e:
-                emails.append(e)
-    if not found_phone_field and not emails:
-        raise SystemExit("Tracerfy response had no phones/emails field — verify the contract "
-                         "(refusing to record a silent miss as a fabricated empty).")
-    phones.sort(key=lambda x: -(x["confidence"] or 0))
+        b = ""
+        try:
+            b = e.read().decode("utf-8", "replace")
+        except Exception:
+            pass
+        raise TracerfyHTTPError(e.code, b, url)
+    except urllib.error.URLError as e:
+        raise TracerfyError(f"network error to {url}: {getattr(e, 'reason', e)}")
+
+
+def _json(raw):
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw.decode("utf-8", "replace"))
+    except json.JSONDecodeError:
+        raise TracerfyContractError(f"expected JSON, got: {raw[:200]!r}")
+
+
+def _parse_csv(text):
+    return list(csv.DictReader(io.StringIO(text)))
+
+
+def _multipart(fields, file_field, filename, file_bytes):
+    """Build a multipart/form-data body (stdlib only). Returns (content_type, body_bytes)."""
+    boundary = "----landosFormBoundary" + uuid.uuid4().hex
+    nl = "\r\n"
+    buf = io.BytesIO()
+
+    def w(s):
+        buf.write(s.encode("utf-8") if isinstance(s, str) else s)
+
+    for name, value in fields.items():
+        w(f"--{boundary}{nl}")
+        w(f'Content-Disposition: form-data; name="{name}"{nl}{nl}')
+        w(f"{value}{nl}")
+    w(f"--{boundary}{nl}")
+    w(f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"{nl}')
+    w(f"Content-Type: text/csv{nl}{nl}")
+    w(file_bytes)
+    w(nl)
+    w(f"--{boundary}--{nl}")
+    return f"multipart/form-data; boundary={boundary}", buf.getvalue()
+
+
+def _extract_queue_id(d):
+    if not isinstance(d, dict):
+        return None
+    for k in ("queue_id", "dnc_queue_id", "queueId", "id", "queue"):
+        v = d.get(k)
+        if isinstance(v, (str, int)) and str(v).strip():
+            return str(v).strip()
+    for k in ("result", "data"):
+        sub = d.get(k)
+        if isinstance(sub, dict):
+            q = _extract_queue_id(sub)
+            if q:
+                return q
+    return None
+
+
+def build_trace_row(t):
+    """One CSV row for the upload. address/* = the best COMPLETE address we hold (mailing-preferred via
+    addr_parts); mail_* mirror it (we don't split situs into city/state, so we never fabricate them)."""
+    a = addr_parts(t)
+    first, last = split_name(t["owner_name"])
+    return {
+        "first_name": first or "", "last_name": last or "",
+        "address": a["street"] or "", "city": a["city"] or "",
+        "state": a["state"] or "", "zip": a["zip"] or "",
+        "mail_address": (t.get("owner_mailing_address") or a["street"] or ""),
+        "mail_city": (t.get("owner_mailing_city") or a["city"] or ""),
+        "mail_state": (t.get("owner_mailing_state") or a["state"] or ""),
+        "mailing_zip": (t.get("owner_mailing_zip") or a["zip"] or ""),
+    }
+
+
+def build_trace_csv(targets):
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=CSV_HEADERS)
+    w.writeheader()
+    for t in targets:
+        w.writerow(build_trace_row(t))
+    return buf.getvalue().encode("utf-8")
+
+
+def submit_trace(targets, key):
+    """POST {BASE}/trace/ as multipart (csv_file + column map) -> queue_id. Fails loud on no queue_id."""
+    fields = dict(TRACE_COLUMN_MAP)
+    fields["trace_type"] = TRACERFY_TRACE_TYPE
+    ct, body = _multipart(fields, "csv_file", "targets.csv", build_trace_csv(targets))
+    d = _json(_request("POST", f"{TRACERFY_BASE}/trace/", key, body=body, content_type=ct))
+    qid = _extract_queue_id(d)
+    if not qid:
+        raise TracerfyContractError(f"/trace/ returned no queue_id; top-level keys={list(d)[:8]}")
+    return qid, d
+
+
+def submit_dnc(numbers, key):
+    """POST {BASE}/dnc/scrub/ as JSON {"phones":[...]} -> dnc_queue_id. SEPARATE per-phone billing."""
+    body = json.dumps({"phones": list(numbers)}).encode("utf-8")
+    d = _json(_request("POST", f"{TRACERFY_BASE}/dnc/scrub/", key, body=body,
+                       content_type="application/json"))
+    qid = _extract_queue_id(d)
+    if not qid:
+        raise TracerfyContractError(f"/dnc/scrub/ returned no queue id; top-level keys={list(d)[:8]}")
+    return qid, d
+
+
+def _poll(url, key, cap=POLL_CAP_SECONDS, settle=2, min_wait=15):
+    """Poll a queue with backoff (2,4,8,16…) up to `cap`s.
+      - object with pending=false  -> results inline or from download_url (a CSV; fetched WITHOUT auth).
+      - bare list (trace results carry NO completion flag and GROW as hits land) -> wait until the row
+        count is STABLE across `settle` consecutive polls AND >= min_wait elapsed before trusting it done
+        (else the first poll — e.g. one probe-cached hit — is mistaken for the whole batch).
+    On cap with a bare list present, returns it best-effort with a warning; else raises TracerfyTimeout."""
+    waited, delay = 0.0, 2.0
+    last_len, stable = None, 0
+    while True:
+        d = _json(_request("GET", url, key))
+        if isinstance(d, list):
+            if d:
+                stable = stable + 1 if len(d) == last_len else 0
+                last_len = len(d)
+                if stable >= settle and waited >= min_wait:
+                    return d
+        else:
+            pending = d.get("pending")
+            done = (pending is False) or (pending is None and (d.get("download_url") or d.get("results")))
+            if done:
+                for k in ("results", "records", "data", "matches"):
+                    if isinstance(d.get(k), list):
+                        return d[k]
+                dl = d.get("download_url")
+                if dl:
+                    return _parse_csv(_request("GET", dl, key, auth=False).decode("utf-8", "replace"))
+                raise TracerfyContractError(
+                    f"{url} reports complete but no results list / download_url; keys={list(d)[:8]}")
+        if waited >= cap:
+            if isinstance(d, list) and d:
+                print(f"  WARN: {url} did not settle in {int(waited)}s; returning {len(d)} rows best-effort")
+                return d
+            raise TracerfyTimeout(f"{url} still pending after {int(waited)}s")
+        nap = min(delay, cap - waited)
+        time.sleep(nap)
+        waited += nap
+        delay = min(delay * 2, 16.0)
+
+
+def poll_queue(queue_id, key, cap=POLL_CAP_SECONDS):
+    return _poll(f"{TRACERFY_BASE}/queue/{queue_id}", key, cap)
+
+
+def poll_dnc(queue_id, key, cap=POLL_CAP_SECONDS):
+    return _poll(f"{TRACERFY_BASE}/dnc/queue/{queue_id}", key, cap)
+
+
+def _val(rec, *keys):
+    if not isinstance(rec, dict):
+        return None
+    for k in keys:
+        v = rec.get(k)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return None
+
+
+def result_to_contacts(rec):
+    """Map ONE Tracerfy result row to {phones:[{number,type,confidence,dnc}], emails:[...]}. Priority
+    primary -> mobiles -> landlines; only fields the vendor actually returned (no fabrication)."""
+    phones, seen = [], set()
+
+    def add(num, typ):
+        n = (num or "").strip()
+        if not n or n in seen:
+            return
+        seen.add(n)
+        phones.append({"number": n, "type": typ, "confidence": DEFAULT_CONFIDENCE, "dnc": False})
+
+    add(_val(rec, "primary_phone"), (_val(rec, "primary_phone_type") or "").lower() or None)
+    for i in range(1, 6):
+        add(_val(rec, f"mobile_{i}"), "mobile")
+    for i in range(1, 4):
+        add(_val(rec, f"landline_{i}"), "landline")
+    emails = []
+    for i in range(1, 6):
+        e = _val(rec, f"email_{i}")
+        if e:
+            emails.append(e)
     return {"phones": phones, "emails": emails}
 
 
-# ---------------------------------------------------------------- web-export ingest
+def _name_key_from_target(t):
+    first, last = split_name(t["owner_name"])
+    return _norm_name((first or "") + (last or ""))
+
+
+def _name_key_from_result(r):
+    if not isinstance(r, dict):
+        return ""
+    return _norm_name((r.get("first_name") or "") + (r.get("last_name") or ""))
+
+
+def _pair_results(results, targets):
+    """Map results back to targets. Prefer the echoed first_name/last_name; else positional with a STRICT
+    length guard. FAIL LOUD rather than misattribute a phone to the wrong person."""
+    if results and all(_name_key_from_result(r) for r in results):
+        idx = {}
+        for r in results:
+            idx.setdefault(_name_key_from_result(r), []).append(r)
+        out = []
+        for t in targets:
+            bucket = idx.get(_name_key_from_target(t)) or []
+            out.append((t, bucket.pop(0) if bucket else None))
+        return out
+    if len(results) != len(targets):
+        raise TracerfyContractError(
+            f"queue returned {len(results)} results for {len(targets)} submitted records and no echoed "
+            f"names to match on — refusing to misalign phones. Verify via --probe.")
+    return list(zip(targets, results))
+
+
+def _as_bool(v):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "yes", "1", "y", "t")
+    return False
+
+
+def _digits(s):
+    return re.sub(r"\D", "", s or "")
+
+
+def _dnc_index(rows):
+    """digits(phone) -> flag dict from the DNC result CSV rows."""
+    out = {}
+    for r in (rows or []):
+        if not isinstance(r, dict):
+            continue
+        num = _val(r, "phone", "phone_number", "number")
+        if not num:
+            continue
+        out[_digits(num)] = {
+            "national_dnc": _as_bool(r.get("national_dnc")),
+            "state_dnc": _as_bool(r.get("state_dnc")),
+            "dma": _as_bool(r.get("dma")),
+            "litigator": _as_bool(r.get("litigator")),
+            "is_clean": _as_bool(r.get("is_clean")),
+        }
+    return out
+
+
+def _apply_dnc(recs, dnc_map):
+    """Stamp dnc on each phone. Strict: callable ONLY if is_clean (i.e. national/state/dma/litigator
+    all false). A number Tracerfy did not return in the scrub is left unflagged (unchecked)."""
+    for _, c in recs:
+        for p in c["phones"]:
+            info = dnc_map.get(_digits(p["number"]))
+            if info is None:
+                continue
+            p["dnc"] = not info["is_clean"] or info["national_dnc"] or info["state_dnc"] \
+                or info["dma"] or info["litigator"]
+
+
+def trace_pool(targets, key, do_dnc=False, dnc_budget_usd=None, resume_queue_id=None):
+    """Submit ALL targets as ONE multipart batch, poll, map, then (optionally) DNC-scrub the numbers and
+    apply flags at the write boundary. Returns (recs, stats). Raises TracerfyError on any failure.
+    DNC is skipped (not submitted) if its estimated cost exceeds dnc_budget_usd — the trace data is still
+    written, just left unscrubbed (caller reports it) so an autonomous run can never breach the cap.
+    resume_queue_id polls an EXISTING trace queue (recover a paid batch after a crash — no re-spend)."""
+    if resume_queue_id:
+        qid = str(resume_queue_id)
+        print(f"  RESUMING trace queue_id={qid} (no new /trace/ submit — no re-spend)")
+    else:
+        qid, _ = submit_trace(targets, key)
+        print(f"  /trace/ accepted {len(targets)} rows -> queue_id={qid}")
+    results = poll_queue(qid, key)
+    recs = [(t, result_to_contacts(r) if r is not None else {"phones": [], "emails": []})
+            for t, r in _pair_results(results, targets)]
+    scrubbed, dnc_note = 0, None
+    if do_dnc:
+        nums = sorted({p["number"] for _, c in recs for p in c["phones"]})
+        if nums:
+            est = len(nums) * COST_PER_CREDIT
+            if dnc_budget_usd is not None and est > dnc_budget_usd:
+                dnc_note = (f"SKIPPED — est ${est:.2f} for {len(nums)} numbers exceeds the "
+                            f"${dnc_budget_usd:.2f} DNC budget; phones left unscrubbed (unchecked)")
+                print(f"  /dnc/scrub/ {dnc_note}")
+            else:
+                dqid, _ = submit_dnc(nums, key)
+                print(f"  /dnc/scrub/ accepted {len(nums)} numbers -> dnc_queue_id={dqid}")
+                _apply_dnc(recs, _dnc_index(poll_dnc(dqid, key)))
+                scrubbed = len(nums)
+    return recs, {"submitted": len(targets), "results": len(results),
+                  "dnc_scrubbed": scrubbed, "dnc_note": dnc_note}
+
+
+# ---------------------------------------------------------------- web-export ingest ($0)
 def _g(row, *names):
     for n in names:
         for k in row:
@@ -173,138 +488,249 @@ def rows_from_export(path):
     out = []
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
-            name = _g(row, "owner name", "name", "input name", "full name", "owner")
+            first = _g(row, "first_name", "first name")
+            last = _g(row, "last_name", "last name")
+            name = (f"{last} {first}".strip() if (first or last)
+                    else _g(row, "owner name", "name", "input name", "full name", "owner"))
             phones = []
-            for i in (1, 2, 3):
-                num = _g(row, f"phone {i}", f"phone{i}", f"phone_{i}")
-                if num:
-                    phones.append({"number": num,
-                                   "type": (_g(row, f"phone {i} type", f"phone_{i}_type") or "").lower() or None,
-                                   "confidence": 0.7,
-                                   "dnc": (_g(row, f"phone {i} dnc", "dnc") or "").lower() in ("true", "yes", "1", "y")})
+            primary = _g(row, "primary_phone", "primary phone")
+            if primary:
+                phones.append({"number": primary,
+                               "type": (_g(row, "primary_phone_type", "primary phone type") or "").lower() or None,
+                               "confidence": DEFAULT_CONFIDENCE, "dnc": False})
+            for i in range(1, 6):
+                m = _g(row, f"mobile_{i}", f"mobile {i}")
+                if m:
+                    phones.append({"number": m, "type": "mobile", "confidence": DEFAULT_CONFIDENCE, "dnc": False})
+            for i in range(1, 4):
+                ln = _g(row, f"landline_{i}", f"landline {i}")
+                if ln:
+                    phones.append({"number": ln, "type": "landline", "confidence": DEFAULT_CONFIDENCE, "dnc": False})
             if not phones:
                 p = _g(row, "phone", "phone number", "mobile")
                 if p:
-                    phones.append({"number": p, "type": None, "confidence": 0.7, "dnc": False})
-            email = _g(row, "email", "email 1", "email_1")
-            out.append({"name": name, "phones": phones, "emails": [email] if email else []})
+                    phones.append({"number": p, "type": None, "confidence": DEFAULT_CONFIDENCE, "dnc": False})
+            emails = [e for e in (_g(row, f"email_{i}", f"email {i}") for i in range(1, 6)) if e]
+            if not emails:
+                e = _g(row, "email")
+                if e:
+                    emails = [e]
+            out.append({"name": name, "phones": phones, "emails": emails})
     return out
 
 
-# ---------------------------------------------------------------- resolved CSV
-def write_resolved(path, recs):
+# ---------------------------------------------------------------- resolved CSV (write boundary)
+def _is_surname_only(t):
+    """True if the lead was surfaced ONLY by surname/parcel match (no distress event) — the
+    owner-occupant failure mode. Forced to mail-only when the signal filter is on."""
+    return (t.get("provenance") or "").lower().startswith(SURNAME_PROVENANCE_PREFIXES)
+
+
+def write_resolved(path, recs, signal_filter=True):
+    """Write the import_resolved-schema CSV. Two write-boundary filters, both via dnc_status='do_not_call'
+    (sync_to_crm suppresses dialing but keeps the row + mailing address = mail-only):
+      DNC filter     — a flagged number is never written callable.
+      SIGNAL filter  — a SURNAME_ONLY lead (no distress signal) is mail-only regardless of clean numbers.
+    Only distress-signal leads with a clean number become callable. Returns (written, breakdown)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    written = 0
+    written = callable_ = mail_signal = mail_dnc = mail_nonum = 0
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=RESOLVED_COLS)
         w.writeheader()
         for t, res in recs:
-            ph = res["phones"]
-            if not ph and not res["emails"]:
+            phones, emails = res["phones"], res["emails"]
+            clean = [p for p in phones if not p.get("dnc")]
+            flagged = [p for p in phones if p.get("dnc")]
+            if signal_filter and _is_surname_only(t):
+                use, dnc_status, reason = (clean or flagged[:1]), "do_not_call", "surname"
+            elif clean:
+                use, dnc_status, reason = clean, "unchecked", "callable"
+            elif flagged:
+                use, dnc_status, reason = flagged[:1], "do_not_call", "dnc"
+            else:
+                use, dnc_status, reason = [], "unchecked", "nonum"
+            if not use and not emails:
                 continue
+            if reason == "callable":
+                callable_ += 1
+            elif reason == "surname":
+                mail_signal += 1
+            elif reason == "dnc":
+                mail_dnc += 1
+            else:
+                mail_nonum += 1
+            notes = {"callable": "distress: CALLABLE", "surname": "SURNAME_ONLY: no distress -> mail-only",
+                     "dnc": "DNC-flagged -> mail-only", "nonum": "no phone -> mail/email-only"}
             row = {c: "" for c in RESOLVED_COLS}
             row["lead_id"] = str(t["lead_id"])
             row["owner_name"] = t["owner_name"]
-            for i, p in enumerate(ph[:2], start=1):
+            for i, p in enumerate(use[:2], start=1):
                 row[f"phone_{i}"] = p["number"]
                 row[f"phone_{i}_type"] = p.get("type") or ""
                 row[f"phone_{i}_confidence"] = p.get("confidence") or ""
                 row[f"phone_{i}_source"] = "tracerfy"
-            row["email_1"] = res["emails"][0] if res["emails"] else ""
+            row["email_1"] = emails[0] if emails else ""
             row["verified_via"] = "tracerfy"
-            row["dnc_status"] = "do_not_call" if (ph and ph[0].get("dnc")) else "unchecked"
-            row["va_notes"] = "skip-trace via Tracerfy"
+            row["dnc_status"] = dnc_status
+            row["va_notes"] = f"skip-trace via Tracerfy (async); {notes[reason]}"
             w.writerow(row)
             written += 1
+    print(f"  write_resolved: {written} rows -> CALLABLE(distress+clean)={callable_} | "
+          f"mail-only: surname={mail_signal} dnc={mail_dnc} no-phone={mail_nonum}")
     return written
 
 
-# ---------------------------------------------------------------- main
-def main(limit=None, provenance=None, from_export=None, confirm_spend=False, dry_run=False):
-    key = (os.environ.get("TRACERFY_API_KEY") or "").strip()
-    ts = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+# ---------------------------------------------------------------- modes
+def _est(n):
+    credits = CREDITS_PER_TRACE.get(TRACERFY_TRACE_TYPE, 1)
+    return n * credits * COST_PER_CREDIT, credits
 
+
+def _select(provenance, limit):
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         conn.read_only = True
         with conn.cursor() as cur:
             cur.execute("set statement_timeout = 60000")
-            targets = select_targets(cur, provenance, limit)
+            return select_targets(cur, provenance, limit)
+
+
+def run_from_export(from_export, provenance, limit, ts, signal_filter=True):
+    if not os.path.exists(from_export):
+        sys.exit(f"no such export file: {from_export}")
+    targets = _select(provenance, limit)
     by_name = {}
     for t in targets:
         by_name.setdefault(_norm_name(t["owner_name"]), t)
-    print(f"qualified individual targets: {len(targets)} (provenance={provenance or 'ALL'}, limit={limit or 'none'})")
-
-    # MODE 1: export ingest
-    if from_export:
-        if not os.path.exists(from_export):
-            sys.exit(f"no such export file: {from_export}")
-        recs = []
-        for e in rows_from_export(from_export):
-            t = by_name.get(_norm_name(e["name"]))
-            if t and (e["phones"] or e["emails"]):
-                recs.append((t, {"phones": e["phones"], "emails": e["emails"]}))
-        out = os.path.join(OUT_DIR, f"tracerfy_resolved_{ts}.csv")
-        n = write_resolved(out, recs)
-        print(f"export ingest: matched={len(recs)} resolved_written={n} -> {out}")
-        if n and not dry_run:
-            import_resolved.run(out)
-        return
-
-    # MODE 3: no key -> NO-SPEND targets export
-    if not key:
-        out = os.path.join(OUT_DIR, f"tracerfy_targets_{ts}.csv")
-        os.makedirs(OUT_DIR, exist_ok=True)
-        with open(out, "w", newline="") as f:
-            w = csv.writer(f, lineterminator="\n")
-            w.writerow(["lead_id", "owner_name", "mailing_address", "mailing_city",
-                        "mailing_state", "mailing_zip", "situs_address", "county_fips", "provenance"])
-            for t in targets:
-                w.writerow([t["lead_id"], t["owner_name"], t["owner_mailing_address"],
-                            t["owner_mailing_city"], t["owner_mailing_state"], t["owner_mailing_zip"],
-                            t["situs_address"], t["county_fips"], t["provenance"]])
-        print(f"\nNO-SPEND MODE — TRACERFY_API_KEY not set (run blocked on key, by design). "
-              f"Wrote {len(targets)} targets -> {out}")
-        print(f"  Arm: set TRACERFY_API_KEY then re-run (est ~${len(targets)*COST_PER_MATCH:.2f} "
-              f"at ${COST_PER_MATCH}/match, misses free, ${BATCH_CAP_USD:.0f} cap).")
-        return
-
-    # MODE 2: armed API
-    worst = len(targets) * COST_PER_MATCH
-    if worst > BATCH_CAP_USD and not confirm_spend:
-        sys.exit(f"STOP — Tracerfy ARMED; up to ${worst:.2f} for {len(targets)} matches, over the "
-                 f"${BATCH_CAP_USD:.0f} cap. Re-run with --confirm-spend (or --limit) to proceed.")
-    if dry_run:
-        print(f"DRY-RUN — would call Tracerfy for {len(targets)} targets (~${worst:.2f}). No calls.")
-        return
-    recs, hits, errors = [], 0, 0
-    for t in targets:
-        try:
-            res = _api_call(t, key)
-        except SystemExit as e:
-            print(f"  STOP source on error: {e}")
-            errors += 1
-            break                       # rate-limit/contract error -> stop the source
-        recs.append((t, res))
-        if res["phones"]:
-            hits += 1
-        print(f"  {str(t['lead_id'])[:8]}…  {t['owner_name'][:30]:<30} phones={len(res['phones'])} emails={len(res['emails'])}")
+    recs = []
+    for e in rows_from_export(from_export):
+        t = by_name.get(_norm_name(e["name"]))
+        if t and (e["phones"] or e["emails"]):
+            recs.append((t, {"phones": e["phones"], "emails": e["emails"]}))
     out = os.path.join(OUT_DIR, f"tracerfy_resolved_{ts}.csv")
-    n = write_resolved(out, recs)
-    rate = f"{hits}/{len(recs)} ({100*hits/len(recs):.0f}%)" if recs else "0/0"
-    print(f"\ntracerfy API: looked_up={len(recs)} hits={hits} hit_rate={rate} resolved_written={n} "
-          f"errors={errors} est_spend=${hits*COST_PER_MATCH:.2f} (misses free)")
+    n = write_resolved(out, recs, signal_filter=signal_filter)
+    print(f"export ingest ($0): matched={len(recs)} resolved_written={n} -> {out}")
     if n:
         import_resolved.run(out)
-    print("Next: python -m scripts.sync_to_crm (project callable phones; DNC suppressed at the boundary).")
+
+
+def run_dry(targets):
+    worst, credits = _est(len(targets))
+    print("DRY-RUN (no network, no spend):")
+    print(f"  would trace : {len(targets)} named-individual records")
+    print(f"  transport   : multipart/form-data, file field 'csv_file' -> POST {TRACERFY_BASE}/trace/")
+    print(f"  csv headers : {CSV_HEADERS}")
+    print(f"  column map  : {json.dumps(TRACE_COLUMN_MAP)}")
+    print(f"  trace_type  : {TRACERFY_TRACE_TYPE!r} ({credits} credit/lead)")
+    print(f"  est cost    : {len(targets)} x {credits} x ${COST_PER_CREDIT} = ${worst:.2f} (misses free)")
+    print(f"  DNC         : OFF by default — separate ~${COST_PER_CREDIT}/PHONE charge (enable with --dnc)")
+    if targets:
+        print(f"  example row : {json.dumps(build_trace_row(targets[0]))}")
+    if worst > BATCH_CAP_USD:
+        print(f"  NOTE: ${worst:.2f} exceeds the ${BATCH_CAP_USD:.0f} soft cap — --batch still needs --confirm.")
+    if not (os.environ.get("TRACERFY_API_KEY") or "").strip():
+        print("  NOTE: TRACERFY_API_KEY not loaded — --probe/--batch will refuse until it is set in .env.")
+
+
+def run_probe(targets, key):
+    if not targets:
+        sys.exit("no targets to probe.")
+    t0 = targets[0]
+    print(f"PROBE — tracing EXACTLY 1 record (lead {str(t0['lead_id'])[:8]}…, ~${COST_PER_CREDIT}, "
+          f"trace_type={TRACERFY_TRACE_TYPE!r}). DNC not exercised (separate per-phone billing).")
+    try:
+        qid, raw = submit_trace([t0], key)
+    except TracerfyError as ex:
+        sys.exit(f"PROBE /trace/ failed: {ex}")
+    print(f"  queue_id={qid}   raw POST response: {json.dumps(raw)[:600]}")
+    try:
+        results = poll_queue(qid, key)
+    except TracerfyError as ex:
+        sys.exit(f"PROBE /queue/ failed: {ex}")
+    print(f"  /queue/ returned {len(results)} record(s):")
+    for r in results[:3]:
+        print(f"    raw      : {json.dumps(r)[:500]}")
+        print(f"    contacts : {json.dumps(result_to_contacts(r))}")
+    print("PROBE COMPLETE — confirm the result fields above map cleanly; then run --batch --confirm "
+          "(add --dnc only when you want the separate per-phone DNC spend).")
+
+
+def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None, signal_filter=True):
+    worst, credits = _est(len(targets))
+    if not confirm:
+        sys.exit(f"STOP — --batch is GATED. Re-run with --confirm to authorize up to ${worst:.2f} for "
+                 f"{len(targets)} matches at {credits} credit/lead (misses free).")
+    if not targets:
+        sys.exit("no targets to trace.")
+    if worst > BATCH_CAP_USD:
+        print(f"WARNING — ${worst:.2f} exceeds the ${BATCH_CAP_USD:.0f} soft cap, proceeding on --confirm.")
+    dnc_label = f"ON (+~${COST_PER_CREDIT}/phone, separate spend)" if do_dnc else "OFF"
+    print(f"BATCH — tracing {len(targets)} records (worst case ${worst:.2f}); DNC={dnc_label}.")
+    dnc_budget = max(0.0, HARD_CAP_USD - worst - 0.50)   # leave headroom for the probe + any overage
+    try:
+        recs, stats = trace_pool(targets, key, do_dnc=do_dnc, dnc_budget_usd=dnc_budget,
+                                  resume_queue_id=resume_queue_id)
+    except TracerfyError as ex:
+        sys.exit(f"BATCH STOPPED (no partial fabrication): {ex}")
+    out = os.path.join(OUT_DIR, f"tracerfy_resolved_{ts}.csv")
+    n = write_resolved(out, recs, signal_filter=signal_filter)
+    with_contact = sum(1 for _, c in recs if c["phones"] or c["emails"])
+    print(f"\ntracerfy BATCH: submitted={stats['submitted']} results={stats['results']} "
+          f"with_contact={with_contact} resolved_written={n} dnc_scrubbed={stats['dnc_scrubbed']} -> {out}")
+    if stats.get("dnc_note"):
+        print(f"  DNC: {stats['dnc_note']}")
+    if n:
+        import_resolved.run(out)
+    print("Next: python -m scripts.sync_to_crm (projects callable phones; DNC suppressed at the boundary).")
+
+
+def main(mode="dry-run", limit=None, provenance=None, from_export=None, confirm=False, do_dnc=False,
+         resume_queue_id=None, signal_filter=True):
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if from_export:
+        run_from_export(from_export, provenance, limit, ts, signal_filter=signal_filter)
+        return
+    targets = _select(provenance, limit)
+    print(f"qualified named-individual targets: {len(targets)} "
+          f"(provenance={provenance or 'ALL'}, limit={limit or 'none'})")
+    if mode == "dry-run":
+        run_dry(targets)
+        return
+    key = (os.environ.get("TRACERFY_API_KEY") or "").strip()
+    if not key:
+        sys.exit("STOP — TRACERFY_API_KEY not set (loaded from .env via app.config). Cannot probe/batch.")
+    if mode == "probe":
+        run_probe(targets, key)
+    elif mode == "batch":
+        run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=resume_queue_id,
+                  signal_filter=signal_filter)
+    else:
+        sys.exit(f"unknown mode: {mode}")
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Tracerfy skip-trace -> import_resolved rail (additive, live vendor)")
-    ap.add_argument("--limit", type=int)
+    ap = argparse.ArgumentParser(
+        description="Tracerfy async skip-trace -> import_resolved rail (additive, live vendor)")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--dry-run", action="store_const", dest="mode", const="dry-run",
+                   help="select + plan + cost; ZERO network, ZERO spend (default)")
+    g.add_argument("--probe", action="store_const", dest="mode", const="probe",
+                   help="trace EXACTLY 1 record (~$0.02) to lock the request + response shapes")
+    g.add_argument("--batch", action="store_const", dest="mode", const="batch",
+                   help="trace the full qualified pool (REQUIRES --confirm)")
+    ap.set_defaults(mode="dry-run")
+    ap.add_argument("--confirm", action="store_true", help="required with --batch to authorize spend")
+    ap.add_argument("--confirm-spend", action="store_true", dest="confirm", help=argparse.SUPPRESS)
+    ap.add_argument("--dnc", action="store_true",
+                    help="also run the DNC scrub (SEPARATE ~$0.02/phone spend; off by default)")
+    ap.add_argument("--limit", type=int, help="scope to the first N targets")
     ap.add_argument("--provenance", help="scope to one provenance")
-    ap.add_argument("--from-export", help="ingest a Tracerfy export CSV instead of calling the API")
-    ap.add_argument("--confirm-spend", action="store_true", help="authorize a batch over the cap")
-    ap.add_argument("--dry-run", action="store_true", help="select + preview; no API, no writes")
+    ap.add_argument("--from-export", help="ingest a Tracerfy web-export CSV instead of calling the API ($0)")
+    ap.add_argument("--resume-queue", type=int,
+                    help="poll an existing trace queue_id instead of a new /trace/ submit (recover a paid "
+                         "batch after a crash — no re-trace spend)")
+    ap.add_argument("--no-signal-filter", action="store_false", dest="signal_filter",
+                    help="disable the owner-occupant doctrine (let SURNAME_ONLY leads be callable); "
+                         "by default surname-only leads are forced to mail-only")
     a = ap.parse_args()
-    main(limit=a.limit, provenance=a.provenance, from_export=a.from_export,
-         confirm_spend=a.confirm_spend, dry_run=a.dry_run)
+    main(mode=a.mode, limit=a.limit, provenance=a.provenance, from_export=a.from_export,
+         confirm=a.confirm, do_dnc=a.dnc, resume_queue_id=a.resume_queue, signal_filter=a.signal_filter)
