@@ -271,6 +271,9 @@ def main(dry_run: bool = False) -> None:
                 pm_dict["owner_out_of_state"] = bool(st) and st != "IN"
             pm = Jsonb(pm_dict) if pm_dict else None
             disc_addr = r["situs_address"] if is_disc else None
+            # FIX-1 (2026-07-01): discovered rows minted name-less get their enriched
+            # owner_name projected on UPDATE too (INSERT-only projection left 174 blank)
+            disc_owner = r["owner_name"] if is_disc else None
             # typed, sortable: amount_owed + assessed_total also as numeric cols (kept in pm too)
             owed = pm_dict["amount_owed"] if pm_dict else None
             assessed = pm_dict["assessed_total"] if pm_dict else None
@@ -296,6 +299,7 @@ def main(dry_run: bool = False) -> None:
                      score_owner = %s, score_distress = %s,
                      score_arbitrage = %s, score_signals = %s,
                      emerging_score = %s, emerging_signals = %s,
+                     owner_name = coalesce(%s, owner_name),
                      situs_address = coalesce(%s, situs_address),
                      parcel_meta = coalesce(%s, parcel_meta),
                      amount_owed = coalesce(%s, amount_owed),
@@ -308,7 +312,7 @@ def main(dry_run: bool = False) -> None:
                  s_owner, s_distress, s_arb, s_signals,
                  r["emerging_score"],
                  Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
-                 disc_addr, pm, owed, assessed,
+                 disc_owner, disc_addr, pm, owed, assessed,
                  Jsonb(brief), r["lead_id"]))
             if cur.rowcount == 0:
                 # The curated set stays UPDATE-only. The ONE exception: the 'discovered' intake
