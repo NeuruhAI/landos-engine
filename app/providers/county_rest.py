@@ -44,7 +44,10 @@ class CountyRESTProvider(ParcelProvider):
             raise ProviderUnavailable(f"county REST error: {e}") from e
 
     def _query(self, cfg: dict, where: str) -> List[dict]:
-        params = {"where": where, "outFields": "*", "f": "json", "resultRecordCount": 25}
+        # geometry requested in WGS84 so parcels carry their own centroid —
+        # enriched-without-coords is a half-harvest we would re-fetch later
+        params = {"where": where, "outFields": "*", "f": "json", "resultRecordCount": 25,
+                  "returnGeometry": "true", "outSR": 4326}
         data = self._http(cfg, params)
         if isinstance(data.get("error"), dict) and "agination" in str(data["error"].get("message", "")):
             # classic MapServer layers (e.g. Allegan) reject resultRecordCount
@@ -52,7 +55,24 @@ class CountyRESTProvider(ParcelProvider):
             data = self._http(cfg, params)
         if "error" in data:
             raise ProviderUnavailable(f"county REST API error: {data['error']}")
-        return [f.get("attributes", {}) for f in data.get("features", [])]
+        return data.get("features", [])
+
+    @staticmethod
+    def _centroid(geom):
+        """Mean of the outer-ring vertices (WGS84) — parcel-pin precision, the
+        same grade the 4b parcel-centroid geocode used. None when no geometry."""
+        try:
+            ring = (geom or {}).get("rings", [[]])[0]
+            pts = ring[:-1] if len(ring) > 1 and ring[0] == ring[-1] else ring
+            if not pts:
+                return (None, None)
+            lng = sum(p[0] for p in pts) / len(pts)
+            lat = sum(p[1] for p in pts) / len(pts)
+            if -90 <= lat <= 90 and -180 <= lng <= 180:
+                return (round(lat, 7), round(lng, 7))
+        except (TypeError, IndexError, ZeroDivisionError):
+            pass
+        return (None, None)
 
     @staticmethod
     def _attr(attrs: dict, cfg: dict, field_key: str):
@@ -63,7 +83,9 @@ class CountyRESTProvider(ParcelProvider):
             return None
         return str(attrs[f]).strip() or None
 
-    def _to_parcel(self, county_fips: str, cfg: dict, attrs: dict) -> ParcelDict:
+    def _to_parcel(self, county_fips: str, cfg: dict, feature: dict) -> ParcelDict:
+        attrs = feature.get("attributes", {})
+        lat, lng = self._centroid(feature.get("geometry"))
         raw_apn = (str(attrs.get(cfg["apn_field"]) or "").strip() or None)
         prefix = cfg.get("apn_prefix") or ""
         # return the CANONICAL county APN (strip the layer-only prefix) so
@@ -82,6 +104,8 @@ class CountyRESTProvider(ParcelProvider):
             "situs_city": self._attr(attrs, cfg, "situs_city_field"),
             "situs_state": self._attr(attrs, cfg, "situs_state_field"),
             "situs_zip": self._attr(attrs, cfg, "situs_zip_field"),
+            "situs_lat": lat,
+            "situs_lng": lng,
             "provenance": f"county_rest:{cfg['url']}",
             "raw_meta": {"county_rest_attributes": attrs},
         }

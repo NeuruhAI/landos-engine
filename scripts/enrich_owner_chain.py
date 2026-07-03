@@ -49,6 +49,18 @@ COHORT = """
     order by county_fips, parcel_apn
 """
 
+# --coords-only: rows ALREADY owner-enriched but still coordless (the pre-centroid
+# A2 harvest) — re-lookup for geometry only; owner fields are never touched.
+COHORT_COORDS = """
+    select lead_id, county_fips, parcel_apn,
+           raw_meta->>'sev' as ts_sev, raw_meta->>'property_type' as ts_prop
+    from landos.owner_leads
+    where tenant_id = %s and provenance = %s
+      and owner_name is not null and situs_lat is null
+      and county_fips = any(%s)
+    order by county_fips, parcel_apn
+"""
+
 WRITE = """
     update landos.owner_leads
     set owner_name = %(owner_name)s,
@@ -58,8 +70,16 @@ WRITE = """
         owner_mailing_state = %(mail_state)s,
         owner_mailing_zip = %(mail_zip)s,
         situs_address = coalesce(situs_address, %(situs)s),
+        situs_lat = coalesce(situs_lat, %(lat)s),
+        situs_lng = coalesce(situs_lng, %(lng)s),
         updated_at = now()
     where lead_id = %(lead_id)s and owner_name is null
+"""
+
+WRITE_COORDS = """
+    update landos.owner_leads
+    set situs_lat = %(lat)s, situs_lng = %(lng)s, updated_at = now()
+    where lead_id = %(lead_id)s and situs_lat is null
 """
 
 
@@ -84,7 +104,7 @@ def _pick(results, apn):
     return exact[0], "hit"
 
 
-def main(samples=None, batch=False, county=None):
+def main(samples=None, batch=False, county=None, coords_only=False):
     counties = sorted(f for f, c in COUNTY_REST_ENDPOINTS.items() if c.get("verified"))
     if county:
         counties = [f for f in counties if f == county]
@@ -93,13 +113,15 @@ def main(samples=None, batch=False, county=None):
 
     chain = ParcelProviderChain(TENANT)
     stats = {f: {"attempted": 0, "hit": 0, "miss": 0, "ambiguous": 0, "unavailable": 0,
-                 "mail": 0, "situs": 0, "entity": 0, "govt": 0} for f in counties}
+                 "mail": 0, "situs": 0, "coords": 0, "entity": 0, "govt": 0} for f in counties}
 
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
-        cur.execute(COHORT, (TENANT, PROVENANCE, counties))
+        cur.execute(COHORT_COORDS if coords_only else COHORT, (TENANT, PROVENANCE, counties))
         rows = cur.fetchall()
         per_county_seen = {f: 0 for f in counties}
         mode = f"samples={samples}" if samples else ("BATCH" if batch else "dry-run")
+        if coords_only:
+            mode += " coords-only"
         print(f"enrich_owner_chain [{mode}] — cohort rows selected: {len(rows)} across {counties}")
 
         for r in rows:
@@ -132,14 +154,24 @@ def main(samples=None, batch=False, county=None):
                 st["mail"] += 1
             if parcel.get("situs_address"):
                 st["situs"] += 1
+            if parcel.get("situs_lat") is not None:
+                st["coords"] += 1
 
             if samples:
                 print(f"  [{f}] {r['parcel_apn']}")
                 print(f"      layer: owner={owner!r} [{otype}] mail={parcel.get('owner_mailing_address')!r}, "
                       f"{parcel.get('owner_mailing_city')!r} {parcel.get('owner_mailing_state')!r} "
                       f"{parcel.get('owner_mailing_zip')!r} situs={parcel.get('situs_address')!r} "
+                      f"latlng=({parcel.get('situs_lat')},{parcel.get('situs_lng')}) "
                       f"| {_layer_evidence(parcel)}")
                 print(f"      ours : sev={r['ts_sev']!r} prop={(r['ts_prop'] or '')[:70]!r}")
+            elif batch and coords_only:
+                if parcel.get("situs_lat") is not None:
+                    cur.execute(WRITE_COORDS, {
+                        "lat": parcel.get("situs_lat"),
+                        "lng": parcel.get("situs_lng"),
+                        "lead_id": r["lead_id"],
+                    })
             elif batch:
                 cur.execute(WRITE, {
                     "owner_name": owner,
@@ -149,6 +181,8 @@ def main(samples=None, batch=False, county=None):
                     "mail_state": parcel.get("owner_mailing_state"),
                     "mail_zip": parcel.get("owner_mailing_zip"),
                     "situs": parcel.get("situs_address"),
+                    "lat": parcel.get("situs_lat"),
+                    "lng": parcel.get("situs_lng"),
                     "lead_id": r["lead_id"],
                 })
             time.sleep(SPACING_S)
@@ -165,7 +199,8 @@ def main(samples=None, batch=False, county=None):
             continue
         print(f"  {f}: attempted={s['attempted']} hit={s['hit']} miss={s['miss']} "
               f"ambiguous={s['ambiguous']} unavailable={s['unavailable']} | "
-              f"mail={s['mail']} situs={s['situs']} entity={s['entity']} govt={s['govt']}")
+              f"mail={s['mail']} situs={s['situs']} coords={s['coords']} "
+              f"entity={s['entity']} govt={s['govt']}")
     if not batch:
         print("dry-run/samples — NO writes. Re-run with --batch to write.")
 
@@ -175,5 +210,7 @@ if __name__ == "__main__":
     ap.add_argument("--samples", type=int, help="verify N per county (read-only, evidence columns)")
     ap.add_argument("--batch", action="store_true", help="write owner fields to landos.owner_leads")
     ap.add_argument("--county", help="scope to one county_fips")
+    ap.add_argument("--coords-only", action="store_true", dest="coords_only",
+                    help="backfill situs_lat/lng for already-enriched coordless rows (owner fields untouched)")
     args = ap.parse_args()
-    main(samples=args.samples, batch=args.batch, county=args.county)
+    main(samples=args.samples, batch=args.batch, county=args.county, coords_only=args.coords_only)

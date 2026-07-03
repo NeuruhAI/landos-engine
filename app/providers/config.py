@@ -18,6 +18,8 @@ PARCEL_PROVIDER_CHAIN = {
     "26021": ["county_rest"],
     "26005": ["county_rest"],
     "26027": ["county_rest"],
+    "26075": ["county_rest"],
+    "26121": ["county_rest"],
 }
 
 # ---- tier 1: county REST endpoints --------------------------------------------
@@ -104,6 +106,56 @@ COUNTY_REST_ENDPOINTS = {
         "verified": True,
         "note": "county_parcels hosted layer; Parcel_Num = canonical APN verbatim; SEV/Legal available for audit.",
     },
+    # Jackson County, MI — county ArcGIS Enterprise. VERIFIED 2026-07-03 (3/3
+    # samples, PRE-VESTING roll: HARBY ANTHONY A & JEAN V / JOHNSON TRAVIS /
+    # P NINE REAL ESTATE LLC — real individuals+entities, not the treasurer).
+    # PIN = canonical APN verbatim (incl. leading '000-').
+    "26075": {
+        "url": "https://gis.mijackson.org/countygis/rest/services/RealEstate/RealEstateParcels/FeatureServer/0/query",
+        "apn_field": "PIN",
+        "owner_field": "OWNER",
+        "owner2_field": "OWNER2",
+        "mail_street_field": "O_ADDRESS",
+        "mail_city_field": "O_CITY",
+        "mail_state_field": "O_STATE",
+        "mail_zip_field": "O_ZIP",
+        "situs_street_field": "P_FULLADD",
+        "situs_city_field": "P_CITY",
+        "situs_state_field": "P_STATE",
+        "situs_zip_field": "P_ZIP",
+        "verified": True,
+        "note": "RealEstateParcels L0; PIN verbatim; situs P_FULLADD can be 'RD V/L' style (vacant).",
+    },
+    # Muskegon County, MI — county ArcGIS 10.91, PropertyViewer/MapServer
+    # layer 25 'Parcels - LS' (layer 20 is a group wrapper; 23/24/25 are the
+    # real scale variants). VERIFIED 2026-07-03 (3/3 samples): MIXED/partially
+    # VESTED roll — 1/3 'COUNTY OF MUSKEGON TREASURER', 2/3 individuals (both
+    # out-of-state absentees). classify_owner_type gates treasurer rows to
+    # govt; NOT a uniform treasurer-roll stop. PIN carries '61-' county code;
+    # PIN_No_Cnty = canonical APN verbatim (use it — no prefix round-trip).
+    "26121": {
+        "url": "https://maps.muskegoncountygis.com/arcgis/rest/services/PropertyViewer/MapServer/25/query",
+        "apn_field": "PIN_No_Cnty",
+        "owner_field": "Owner_Name1",
+        "owner2_field": "Owner_Name2",
+        "mail_street_field": "Owner_Address",
+        "mail_city_field": "Owner_Address_City",
+        "mail_state_field": "Owner_Address_State",
+        "mail_zip_field": "Owner_Address_ZipCode",
+        "situs_street_field": "Property_Address_Combined",
+        "situs_city_field": "Property_Address_City",
+        "situs_state_field": "Property_Address_State",
+        "situs_zip_field": "Property_Address_ZipCode",
+        "verified": True,
+        "note": "MapServer 10.91 (pagination degrade applies); SEV field State_Equalized_Value for audit.",
+    },
+    # Antrim County, MI (26009): PAID-GATE STOP 2026-07-03 — AGOL
+    # AllParcels_shp (services6/ZcCP0G3kEnUDVego) is a TREASURER ROLL: 3/3
+    # cohort samples returned 'ANTRIM COUNTY TREASURER' (title vested; the
+    # delinquent-owner names are not in this layer). Per operator ruling a
+    # treasurer-roll county is a paid-gate stop, not a workaround. If ever
+    # revisited: PARCEL_NO carries the full canonical APN (PARCELCODE is a
+    # fragment); owner/mailing/situs/SEV fields exist but name the FGU.
     # Van Buren County, MI (26159): NO FREE SOURCE (STEP-2d stop, 2026-07-01).
     # County portal is MangoMap (API tier returns 402/payment-disabled), BS&A
     # owner search sits behind a login wall, no county/AGOL REST found. The 29
