@@ -46,6 +46,20 @@ class EvaluateRequest(BaseModel):
     arbitrage: ArbitrageInputs = ArbitrageInputs()
 
 
+class LandDDRequest(BaseModel):
+    """NVE-LAND due-diligence input. Tolerant of the CRM proxy body
+    ({lead_id, parcel_apn, county_fips, lat, lng}) and the terse {apn, county_fips}.
+    All optional: a lead with only coords (no APN) resolves via a county point-lookup."""
+    county_fips: Optional[str] = None
+    parcel_apn: Optional[str] = None
+    apn: Optional[str] = None            # alias for parcel_apn
+    lead_id: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    tenant_id: Optional[str] = None
+    samples: int = 6                     # interior sample points per geo feed (flood/wetland/slope)
+
+
 class ClaimRequest(BaseModel):
     tenant_id: str
     node_id: str
