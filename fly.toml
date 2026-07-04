@@ -1,0 +1,31 @@
+# Fly.io config for the LandOS Engine. Durable, always-on host so the CRM (Vercel)
+# can reach POST /land-dd (and the rest of the REST API) at a stable HTTPS URL.
+# `app` is a placeholder — `fly launch` will set/confirm the real app name.
+app = "landos-engine"
+primary_region = "iad"          # us-east — co-located with the Supabase project (aws-1-us-east-1)
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # ALWAYS-ON: never cold-start. The CRM calls /land-dd with a 30s timeout — a spun-down
+  # machine would blow that budget. Keep one machine warm.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
