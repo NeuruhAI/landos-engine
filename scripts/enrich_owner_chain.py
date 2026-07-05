@@ -22,13 +22,34 @@ Modes:
 Counties come from COUNTY_REST_ENDPOINTS (verified=True rows only — the provider refuses
 unverified mappings). Van Buren 26159 has no free source (STEP-2d stop) and is absent.
 Polite: >=1.2s between chain calls, provider sends the honest engine UA. Match discipline:
-exact canonical-APN equality; 0 hits = miss (stays NULL), >1 = ambiguous (skipped, counted).
+CANONICAL-APN equality (separators/case stripped — the statewide layers disagree with our
+stored spelling on dashes/spaces); 0 hits = miss (stays NULL), >1 = ambiguous (skipped).
+
+ENRICH-1 (2026-07-05) additions:
+  * THE VINTAGE-CAPTURE GUARD (doctrine as code): a hit whose owner matches
+    TREASURER|COUNTY OF|CITY OF|STATE OF|LAND BANK|FORFEIT is a VESTED/government roll
+    entry, not the delinquent owner we want — it is NEVER written to owner_name. The row
+    gets vintage_needed=true (mig 016) and the vested name + roll mailing stowed under
+    raw_meta->'vintage' for the later paid vintage capture. Human/entity names write
+    normally.
+  * dirty-APN cleaning: 'Part of 12-410-004-00 (B)' queries the parent parcel (the
+    county roll bills that APN); multi-APN strings query the FIRST parcel; 'TBD'
+    placeholders are counted no_apn and skipped.
+  * separator VARIANTS on miss (as-is, dashes<->spaces, stripped) — the query form that
+    hit is stowed with the row's cache entry.
+  * raw responses cached to ~/models/provenance/enrich_owner_cache/<fips>.json
+    (re-inspectable, re-runs reproducible).
 """
 import argparse
+import json
+import os
+import re
 import time
+from datetime import date
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from app.config import DATABASE_URL
 from app.providers.chain import ParcelProviderChain
@@ -39,12 +60,59 @@ TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 PROVENANCE = "discovered_taxsale"
 SPACING_S = 1.2
 
+# ENRICH-1 doctrine pattern — verbatim from the directive. A vested/government
+# roll name never lands in owner_name; the row is flagged for vintage capture.
+VINTAGE_RE = re.compile(r"TREASURER|COUNTY OF|CITY OF|STATE OF|LAND BANK|FORFEIT", re.I)
+CACHE_DIR = os.path.expanduser("~/models/provenance/enrich_owner_cache")
+
+
+def canon_apn(s):
+    """Canonical APN key — alphanumerics only, uppercase (separator/case-immune)."""
+    return re.sub(r"[^A-Za-z0-9]", "", str(s or "")).upper()
+
+
+def clean_apn(raw):
+    """Query-able parcel number from a stored parcel_apn that may be decorated.
+    'Part of 12-410-004-00 (B)' -> '12-410-004-00' (the county roll bills the parent
+    parcel; its owner-of-record IS the delinquent taxpayer). Two APNs in one string ->
+    the FIRST. 'Parcel ID is TBD ...' -> None (no parcel-shaped token; never guessed)."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    dashed = [t for t in re.findall(r"[0-9A-Za-z]+(?:-[0-9A-Za-z]+)+", s)
+              if sum(c.isdigit() for c in t) >= 6]
+    if re.fullmatch(r"[0-9A-Za-z .\-]+", s) and any(c.isdigit() for c in s):
+        # undecorated: either one APN verbatim (spaces may BE its separator style,
+        # e.g. Mecosta '11 180 122 000') or several dash-form APNs side by side
+        parts = s.split()
+        if len(dashed) >= 2 and all("-" in p for p in parts):
+            return dashed[0]
+        return s
+    if dashed:
+        return dashed[0]
+    return None
+
+
+def apn_variants(apn):
+    """Ordered query spellings: as-is first, then separator swaps, then stripped."""
+    a = (apn or "").strip()
+    if not a:
+        return []
+    out, seen = [], set()
+    for v in (a, a.replace("-", " "), a.replace(" ", "-"),
+              re.sub(r"[^0-9A-Za-z]", "", a)):
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
 COHORT = """
     select lead_id, county_fips, parcel_apn,
            raw_meta->>'sev' as ts_sev, raw_meta->>'property_type' as ts_prop
     from landos.owner_leads
     where tenant_id = %s and provenance = %s
       and owner_name is null
+      and not vintage_needed
       and county_fips = any(%s)
     order by county_fips, parcel_apn
 """
@@ -82,6 +150,20 @@ WRITE_COORDS = """
     where lead_id = %(lead_id)s and situs_lat is null
 """
 
+# VINTAGE GUARD write: owner_name deliberately NOT touched. The vested name +
+# roll mailing go under raw_meta->'vintage' (audit + input to the later paid
+# capture); parcel facts the roll DOES hold honestly (coords/situs) still land.
+WRITE_VINTAGE = """
+    update landos.owner_leads
+    set vintage_needed = true,
+        raw_meta = coalesce(raw_meta, '{}'::jsonb) || jsonb_build_object('vintage', %(vintage)s),
+        situs_address = coalesce(situs_address, %(situs)s),
+        situs_lat = coalesce(situs_lat, %(lat)s),
+        situs_lng = coalesce(situs_lng, %(lng)s),
+        updated_at = now()
+    where lead_id = %(lead_id)s and owner_name is null
+"""
+
 
 def _layer_evidence(parcel):
     """SEV/acres the county layer holds, for side-by-side audit vs tax-sale.info."""
@@ -93,8 +175,10 @@ def _layer_evidence(parcel):
 
 
 def _pick(results, apn):
-    """Exact canonical-APN match only. Returns (parcel|None, 'hit'|'miss'|'ambiguous')."""
-    exact = [r for r in results if (r.get("parcel_apn") or "").strip() == apn]
+    """CANONICAL-APN match only (separator/case-immune; still exact parcel identity).
+    Returns (parcel|None, 'hit'|'miss'|'ambiguous')."""
+    key = canon_apn(apn)
+    exact = [r for r in results if canon_apn(r.get("parcel_apn")) == key]
     if not exact:
         return None, "miss"
     if len(exact) > 1:
@@ -113,7 +197,9 @@ def main(samples=None, batch=False, county=None, coords_only=False):
 
     chain = ParcelProviderChain(TENANT)
     stats = {f: {"attempted": 0, "hit": 0, "miss": 0, "ambiguous": 0, "unavailable": 0,
+                 "no_apn": 0, "vintage": 0,
                  "mail": 0, "situs": 0, "coords": 0, "entity": 0, "govt": 0} for f in counties}
+    cache = {f: {} for f in counties}   # stored_apn -> raw evidence, flushed per county
 
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute(COHORT_COORDS if coords_only else COHORT, (TENANT, PROVENANCE, counties))
@@ -132,22 +218,76 @@ def main(samples=None, batch=False, county=None, coords_only=False):
             st = stats[f]
             st["attempted"] += 1
 
-            results = chain.lookup_by_apn(f, r["parcel_apn"])
-            if not results and chain.miss_is_retryable():
+            q_apn = clean_apn(r["parcel_apn"])
+            if not q_apn:
+                st["no_apn"] += 1
+                cache[f][r["parcel_apn"] or ""] = {"verdict": "no_apn"}
+                print(f"  NO-APN {f} {r['parcel_apn']!r} — nothing parcel-shaped to query")
+                continue
+
+            parcel, verdict, hit_form, results, unavailable = None, "miss", None, [], False
+            tried = apn_variants(q_apn)
+            for i, v in enumerate(tried):
+                if i:
+                    time.sleep(0.4)   # brief spacing between variant retries
+                results = chain.lookup_by_apn(f, v)
+                if not results and chain.miss_is_retryable():
+                    unavailable = True
+                    break
+                parcel, verdict = _pick(results, v)
+                if verdict != "miss":
+                    hit_form = v
+                    break
+            if unavailable:
                 st["unavailable"] += 1
                 print(f"  UNAVAILABLE {f} {r['parcel_apn']}  trail={chain.trail_str()}")
                 time.sleep(SPACING_S)
                 continue
-            parcel, verdict = _pick(results, r["parcel_apn"])
             st[verdict if verdict != "hit" else "hit"] += 1
 
             if verdict != "hit":
+                cache[f][r["parcel_apn"]] = {"verdict": verdict, "tried": tried}
                 print(f"  {verdict.upper()} {f} {r['parcel_apn']} ({len(results)} rows) trail={chain.trail_str()}")
                 time.sleep(SPACING_S)
                 continue
 
             owner = parcel.get("owner_name")
             otype = classify_owner_type(owner)
+            cache[f][r["parcel_apn"]] = {
+                "verdict": "hit", "queried": hit_form,
+                "attributes": (parcel.get("raw_meta") or {}).get("county_rest_attributes")}
+
+            # ---- THE VINTAGE-CAPTURE GUARD (ENRICH-1 doctrine as code) ----------
+            # A vested/government roll name NEVER lands in owner_name. Flag the row
+            # for paid vintage capture; stow the vested name + roll mailing for audit;
+            # parcel facts the roll holds honestly (coords/situs) still land.
+            if not coords_only and owner and VINTAGE_RE.search(owner):
+                st["vintage"] += 1
+                if parcel.get("situs_lat") is not None:
+                    st["coords"] += 1
+                vint = {
+                    "vested_owner": owner,
+                    "roll_mailing": {k: parcel.get(k) for k in
+                                     ("owner_mailing_address", "owner_mailing_city",
+                                      "owner_mailing_state", "owner_mailing_zip")
+                                     if parcel.get(k)},
+                    "source": parcel.get("provenance"),
+                    "queried_apn": hit_form,
+                    "captured_at": date.today().isoformat(),
+                }
+                if samples:
+                    print(f"  [{f}] {r['parcel_apn']}  VINTAGE-FLAGGED "
+                          f"(vested: {owner!r}) — owner_name NOT written")
+                elif batch:
+                    cur.execute(WRITE_VINTAGE, {
+                        "vintage": Jsonb(vint),
+                        "situs": parcel.get("situs_address"),
+                        "lat": parcel.get("situs_lat"),
+                        "lng": parcel.get("situs_lng"),
+                        "lead_id": r["lead_id"],
+                    })
+                time.sleep(SPACING_S)
+                continue
             if otype in ("entity", "govt"):
                 st[otype] += 1
             if parcel.get("owner_mailing_address"):
@@ -192,15 +332,34 @@ def main(samples=None, batch=False, county=None, coords_only=False):
         else:
             conn.rollback()
 
-    print("\n=== enrich_owner_chain summary ===")
+    # raw-response cache: best-effort, merge-on-write (re-runs accumulate), never fatal
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        for f, entries in cache.items():
+            if not entries:
+                continue
+            path = os.path.join(CACHE_DIR, f"{f}.json")
+            merged = {}
+            if os.path.exists(path):
+                with open(path) as fh:
+                    merged = (json.load(fh) or {}).get("entries", {})
+            merged.update(entries)
+            with open(path, "w") as fh:
+                json.dump({"county_fips": f, "updated": date.today().isoformat(),
+                           "entries": merged}, fh)
+    except (OSError, ValueError) as e:
+        print(f"  cache write skipped (never fatal): {e}")
+
+    print("\n=== enrich_owner_chain summary (found / government-flagged / miss) ===")
     for f in counties:
         s = stats[f]
         if not s["attempted"]:
             continue
-        print(f"  {f}: attempted={s['attempted']} hit={s['hit']} miss={s['miss']} "
-              f"ambiguous={s['ambiguous']} unavailable={s['unavailable']} | "
+        print(f"  {f}: attempted={s['attempted']} found={s['hit'] - s['vintage']} "
+              f"government_flagged={s['vintage']} miss={s['miss']} "
+              f"ambiguous={s['ambiguous']} unavailable={s['unavailable']} no_apn={s['no_apn']} | "
               f"mail={s['mail']} situs={s['situs']} coords={s['coords']} "
-              f"entity={s['entity']} govt={s['govt']}")
+              f"entity={s['entity']} govt_named={s['govt']}")
     if not batch:
         print("dry-run/samples — NO writes. Re-run with --batch to write.")
 

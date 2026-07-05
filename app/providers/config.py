@@ -20,6 +20,11 @@ PARCEL_PROVIDER_CHAIN = {
     "26027": ["county_rest"],
     "26075": ["county_rest"],
     "26121": ["county_rest"],
+    # ENRICH-1 statewide-MI cohort counties (2026-07-05): same $0-tier-only rationale.
+    "26009": ["county_rest"],
+    "26051": ["county_rest"],
+    "26077": ["county_rest"],
+    "26157": ["county_rest"],
 }
 
 # ---- tier 1: county REST endpoints --------------------------------------------
@@ -149,13 +154,74 @@ COUNTY_REST_ENDPOINTS = {
         "verified": True,
         "note": "MapServer 10.91 (pagination degrade applies); SEV field State_Equalized_Value for audit.",
     },
-    # Antrim County, MI (26009): PAID-GATE STOP 2026-07-03 — AGOL
-    # AllParcels_shp (services6/ZcCP0G3kEnUDVego) is a TREASURER ROLL: 3/3
-    # cohort samples returned 'ANTRIM COUNTY TREASURER' (title vested; the
-    # delinquent-owner names are not in this layer). Per operator ruling a
-    # treasurer-roll county is a paid-gate stop, not a workaround. If ever
-    # revisited: PARCEL_NO carries the full canonical APN (PARCELCODE is a
-    # fragment); owner/mailing/situs/SEV fields exist but name the FGU.
+    # Antrim County, MI — AGOL AllParcels_shp. TREASURER ROLL (3/3 samples
+    # 'ANTRIM COUNTY TREASURER', re-confirmed 2026-07-05): the 2026-07-03
+    # paid-gate-stop ruling is SUPERSEDED by the ENRICH-1 vintage-capture
+    # doctrine — the endpoint now serves so those rows get vintage_needed=true
+    # (never a treasurer name in owner_name) + coords/situs the roll holds
+    # honestly. O_ADDRESS often still carries a PRE-vesting mailing address —
+    # stowed in raw_meta->'vintage'->'roll_mailing' for the paid capture.
+    "26009": {
+        "url": "https://services6.arcgis.com/ZcCP0G3kEnUDVego/arcgis/rest/services/AllParcels_shp/FeatureServer/0/query",
+        "apn_field": "PARCEL_NO",
+        "owner_field": "OWNER_NAME",
+        "owner2_field": "OWNER_NAM2",
+        "mail_street_field": "O_ADDRESS",
+        "mail_city_field": "O_CITY",
+        "mail_state_field": "O_STATE",
+        "mail_zip_field": "O_ZIP",
+        "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3 APNs; VESTED/treasurer roll -> vintage lane. PARCEL_NO = canonical APN verbatim.",
+    },
+    # Gladwin County, MI — AGOL Gladwin_County_Parcels. VERIFIED 2026-07-05
+    # 3/3 samples, PRE-VESTING roll (GREENE RONALD / LAND OF LAND INC /
+    # MARSHALL DEBRA — real owners, not the FGU). OwnerAdd_1 is a combined
+    # 'CITY ST ZIP' line — NOT componentized; city/state/zip left honest-NULL
+    # rather than parsed from guessed semantics (full line rides in raw_meta).
+    "26051": {
+        "url": "https://services.arcgis.com/edGXqVKidagzAIPB/arcgis/rest/services/Gladwin_County_Parcels/FeatureServer/0/query",
+        "apn_field": "ParcelNumb",
+        "owner_field": "OwnerName",
+        "mail_street_field": "OwnerAddre",
+        "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3; live roll; ParcelNumb = canonical APN verbatim; OwnerAdd_1 (city/st/zip combined) unmapped.",
+    },
+    # Kalamazoo County, MI — county-hosted ArcGIS Enterprise, Parcels (2025)
+    # view. VERIFIED 2026-07-05 2/3 samples (1 APN absent from layer), LIVE
+    # roll (HUDSON CARL J & PAULINE O / PEREZ MICHAEL F & AMANDA A). Field
+    # names are munged but consistent: onername1/onerstate/otaddress/orzipcode
+    # (owner) vs pcombined/presscity/pessstate/pdresszip (situs) — mapping
+    # confirmed against real response values (601 vs 602 COLLETTE AVE).
+    "26077": {
+        "url": "https://gis.kalcounty.com/server/rest/services/Hosted/Parcels__2025__view/FeatureServer/0/query",
+        "apn_field": "pelnumber",
+        "owner_field": "onername1",
+        "mail_street_field": "otaddress",
+        "mail_city_field": "ownercity",
+        "mail_state_field": "onerstate",
+        "mail_zip_field": "orzipcode",
+        "situs_street_field": "pcombined",
+        "situs_city_field": "presscity",
+        "situs_state_field": "pessstate",
+        "situs_zip_field": "pdresszip",
+        "verified": True,
+        "note": "VERIFIED 2026-07-05 2/3; live roll; pelnumber = canonical APN verbatim (munged field names are the layer's own).",
+    },
+    # Tuscola County, MI — AGOL TuscolaCountyParcelsCurrentYearAddresses L53.
+    # VERIFIED 2026-07-05 3/3 samples but TREASURER ROLL ('TUSCOLA COUNTY
+    # TREASURER' 3/3) -> vintage lane, same doctrine as Antrim.
+    "26157": {
+        "url": "https://services6.arcgis.com/FA2StDZ4LO95Cm3q/arcgis/rest/services/TuscolaCountyParcelsCurrentYearAddresses/FeatureServer/53/query",
+        "apn_field": "PIN",
+        "owner_field": "ownername1",
+        "owner2_field": "ownername2",
+        "mail_street_field": "ownerstreetaddr",
+        "mail_city_field": "ownercity",
+        "mail_state_field": "ownerstate",
+        "mail_zip_field": "ownerzip",
+        "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3; VESTED/treasurer roll -> vintage lane. PIN = canonical APN verbatim.",
+    },
     # Van Buren County, MI (26159): NO FREE SOURCE (STEP-2d stop, 2026-07-01).
     # County portal is MangoMap (API tier returns 402/payment-disabled), BS&A
     # owner search sits behind a login wall, no county/AGOL REST found. The 29
