@@ -39,6 +39,7 @@ SIGNALS = """
            raw_payload, status, matched_lead_id, signal_date
     from landos.discovery_signals
     where source_type = 'taxsale' and signal_class = 'temporal'
+      and (%(only_fips)s::text[] is null or county_fips = any(%(only_fips)s))
     order by parcel_apn
 """
 
@@ -68,12 +69,16 @@ def _num(v):
         return None
 
 
-def main(dry_run=False):
+def main(dry_run=False, only_fips=None):
+    """only_fips: optional list of county_fips to scope the mint (HUNT-V2 jobs mint
+    per-territory). Returns a stats dict either way — the CLI ignores it; the hunt
+    worker/mint consume it. CLI behavior with no args is byte-identical."""
     minted = skipped_conflict = signals_matched = rejected_stale = 0
     today = date.today()
     preview = []
+    per_county = {}
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
-        cur.execute(SIGNALS)
+        cur.execute(SIGNALS, {"only_fips": list(only_fips) if only_fips else None})
         signals = cur.fetchall()
         for s in signals:
             # FRESHNESS GATE (defense-in-depth): a consumed/past or already-resolved tax-sale
@@ -99,14 +104,17 @@ def main(dry_run=False):
                 "raw_meta": Jsonb(rp),
             }
             if dry_run:
-                preview.append((row["parcel_apn"], owner_name, row["owner_type"],
-                                row["land_use_class"], row["acreage"]))
+                preview.append((s["county_fips"], row["parcel_apn"], owner_name,
+                                row["owner_type"], row["land_use_class"], row["acreage"]))
                 continue
             cur.execute(MINT, row)
             got = cur.fetchone()
+            pc = per_county.setdefault(s["county_fips"],
+                                       {"minted": 0, "already_present": 0})
             if got:
                 lead_id = got["lead_id"]
                 minted += 1
+                pc["minted"] += 1
             else:
                 # parcel already an owner_lead — find it so the signal still matches (idempotent)
                 cur.execute("select lead_id from landos.owner_leads "
@@ -114,6 +122,7 @@ def main(dry_run=False):
                             (APG_TENANT, s["county_fips"], s["parcel_apn"]))
                 lead_id = cur.fetchone()["lead_id"]
                 skipped_conflict += 1
+                pc["already_present"] += 1
             # match the SOURCE signal to its lead — only if not already matched (re-run matches 0)
             if s["status"] != "matched" or s["matched_lead_id"] is None:
                 cur.execute("update landos.discovery_signals "
@@ -122,15 +131,29 @@ def main(dry_run=False):
                 signals_matched += cur.rowcount
 
         if dry_run:
+            # honest would_mint: probe existing (tenant, fips, apn) so a county
+            # that already minted reports already_present, never a phantom mint
+            for fips, apn, own, ot, luc, ac in preview:
+                cur.execute("select 1 from landos.owner_leads "
+                            "where tenant_id=%s and county_fips=%s and parcel_apn=%s",
+                            (APG_TENANT, fips, apn))
+                pc = per_county.setdefault(fips, {"would_mint": 0, "already_present": 0})
+                pc["already_present" if cur.fetchone() else "would_mint"] += 1
             conn.rollback()
-            print(f"\n=== MINT DRY-RUN — {len(preview)} would mint, {rejected_stale} rejected_stale "
-                  f"(freshness gate), NO writes ===")
-            for apn, own, ot, luc, ac in preview[:10]:
-                print(f"  {apn}  {own!r}  [{ot}]  {luc}  {ac} ac")
+            would = sum(c.get("would_mint", 0) for c in per_county.values())
+            present = sum(c.get("already_present", 0) for c in per_county.values())
+            print(f"\n=== MINT DRY-RUN — {would} would mint, {present} already present, "
+                  f"{rejected_stale} rejected_stale (freshness gate), NO writes ===")
+            for fips, apn, own, ot, luc, ac in preview[:10]:
+                print(f"  [{fips}] {apn}  {own!r}  [{ot}]  {luc}  {ac} ac")
             if len(preview) > 10:
                 print(f"  … +{len(preview) - 10} more")
             print("\nHARD STOP — dry-run only. Re-run without --dry-run to mint.")
-            return
+            return {"dry_run": True, "would_mint": would, "already_present": present,
+                    "rejected_stale": rejected_stale, "per_county": per_county,
+                    "preview": [{"county_fips": p[0], "parcel_apn": p[1], "owner_name": p[2],
+                                 "owner_type": p[3], "land_use_class": p[4], "acreage": p[5]}
+                                for p in preview]}
         conn.commit()
 
     print(f"\nmint summary: minted={minted} skipped_conflict={skipped_conflict} "
@@ -138,6 +161,9 @@ def main(dry_run=False):
           f"(tenant=APG, source={SOURCE_PREFIX!r}+county_fips, provenance={PROVENANCE!r}; freshness gate: only "
           f"upcoming/unresolved mint; situs / lat-lng / mailing / absentee / final_lead_score = honest NULL).")
     print("Next: `python -m scripts.score_emergence` then `python -m scripts.sync_to_crm`.")
+    return {"dry_run": False, "minted": minted, "skipped_conflict": skipped_conflict,
+            "signals_matched": signals_matched, "rejected_stale": rejected_stale,
+            "per_county": per_county}
 
 
 if __name__ == "__main__":
