@@ -48,6 +48,14 @@ from app.jarvis_brief import compose_brief
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 THRESHOLD = 0.6  # {{CONFIDENCE_THRESHOLD}} — same cutoff the importer validates
 
+# ENRICH-1 P1 (2026-07-05): owner_name projection uses the asset_class idiom —
+# EXISTING-FIRST coalesce. Enrichment fills blanks (NULL or '') and NEVER overwrites
+# a name already on the board (manually entered or previously projected). Deliberate
+# tradeoff: an engine-side name CORRECTION no longer propagates onto a board row that
+# already carries a name; blanks-only is the doctrine. Single source for the fragment
+# so the unit test exercises the exact SQL the sync runs.
+OWNER_NAME_PROJECTION_SQL = "owner_name = coalesce(nullif(owner_name, ''), %s)"
+
 # --- asset_class normalizer (moat boundary: fold any adapter's value to the canonical six) ---
 CANONICAL_ASSET_CLASSES = {"waterfront", "acreage", "vacant_land", "residential", "commercial", "unknown"}
 ASSET_CLASS_ALIASES = {
@@ -294,8 +302,10 @@ def main(dry_run: bool = False) -> None:
             pm = Jsonb(pm_dict) if pm_dict else None
             disc_addr = r["situs_address"] if is_disc else None
             # FIX-1 (2026-07-01): discovered rows minted name-less get their enriched
-            # owner_name projected on UPDATE too (INSERT-only projection left 174 blank)
-            disc_owner = r["owner_name"] if is_disc else None
+            # owner_name projected on UPDATE too (INSERT-only projection left 174 blank).
+            # ENRICH-1 P1: stripped-to-None so a whitespace-only engine value can never
+            # land on the board as a "name".
+            disc_owner = ((r["owner_name"] or "").strip() or None) if is_disc else None
             # typed, sortable: amount_owed + assessed_total also as numeric cols (kept in pm too)
             owed = pm_dict["amount_owed"] if pm_dict else None
             assessed = pm_dict["assessed_total"] if pm_dict else None
@@ -310,7 +320,7 @@ def main(dry_run: bool = False) -> None:
                 continue   # compose-only preview; no write
 
             cur.execute(
-                """update public.acquisition_leads set
+                f"""update public.acquisition_leads set
                      outreach_recipe = %s, controlling_human = %s,
                      commercial_agent_flag = %s, portfolio_hub = %s,
                      situs_lat = %s, situs_lng = %s,
@@ -320,7 +330,7 @@ def main(dry_run: bool = False) -> None:
                      score_owner = %s, score_distress = %s,
                      score_arbitrage = %s, score_signals = %s,
                      emerging_score = %s, emerging_signals = %s,
-                     owner_name = coalesce(%s, owner_name),
+                     {OWNER_NAME_PROJECTION_SQL},
                      situs_address = coalesce(%s, situs_address),
                      parcel_meta = coalesce(%s, parcel_meta),
                      amount_owed = coalesce(%s, amount_owed),
