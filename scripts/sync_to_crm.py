@@ -76,6 +76,28 @@ def normalize_asset_class(raw, *, source=None, parcel=None, logger=None):
     return "unknown"
 
 
+# Williamson TX (PDF-sourced) has no land-use code — it carries raw_meta->>'property_flag'
+# instead of ->>'asset_class'. Map it to the canonical six (operator-confirmed 2026-07-04).
+PROPERTY_FLAG_ASSET_CLASS = {
+    "land": "vacant_land", "land_improved": "vacant_land",
+    "mh_only": "residential", "mh_on_land": "residential",
+}
+
+
+def disc_asset_class_from_raw(raw_meta, parcel=None):
+    """Canonical asset_class for a discovered-tier lead. Prefers the native raw_meta->>'asset_class'
+    (MI tax-sale mint); falls back to raw_meta->>'property_flag' (Williamson TX). None if neither."""
+    rm = raw_meta or {}
+    native = rm.get("asset_class")
+    if native:
+        return normalize_asset_class(native, source="taxsale", parcel=parcel)
+    pf = str(rm.get("property_flag") or "").strip().lower()
+    mapped = PROPERTY_FLAG_ASSET_CLASS.get(pf)
+    if mapped:
+        return normalize_asset_class(mapped, source="taxsale_property_flag", parcel=parcel)
+    return None
+
+
 def hub_key(name: str) -> str:
     """'PETER S. COLOVOS' / 'Peter Colovos' -> 'PETER COLOVOS' (first+last,
     middle initials dropped) so registry spelling variants merge."""
@@ -281,8 +303,7 @@ def main(dry_run: bool = False) -> None:
             # Source today is raw_meta->>'asset_class' (the mint stows the true six there); when it
             # graduates to an owner_leads column, only this expression changes. Curated UPDATE path
             # is left untouched (those 136 have no tax-sale raw_meta -> would normalize to NULL anyway).
-            disc_asset_class = (normalize_asset_class((r["raw_meta"] or {}).get("asset_class"),
-                                                      source="taxsale", parcel=r["parcel_apn"])
+            disc_asset_class = (disc_asset_class_from_raw(r["raw_meta"], r["parcel_apn"])
                                 if is_disc else None)
 
             if dry_run:
@@ -304,6 +325,7 @@ def main(dry_run: bool = False) -> None:
                      parcel_meta = coalesce(%s, parcel_meta),
                      amount_owed = coalesce(%s, amount_owed),
                      assessed_total = coalesce(%s, assessed_total),
+                     asset_class = coalesce(asset_class, %s),
                      jarvis_brief = %s
                    where source_lead_id = %s""",
                 (r["recipe"], r["ch_name"], r["caf"], hub,
@@ -313,6 +335,7 @@ def main(dry_run: bool = False) -> None:
                  r["emerging_score"],
                  Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
                  disc_owner, disc_addr, pm, owed, assessed,
+                 disc_asset_class,
                  Jsonb(brief), r["lead_id"]))
             if cur.rowcount == 0:
                 # The curated set stays UPDATE-only. The ONE exception: the 'discovered' intake
