@@ -15,9 +15,11 @@ Run it with:  uvicorn app.main:app --host 0.0.0.0 --port 8400
 """
 import json
 import os
+from datetime import date
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi.responses import PlainTextResponse
 from psycopg.types.json import Jsonb
 
 from .config import LANDOS_SECRET
@@ -35,6 +37,7 @@ from .models import (
 from .scoring import score_parcel, DEFAULT_WEIGHTS, EDGE_PROFILE
 from . import nve_land
 from . import land_dd_adapters as lda
+from . import receipt as receipt_mod
 
 app = FastAPI(title="LandOS Engine", version="1.0.0")
 
@@ -215,6 +218,24 @@ def land_dd(req: LandDDRequest, _=Depends(auth_land_dd)):
             "lead_id": req.lead_id, "valuation_source": "nve-land",
         },
     }
+
+
+@app.get("/lead-receipt/{lead_id}")
+def lead_receipt(lead_id: str, format: str = "json", _=Depends(auth_land_dd)):
+    """AUDITABLE-ACQUISITION: a tamper-evident, per-lead provenance receipt assembled
+    from the real spine — SIGNAL / SCORING / PIERCE / COMPLIANCE / FRESHNESS, each
+    SHA-256'd, under one chain hash (see app/receipt.py). `lead_id` may be the engine
+    owner_leads.lead_id or a board acquisition_leads.lead_id (resolved via source_lead_id).
+    JSON by default; `?format=md` renders the human-readable receipt document. Read-only;
+    same Bearer-tolerant guard as /land-dd. Never emits third-party PII beyond the lead row."""
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            receipt = receipt_mod.assemble_receipt(cur, lead_id, date.today())
+    if receipt is None:
+        raise HTTPException(status_code=404, detail=f"No lead resolves for {lead_id}")
+    if format == "md":
+        return PlainTextResponse(receipt_mod.render_markdown(receipt))
+    return receipt
 
 
 @app.post("/evaluate")
