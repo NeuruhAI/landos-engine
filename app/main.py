@@ -34,10 +34,13 @@ from .models import (
     EmergingOpportunity,
     LandDDRequest,
 )
+from .models import HuntRequest
 from .scoring import score_parcel, DEFAULT_WEIGHTS, EDGE_PROFILE
 from . import nve_land
 from . import land_dd_adapters as lda
 from . import receipt as receipt_mod
+from . import hunt_core
+from .fips import resolve_county
 
 app = FastAPI(title="LandOS Engine", version="1.0.0")
 
@@ -236,6 +239,66 @@ def lead_receipt(lead_id: str, format: str = "json", _=Depends(auth_land_dd)):
     if format == "md":
         return PlainTextResponse(receipt_mod.render_markdown(receipt))
     return receipt
+
+
+# /hunt writes job records, so unlike the read-only /land-dd + /lead-receipt guard
+# it NEVER ships open: Bearer NVE_LAND_TOKEN when set, X-LANDOS-SECRET always accepted,
+# and with NO token configured the secret is REQUIRED outright.
+def auth_hunt(authorization: str = Header(default=""),
+              x_landos_secret: str = Header(default="")):
+    required = os.environ.get("NVE_LAND_TOKEN")
+    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    if required and bearer == required:
+        return True
+    if x_landos_secret and x_landos_secret == LANDOS_SECRET:
+        return True
+    raise HTTPException(status_code=401, detail="Invalid or missing hunt credential")
+
+
+@app.post("/hunt", status_code=202)
+def hunt_create(req: HuntRequest, _=Depends(auth_hunt)):
+    """HUNT-V2: create a net-new territory hunt job. Validates every territory entry
+    against the census table (fips wins; else state+county must resolve — never
+    guessed). The job is only QUEUED here: the runner (python -m app.hunt_worker,
+    night-chain-compatible) advances it census -> stage -> score -> DRY-RUN mint and
+    parks it at awaiting_operator_mint. NO owner_leads write ever happens from the
+    API or the worker — the operator fires the mint (python -m app.hunt_mint <id>)."""
+    if not req.territory:
+        raise HTTPException(status_code=422, detail="territory must name >=1 county")
+    try:
+        resolved = [resolve_county(fips=e.fips, state=e.state, county=e.county)
+                    for e in req.territory]
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            job = hunt_core.create_job(cur, resolved, req.recipe, req.requested_by)
+    return {"job_id": str(job["id"]), "status": job["status"], "territory": resolved,
+            "recipe": job["recipe"],
+            "next": "python -m app.hunt_worker --job <job_id>  (or the night chain) "
+                    "advances it to awaiting_operator_mint; the mint itself is "
+                    "operator-fired via python -m app.hunt_mint <job_id>."}
+
+
+@app.get("/hunt/{job_id}")
+def hunt_status(job_id: str, _=Depends(auth_hunt)):
+    """HUNT-V2: job status + per-stage counts + the chained receipt hashes
+    (bodies live in the job record; the hash chain is the tamper-evidence)."""
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            job = hunt_core.get_job(cur, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no hunt job {job_id}")
+    return {
+        "job_id": str(job["id"]), "status": job["status"],
+        "requested_by": job["requested_by"], "territory": job["territory"],
+        "recipe": job["recipe"], "counts": job["counts"],
+        "receipts": [{"stage": r["stage"], "at": r["at"],
+                      "body_hash": r["body_hash"], "chain_hash": r["chain_hash"]}
+                     for r in (job["receipts"] or [])],
+        "error": job["error"],
+        "created_at": job["created_at"], "updated_at": job["updated_at"],
+    }
 
 
 @app.post("/evaluate")

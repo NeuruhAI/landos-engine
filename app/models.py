@@ -109,3 +109,18 @@ class EmergingHeatMapResponse(BaseModel):
     count: int
     opportunities: list[EmergingOpportunity]
     note: str = "Emerging signals from LandOS discovery (deltas, negative space, boomer life events, DALE local). Use for heat map layers in CRM. Scoring/fusion in LandOS."
+
+
+# --- HUNT-V2: net-new territory hunt jobs (system proposes, operator fires) ---
+class HuntTerritoryEntry(BaseModel):
+    """One county. fips wins when given; else (state, county) must resolve
+    against the census table (app/fips.py) — never guessed."""
+    fips: Optional[str] = None
+    state: Optional[str] = None
+    county: Optional[str] = None
+
+
+class HuntRequest(BaseModel):
+    territory: list[HuntTerritoryEntry]
+    recipe: Optional[dict] = None       # {signal_types: [...], thresholds: {...}}
+    requested_by: Optional[str] = None
