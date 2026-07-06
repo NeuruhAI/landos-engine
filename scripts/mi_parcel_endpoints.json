@@ -1,0 +1,33 @@
+{
+  "_doc": "MI county parcel ArcGIS endpoints for by-APN centroid geocoding (scripts/geocode_taxsale_mi.py). Each entry VERIFIED against >=1 real tax-sale APN returning a polygon. apn_field = the layer attribute holding the parcel number; matching is separator-insensitive (canonical strip+uppercase), so apn_format is informational. Counties absent here with null-coord candidates are UNCOVERED (no free public GIS confirmed) — never guessed.",
+  "counties": {
+    "26009": {
+      "county": "Antrim",
+      "layer": "https://services6.arcgis.com/ZcCP0G3kEnUDVego/arcgis/rest/services/AllParcels_shp/FeatureServer/0",
+      "apn_field": "PARCEL_NO",
+      "apn_format": "as-is dashed (05-01-018-008-00)",
+      "verified_apn": "05-01-018-008-00"
+    },
+    "26077": {
+      "county": "Kalamazoo",
+      "layer": "https://gis.kalcounty.com/server/rest/services/Hosted/Parcels__2025__view/FeatureServer/0",
+      "apn_field": "pelnumber",
+      "apn_format": "as-is dashed (01-24-460-023)",
+      "verified_apn": "01-24-460-023"
+    },
+    "26051": {
+      "county": "Gladwin",
+      "layer": "https://services.arcgis.com/edGXqVKidagzAIPB/arcgis/rest/services/Gladwin_County_Parcels/FeatureServer/0",
+      "apn_field": "ParcelNumb",
+      "apn_format": "as-is dashed (030-115-008-013-00)",
+      "verified_apn": "030-026-100-010-10"
+    },
+    "26157": {
+      "county": "Tuscola",
+      "layer": "https://services6.arcgis.com/FA2StDZ4LO95Cm3q/arcgis/rest/services/TuscolaCountyParcelsCurrentYearAddresses/FeatureServer/53",
+      "apn_field": "PIN",
+      "apn_format": "as-is dashed (003-015-100-0200-00)",
+      "verified_apn": "003-015-100-0200-00"
+    }
+  }
+}
