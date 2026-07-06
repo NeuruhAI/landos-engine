@@ -14,16 +14,27 @@ from scripts.enrich_owner_chain import VINTAGE_RE, apn_variants, canon_apn, clea
 def test_government_names_match():
     for vested in ("ANTRIM COUNTY TREASURER", "Tuscola County Treasurer",
                    "COUNTY OF MUSKEGON", "CITY OF KALAMAZOO", "STATE OF MICHIGAN",
-                   "GENESEE COUNTY LAND BANK AUTHORITY", "FORFEITED - DO NOT BILL"):
-        assert VINTAGE_RE.search(vested), vested
+                   "GENESEE COUNTY LAND BANK AUTHORITY", "FORFEITED - DO NOT BILL",
+                   # census-observed government spellings (2026-07-05 fan-out):
+                   "MICHIGAN DEPARTMENT OF TREASURY",     # Mecosta 3/3
+                   "IONIA COUNTY TREASRUER",              # the county's own typo
+                   "DEPARTMENT OF NATURAL RESOURCE",      # Kalkaska 3/3 (MI DNR)
+                   "MI DEPT OF NATURAL RESOURCES",        # Charlevoix
+                   "GRATIOT COUNTY",                      # trailing COUNTY
+                   "STATE"):                              # Lake Co bare shorthand
+        assert VINTAGE_RE.search(vested.strip()), vested
 
 
 def test_human_and_entity_names_pass():
     for owner in ("SMITH JOHN A", "HUDSON CARL J & PAULINE O", "LAND OF LAND INC",
-                  "TREASURE ISLAND HOLDINGS LLC",   # TREASURE != TREASURER
+                  "TREASURE ISLAND HOLDINGS LLC",   # TREASURE != TREASURER/TREASURY
                   "LANDMARK BANK NA",               # LANDMARK BANK != LAND BANK
+                  "STATEWIDE HOLDINGS LLC",         # STATE only matches bare/exact
+                  "DE FELICE LUKE A ESTATE",        # estates are LEADS, never vintage
+                  "REEB, DORIS REVOC LIV TR",
+                  "COUNTY LINE FARMS LLC",          # COUNTY mid-name, not trailing
                   "GREENE RONALD"):
-        assert not VINTAGE_RE.search(owner), owner
+        assert not VINTAGE_RE.search(owner.strip()), owner
 
 
 # --- APN hygiene: decorated strings key to the billable parcel ---------------

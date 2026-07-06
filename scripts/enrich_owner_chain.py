@@ -53,16 +53,26 @@ from psycopg.types.json import Jsonb
 
 from app.config import DATABASE_URL
 from app.providers.chain import ParcelProviderChain
-from app.providers.config import COUNTY_REST_ENDPOINTS
+from app.providers.config import (COLLIGO_ENDPOINTS, COUNTY_REST_ENDPOINTS,
+                                  FETCHGIS_ENDPOINTS)
 from app.score_absentee import classify_owner_type
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 PROVENANCE = "discovered_taxsale"
 SPACING_S = 1.2
 
-# ENRICH-1 doctrine pattern — verbatim from the directive. A vested/government
-# roll name never lands in owner_name; the row is flagged for vintage capture.
-VINTAGE_RE = re.compile(r"TREASURER|COUNTY OF|CITY OF|STATE OF|LAND BANK|FORFEIT", re.I)
+# ENRICH-1 doctrine pattern — the directive's six, PLUS government spellings the
+# census fan-out OBSERVED on real county rolls (each line cites its evidence;
+# the intent — never write a vested/government name to owner_name — is the
+# directive's, the extra spellings are reported to the operator):
+#   TREASURY     'MICHIGAN DEPARTMENT OF TREASURY' (Mecosta 3/3)
+#   TREASRUER    'IONIA COUNTY TREASRUER' — the county's own misspelling (Ionia)
+#   DEPT/DEPARTMENT OF NATURAL RESOURCE  MI DNR vested (Kalkaska 3/3, Charlevoix)
+#   trailing ' COUNTY'   'GRATIOT COUNTY' (Gratiot sample)
+#   bare 'STATE'         Lake County's shorthand for State of Michigan (3/3)
+VINTAGE_RE = re.compile(
+    r"TREASURER|TREASRUER|TREASURY|COUNTY OF|CITY OF|STATE OF|LAND BANK|FORFEIT"
+    r"|DEP(ARTMEN)?T OF NATURAL RESOURCE|\bCOUNTY$|^STATE$", re.I)
 CACHE_DIR = os.path.expanduser("~/models/provenance/enrich_owner_cache")
 
 
@@ -189,7 +199,12 @@ def _pick(results, apn):
 
 
 def main(samples=None, batch=False, county=None, coords_only=False):
-    counties = sorted(f for f, c in COUNTY_REST_ENDPOINTS.items() if c.get("verified"))
+    # ENRICH-1: a county is workable through ANY verified $0 tier (ArcGIS
+    # county_rest, FetchGIS PSsearch2, Colligo public link) — the chain picks
+    # the right provider per county from PARCEL_PROVIDER_CHAIN.
+    counties = sorted({f for reg in (COUNTY_REST_ENDPOINTS, FETCHGIS_ENDPOINTS,
+                                     COLLIGO_ENDPOINTS)
+                       for f, c in reg.items() if c.get("verified")})
     if county:
         counties = [f for f in counties if f == county]
     if not counties:
@@ -261,7 +276,7 @@ def main(samples=None, batch=False, county=None, coords_only=False):
             # A vested/government roll name NEVER lands in owner_name. Flag the row
             # for paid vintage capture; stow the vested name + roll mailing for audit;
             # parcel facts the roll holds honestly (coords/situs) still land.
-            if not coords_only and owner and VINTAGE_RE.search(owner):
+            if not coords_only and owner and VINTAGE_RE.search(owner.strip()):
                 st["vintage"] += 1
                 if parcel.get("situs_lat") is not None:
                     st["coords"] += 1

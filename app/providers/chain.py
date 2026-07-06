@@ -27,12 +27,16 @@ from .base import ProviderUnavailable
 from .config import PARCEL_PROVIDER_CHAIN
 from .local_cache import LocalCacheProvider
 from .county_rest import CountyRESTProvider
+from .fetchgis import FetchGISProvider
+from .colligo import ColligoProvider
 from .reportall_provider import ReportAllProvider
 from .regrid_provider import RegridProvider
 
 PROVIDER_REGISTRY = {
     "local_cache": LocalCacheProvider,
     "county_rest": CountyRESTProvider,
+    "fetchgis": FetchGISProvider,     # tier 1b: FetchGIS PSsearch2 (ENRICH-1)
+    "colligo": ColligoProvider,       # tier 1c: Colligo GIS public links (ENRICH-1)
     "reportall": ReportAllProvider,
     "regrid": RegridProvider,
 }

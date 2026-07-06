@@ -21,10 +21,24 @@ PARCEL_PROVIDER_CHAIN = {
     "26075": ["county_rest"],
     "26121": ["county_rest"],
     # ENRICH-1 statewide-MI cohort counties (2026-07-05): same $0-tier-only rationale.
-    "26009": ["county_rest"],
-    "26051": ["county_rest"],
-    "26077": ["county_rest"],
-    "26157": ["county_rest"],
+    # ArcGIS-served counties -> county_rest; FetchGIS PSsearch2 counties -> fetchgis;
+    # Colligo public-link counties -> colligo. One tier each, evidence-verified.
+    "26009": ["county_rest"], "26051": ["county_rest"], "26077": ["county_rest"],
+    "26157": ["county_rest"], "26015": ["county_rest"], "26133": ["county_rest"],
+    "26115": ["county_rest"], "26017": ["county_rest"], "26143": ["county_rest"],
+    "26011": ["county_rest"], "26031": ["county_rest"], "26095": ["county_rest"],
+    "26019": ["county_rest"], "26085": ["county_rest"], "26029": ["county_rest"],
+    "26067": ["county_rest"], "26103": ["county_rest"], "26147": ["county_rest"],
+    "26117": ["county_rest"],
+    "26107": ["fetchgis"], "26025": ["fetchgis"], "26137": ["fetchgis"],
+    "26149": ["fetchgis"], "26041": ["fetchgis"], "26033": ["fetchgis"],
+    "26155": ["fetchgis"], "26151": ["fetchgis"], "26003": ["fetchgis"],
+    "26097": ["fetchgis"], "26153": ["fetchgis"], "26035": ["fetchgis"],
+    "26063": ["fetchgis"], "26129": ["fetchgis"], "26069": ["fetchgis"],
+    "26127": ["fetchgis"], "26087": ["fetchgis"], "26057": ["fetchgis"],
+    "26073": ["fetchgis"], "26037": ["fetchgis"],
+    "26079": ["colligo"], "26061": ["colligo"], "26053": ["colligo"],
+    "26039": ["colligo"],
 }
 
 # ---- tier 1: county REST endpoints --------------------------------------------
@@ -222,6 +236,132 @@ COUNTY_REST_ENDPOINTS = {
         "verified": True,
         "note": "VERIFIED 2026-07-05 3/3; VESTED/treasurer roll -> vintage lane. PIN = canonical APN verbatim.",
     },
+    # ---- ENRICH-1 statewide-MI ArcGIS counties (census fan-out, 2026-07-05) ----
+    # Every entry APN-verified against >=1 real cohort parcel returning a non-null
+    # owner. 'VESTED' notes = treasurer/state roll counties (vintage lane, guard
+    # in enrich_owner_chain). Combined-field mappings left NULL where the layer
+    # doesn't componentize (never parsed from guessed semantics).
+    "26015": {  # Barry — LIVE roll (LA COURSE ROBERT 3/3). PublicViewer NOT OpenData (owner-stripped).
+        "url": "https://services.arcgis.com/i0SsdDzLI3mLGmPR/arcgis/rest/services/Parcels_PublicViewer_View/FeatureServer/14/query",
+        "apn_field": "Tparcel", "owner_field": "owner_name",
+        "mail_street_field": "owner_street_add", "mail_city_field": "owner_city",
+        "mail_state_field": "owner_state", "mail_zip_field": "owner_zip",
+        "situs_street_field": "prop_street_add", "situs_city_field": "property_city",
+        "situs_zip_field": "property_zip", "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3; live roll; APN as-is dashed."},
+    "26133": {  # Osceola — VESTED (OSCEOLA COUNTY TREASURER 3/3); layer itself current-roll.
+        "url": "https://services8.arcgis.com/FmKMwUEmDSC75SQm/arcgis/rest/services/OsceolaCountyParcels_view/FeatureServer/0/query",
+        "apn_field": "PIN", "owner_field": "OWNER",
+        "situs_street_field": "PROPADD", "situs_city_field": "PROPCITY",
+        "situs_state_field": "PROPSTATE", "situs_zip_field": "PROPZIP",
+        "verified": True, "note": "VERIFIED 2026-07-05 3/3; APN space-separated as-is; vintage lane."},
+    "26115": {  # Monroe — LIVE roll (BONILLA JOSE 3/3); BS&A ParcelMaster join, full mailing.
+        "url": "https://gis.mocogeo.org/server/rest/services/Hosted/Parcel_View_2026_view/FeatureServer/0/query",
+        "apn_field": "parcelid", "owner_field": "parcelmaster_ownername1",
+        "owner2_field": "parcelmaster_ownername2",
+        "mail_street_field": "parcelmaster_ownerstreetaddr",
+        "mail_city_field": "parcelmaster_ownercity",
+        "mail_state_field": "parcelmaster_ownerstate",
+        "mail_zip_field": "parcelmaster_ownerzip",
+        "situs_street_field": "parcelmaster_propstreetcombined",
+        "situs_city_field": "parcelmaster_propcity",
+        "situs_zip_field": "parcelmaster_propzip", "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3; APN space-separated as-is."},
+    "26017": {  # Bay — LIVE roll (LEVEL 10 CONSULTING LLC 3/3, incl out-of-state mail).
+        "url": "https://services7.arcgis.com/NsdAMAHBh4C0qHfJ/arcgis/rest/services/Parcels2025/FeatureServer/0/query",
+        "apn_field": "PARCELID", "owner_field": "ownername1", "owner2_field": "ownername2",
+        "mail_street_field": "ownerstree", "mail_city_field": "ownercity",
+        "mail_state_field": "ownerstate", "mail_zip_field": "ownerzip",
+        "situs_street_field": "propstreet", "situs_city_field": "propcity",
+        "situs_state_field": "propstate", "situs_zip_field": "propzip",
+        "verified": True, "note": "VERIFIED 2026-07-05 3/3 (org baycogis — NOT Bay County FL); APN dashed as-is."},
+    "26143": {  # Roscommon — LIVE roll (VAN RIPER TIMOTHY J 3/3, incl NV absentee).
+        "url": "https://services.arcgis.com/edGXqVKidagzAIPB/arcgis/rest/services/Roscommon_County_Parcels/FeatureServer/0/query",
+        "apn_field": "PIN", "owner_field": "ownername1", "owner2_field": "ownername2",
+        "mail_street_field": "ownerstree", "mail_city_field": "ownercity",
+        "mail_state_field": "ownerstate", "mail_zip_field": "ownerzip",
+        "situs_street_field": "Property_A", "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3; APN dashed 3-3-3-4 as-is."},
+    "26011": {  # Arenac — LIVE roll (MYR RUTH ANN & TERRY 3/3). Sublayer 34, not 0.
+        "url": "https://services8.arcgis.com/SWvtgOskziun2bFF/arcgis/rest/services/Arenac_Parcels_2026/FeatureServer/34/query",
+        "apn_field": "PID", "owner_field": "OWNERNAME", "owner2_field": "OWNERNAME2",
+        "mail_street_field": "OWNER_ADDR", "situs_street_field": "PROPERTY_A",
+        "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3; OWNER_ADDR = combined 'street, city, state zip' (city/state/zip unmapped)."},
+    "26031": {  # Cheboygan — VESTED (CHEBOYGAN COUNTY TREASURER 3/3); layer at large has humans.
+        "url": "https://services6.arcgis.com/j6ueqNZduqQcCpQQ/arcgis/rest/services/Relationship_class/FeatureServer/0/query",
+        "apn_field": "PARCEL_NO", "owner_field": "ownername1", "owner2_field": "ownername2",
+        "mail_street_field": "ownerstreetaddr", "mail_city_field": "ownercity",
+        "mail_state_field": "ownerstate", "mail_zip_field": "ownerzip",
+        "situs_street_field": "propstreetcombined", "situs_city_field": "propcity",
+        "situs_zip_field": "propzip", "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3; APN dashed as-is; vintage lane."},
+    "26095": {  # Luce — MIXED roll (MONCK CHRISTINA L + STATE OF MICHIGAN; 2/3 matched).
+        "url": "https://services.arcgis.com/r3fID69a2yHQdVc4/arcgis/rest/services/LuceCoCensusParcels/FeatureServer/0/query",
+        "apn_field": "PID", "owner_field": "OWNER",
+        "mail_street_field": "mailg_addr", "mail_city_field": "mailg_city",
+        "mail_state_field": "mailg_stat", "mail_zip_field": "mailg_zip",
+        "situs_street_field": "situs_addr", "situs_city_field": "situs_city",
+        "situs_state_field": "situs_stat", "situs_zip_field": "situs_zip",
+        "verified": True, "note": "VERIFIED 2026-07-05 2/3 (EUP regional layer); mailg_* often blank."},
+    "26019": {  # Benzie — LIVE roll (BOLTON, MICHAEL 3/3). OWNERCSZ combined (unmapped).
+        "url": "https://services5.arcgis.com/lcdRo4JSOTVu3FMR/arcgis/rest/services/Benzie_County_Parcels/FeatureServer/1/query",
+        "apn_field": "PNUM", "owner_field": "OWNERNAME1",
+        "mail_street_field": "OWNERSTREE", "situs_street_field": "PROPSTREET",
+        "verified": True, "note": "VERIFIED 2026-07-05 3/3; APN dashed as-is."},
+    "26085": {  # Lake — VESTED: bare owner value 'STATE' 3/3 (State of Michigan shorthand).
+        "url": "https://services6.arcgis.com/077PZZsPIOhJKfvk/arcgis/rest/services/Parcels2026_View/FeatureServer/0/query",
+        "apn_field": "PARCELID", "owner_field": "OWNERNAME",
+        "mail_street_field": "OWNERADDRESS", "mail_city_field": "OWNERCITY",
+        "mail_state_field": "OWNERSTATE", "mail_zip_field": "OWNERZIP",
+        "situs_street_field": "PROPADDRESS", "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3; vintage lane (bare 'STATE' caught by guard's ^STATE$)."},
+    "26029": {  # Charlevoix — VESTED (STATE OF MICHIGAN / MI DNR 3/3). THIRD-PARTY snapshot org.
+        "url": "https://services8.arcgis.com/iOTGKDZaCCAubV8c/arcgis/rest/services/charlevoix_parcels_shp/FeatureServer/0/query",
+        "apn_field": "pin", "owner_field": "owner", "owner2_field": "owner2",
+        "mail_street_field": "address", "mail_city_field": "city",
+        "mail_state_field": "state", "mail_zip_field": "zip",
+        "situs_street_field": "propstreet", "situs_city_field": "propcity",
+        "situs_state_field": "propstate", "situs_zip_field": "propzip",
+        "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3 but NOT county-official hosting — snapshot-dated roll; county portals are closed (MangoMap/PivotPoint)."},
+    "26067": {  # Ionia — MIXED roll (ALLEN MATTHEW + 'IONIA COUNTY TREASRUER' sic). Layer PIN carries '34-'.
+        "url": "https://services9.arcgis.com/i2awudUyJK8gxxEe/arcgis/rest/services/Ionia_County_Tax_Parcels_Public/FeatureServer/0/query",
+        "apn_field": "CountyParcels_PIN", "apn_prefix": "34-",
+        "owner_field": "Parcel_Data_OWNERNAME",
+        "mail_street_field": "Parcel_Data_OWNERADDRESS",
+        "mail_city_field": "Parcel_Data_OWNERCITY",
+        "mail_state_field": "Parcel_Data_OWNERSTATE",
+        "mail_zip_field": "Parcel_Data_OWNERZIPCODE",
+        "situs_street_field": "PROPERTYFULLADDR",
+        "situs_city_field": "Parcel_Data_PROPERTYCITY",
+        "situs_state_field": "Parcel_Data_PROPERTYSTATE",
+        "situs_zip_field": "Parcel_Data_PROPERTYZIP", "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3; guard also catches the county's own TREASRUER misspelling."},
+    "26103": {  # Marquette — PARTIAL: City of Ishpeming only (52-51-*); township rows stay blank.
+        "url": "https://services5.arcgis.com/VxT1UTIFTgaEp7hM/arcgis/rest/services/Parcel_Master_File/FeatureServer/0/query",
+        "apn_field": "PARCEL_ID", "owner_field": "OWNER1", "owner2_field": "OWNER2",
+        "mail_street_field": "MAILING_AD", "mail_city_field": "MAILING_CI",
+        "mail_state_field": "MAILING_ST", "mail_zip_field": "MAILING_ZI",
+        "situs_street_field": "PROP_ADD", "situs_city_field": "PROP_CITY",
+        "verified": True,
+        "note": "VERIFIED 2026-07-05 1/3 (Ishpeming-only CUPPAD layer; 52-12-* absent — honest misses)."},
+    "26147": {  # Saint Clair — VESTED (SCC TREASURER 3/3). Geocortex-backed county ArcGIS; PIN carries '74-'.
+        "url": "https://maps.stclaircounty.org/GeoCortex_wa/rest/services/Public_GISweb/TaxParcels_Nightly/MapServer/0/query",
+        "apn_field": "PARCEL_NUMBER", "apn_prefix": "74-",
+        "owner_field": "OWNER", "owner2_field": "OWNER2",
+        "mail_street_field": "OWNER_ADDRESS", "mail_city_field": "OWNER_CITY",
+        "mail_state_field": "OWNER_STATE", "mail_zip_field": "OWNER_ZIP",
+        "situs_street_field": "PROP_ADDRESS_COMBINED", "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3; vintage lane; TAXPAYER_* fields also exist for audit."},
+    "26117": {  # Montcalm — VESTED (MONTCALM COUNTY TREASURER 3/3). BS&A-export schema.
+        "url": "https://services6.arcgis.com/GJ2uZAPsEvtmqpe1/arcgis/rest/services/Tax_Parcels/FeatureServer/0/query",
+        "apn_field": "TaxParcel_PARCELID", "owner_field": "BSAEXPORT_ONERNAME1",
+        "owner2_field": "BSAEXPORT_ONERNAME2",
+        "mail_street_field": "BSAEXPORT_OTADDRESS", "mail_city_field": "BSAEXPORT_OWNERCITY",
+        "mail_state_field": "BSAEXPORT_ONERSTATE", "mail_zip_field": "BSAEXPORT_ORZIPCODE",
+        "situs_street_field": "BSAEXPORT_PCOMBINED", "verified": True,
+        "note": "VERIFIED 2026-07-05 3/3; APN dashed as-is; vintage lane."},
     # Van Buren County, MI (26159): NO FREE SOURCE (STEP-2d stop, 2026-07-01).
     # County portal is MangoMap (API tier returns 402/payment-disabled), BS&A
     # owner search sits behind a login wall, no county/AGOL REST found. The 29
@@ -230,4 +370,75 @@ COUNTY_REST_ENDPOINTS = {
     # St. Joseph County, IN (18141): county GIS is Beacon/Schneider-hosted —
     # no open ArcGIS REST endpoint known; tier 1 stays unavailable there and
     # the chain degrades straight to tier 2.
+}
+
+
+# ---- tier 1b: FetchGIS PSsearch2 counties (ENRICH-1 census, 2026-07-05) ---------
+# County-official FetchGIS land-records search (app/providers/fetchgis.py).
+# map = the FetchGIS map key; dash = 'true' (dash-separated PIN) / 'false'
+# (space-separated); apn_strip_prefix = county code our canonical APN carries
+# but the map omits. Owner name + combined situs only — NO owner mailing, NO
+# geometry (honest NULL). Every row verified against >=1 real cohort APN.
+# VESTED = treasurer/state roll (vintage lane).
+FETCHGIS_ENDPOINTS = {
+    "26107": {"map": "mecosta", "dash": "false", "verified": True,
+              "note": "VESTED 3/3 'MICHIGAN DEPARTMENT OF TREASURY' (guard: TREASURY)."},
+    "26025": {"map": "calhoun", "dash": "true", "verified": True,
+              "note": "LIVE (BLACKOUT CONSTRUCTION LLC); Battle Creek 4-digit-first APNs likely miss (city roll absent from county LRP)."},
+    "26137": {"map": "otsego", "dash": "true", "verified": True, "note": "VESTED 3/3 county treasurer."},
+    "26149": {"map": "stjo", "dash": "false", "verified": True, "note": "VESTED 3/3 ST JOSEPH COUNTY TREASURER."},
+    "26041": {"map": "delta", "dash": "true", "verified": True, "note": "LIVE 3/3 (BECKER CHRISTOPHER)."},
+    "26033": {"map": "chip", "dash": "true", "verified": True, "note": "LIVE 2/2 (ENGLER WILLIAM JOSEPH)."},
+    "26155": {"map": "shi", "dash": "true", "verified": True, "note": "LIVE 3/3 (JACKSON LATOYI M & DWAYNE A)."},
+    "26151": {"map": "sanilac", "dash": "true", "verified": True, "note": "LIVE 2/2 (JACOBS GEORGE & ROSA)."},
+    "26003": {"map": "alger", "dash": "true", "verified": True, "note": "LIVE 3/3 (KAHLSTORF CYNTHIA M)."},
+    "26097": {"map": "mack", "dash": "true", "verified": True, "note": "VESTED 3/3 MACKINAC COUNTY TREASURER; map key is 'mack'."},
+    "26153": {"map": "schoolcraft", "dash": "true", "verified": True, "note": "VESTED 3/3 county treasurer."},
+    "26035": {"map": "clare", "dash": "true", "verified": True, "note": "LIVE 3/3 (LAINE KAREN)."},
+    "26063": {"map": "huron", "dash": "true", "verified": True, "note": "VESTED 3/3 HURON COUNTY TREASURER."},
+    "26129": {"map": "ogemaw", "dash": "true", "verified": True, "note": "LIVE 3/3 (YINGER TIMOTHY R)."},
+    "26069": {"map": "iosco", "dash": "true", "verified": True, "note": "VESTED (STATE OF MICHIGAN on the 'Part of' parent parcel)."},
+    "26127": {"map": "oceana", "dash": "true", "apn_strip_prefix": "64-", "verified": True,
+              "note": "VESTED (STATE OF MICHIGAN); map omits our '64-' county code."},
+    "26087": {"map": "lapeer", "dash": "true", "verified": True,
+              "note": "LIVE (DE FELICE LUKE A ESTATE); PSsearch2 open even though the county's ArcGIS tier is WAF'd."},
+    "26057": {"map": "gratiot", "dash": "true", "verified": True,
+              "note": "VESTED sample ('GRATIOT COUNTY' — guard: trailing COUNTY); county AGOL layer is owner-stripped, this search is not."},
+    "26073": {"map": "isabella", "dash": "true", "verified": True, "note": "VESTED sample ISABELLA COUNTY TREASURER."},
+    "26037": {"map": "clinton", "dash": "true", "verified": True, "note": "LIVE (REEB, DORIS REVOC LIV TR)."},
+}
+
+# ---- tier 1c: Colligo GIS counties (ENRICH-1 census, 2026-07-05) ----------------
+# County-official Colligo public links (app/providers/colligo.py). PUBLIC links
+# only — login-gated Colligo counties (Menominee/Keweenaw/Ontonagon) stay
+# uncovered. No geometry via these APIs (coords honest-NULL).
+COLLIGO_ENDPOINTS = {
+    "26079": {"mode": "findTab", "publink": "hYBhevUUbCBc9Sfv", "layer": "poly1622147747",
+              "apn_key": "pid", "owner_field": "Owner",
+              "mail_street_field": "OwnerAddress", "mail_city_field": "ownercity",
+              "mail_state_field": "ownerstate", "mail_zip_field": "ownerzip",
+              "situs_street_field": "PropAddress", "verified": True,
+              "note": "Kalkaska. VESTED 3/3 'DEPARTMENT OF NATURAL RESOURCE' (guard covers DNR)."},
+    "26061": {"mode": "findTab", "publink": "JWGuygu7GgdEHpHV", "layer": "poly1756926334",
+              "apn_key": "pin", "owner_field": "ownername1", "owner2_field": "ownername2",
+              "mail_street_field": "ownerstreetaddr",
+              "situs_street_field": "propstreetcombined", "situs_city_field": "propcity",
+              "situs_state_field": "propstate", "situs_zip_field": "propzip",
+              "verified": True,
+              "note": "Houghton. LIVE 3/3 (DAVIS JAMES H); OwnerCSZ combined city/st/zip unmapped."},
+    "26053": {"mode": "findProps", "publink": "6JFA6Ft5hn34hnyQ", "layer": "poly1606773384",
+              "apn_key": "pnum", "owner_field": "ownername1", "owner2_field": "ownername2",
+              "mail_street_field": "ownerstreetaddr",
+              "situs_street_field": "propstreetcombined", "situs_city_field": "propcity",
+              "situs_state_field": "propstate", "situs_zip_field": "propzip",
+              "verified": True,
+              "note": "Gogebic. VESTED 3/3 county treasurer; findSomething->loadProps."},
+    "26039": {"mode": "findTab", "publink": "S6wdeWC2y8VaRHj5", "layer": "poly1651664616",
+              "apn_key": "pid", "owner_field": "Owner",
+              "mail_street_field": "OwnerAddress", "mail_city_field": "ownercity",
+              "mail_state_field": "ownerstate", "mail_zip_field": "ownerzip",
+              "situs_street_field": "PropAddress", "verified": True,
+              "note": "Crawford. VESTED 3/3 county treasurer; findTab re-verified 2026-07-05 "
+                      "(the census agent's bulk-GeoJSON claim did NOT survive: int_loadData "
+                      "serves geometry-only props, owner lives in findTabData)."},
 }
