@@ -19,7 +19,7 @@ from datetime import date
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Depends
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, HTMLResponse
 from psycopg.types.json import Jsonb
 
 from .config import LANDOS_SECRET
@@ -34,11 +34,12 @@ from .models import (
     EmergingOpportunity,
     LandDDRequest,
 )
-from .models import HuntRequest, ComposeRequest, DecideRequest
+from .models import HuntRequest, ComposeRequest, DecideRequest, ComplianceCertBatchRequest
 from .scoring import score_parcel, DEFAULT_WEIGHTS, EDGE_PROFILE
 from . import nve_land
 from . import land_dd_adapters as lda
 from . import receipt as receipt_mod
+from . import compliance_cert as cert_mod
 from . import hunt_core
 from . import recipe_core
 from .fips import resolve_county
@@ -240,6 +241,60 @@ def lead_receipt(lead_id: str, format: str = "json", _=Depends(auth_land_dd)):
     if format == "md":
         return PlainTextResponse(receipt_mod.render_markdown(receipt))
     return receipt
+
+
+@app.get("/compliance-cert/{lead_id}")
+def compliance_cert(lead_id: str, format: str = "json", _=Depends(auth_land_dd)):
+    """COMPLIANCE-AS-PRODUCT: a signed, client-facing Compliance Certificate for one lead —
+    the sellable, buyer-verifiable diligence artifact built on the lead receipt. Each
+    attestation (signal source + date, DNC scrub, TCPA gate, data provenance, freshness) is
+    backed by a real receipt SHA-256, and the whole certificate is signed (HMAC-SHA256 when
+    CERT_SIGNING_KEY is set, else a SHA-256 content seal). White-label: the issuer org name
+    comes from CERT_ORG_NAME (resale doctrine — no hardcoded branding). `?format=html`
+    renders the letterhead document; JSON (default) is the programmatic form a data buyer
+    pulls. Read-only; same Bearer-tolerant guard as /lead-receipt."""
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            receipt = receipt_mod.assemble_receipt(cur, lead_id, date.today())
+    if receipt is None:
+        raise HTTPException(status_code=404, detail=f"No lead resolves for {lead_id}")
+    cert = cert_mod.build_certificate(receipt, cert_mod.org_from_env(),
+                                      cert_mod.signing_key_from_env(),
+                                      issued_at=date.today().isoformat())
+    if format == "html":
+        return HTMLResponse(cert_mod.render_certificate_html(cert))
+    return cert
+
+
+@app.post("/compliance-cert/batch")
+def compliance_cert_batch(req: ComplianceCertBatchRequest, _=Depends(auth_land_dd)):
+    """COMPLIANCE-AS-PRODUCT (batch): certify a LIST of leads as a single diligence packet.
+    Returns one certificate per resolvable lead, rolled up under a batch-root SHA-256 over
+    the ordered per-lead provenance-chain hashes. This is the artifact that justifies a
+    'provenance-certified leads' markup on List Desk. `format:"html"` renders the batch
+    document; unresolved lead_ids are reported (never fabricated). Read-only."""
+    if not req.lead_ids:
+        raise HTTPException(status_code=422, detail="lead_ids must name >=1 lead")
+    receipts, unresolved = [], []
+    # One transaction PER lead: a malformed lead_id (e.g. a non-UUID) raises inside its
+    # own connection and is caught -> reported unresolved, never poisoning the others'
+    # transaction. A diligence pull degrades gracefully; it never fabricates a cert.
+    for lid in req.lead_ids:
+        try:
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    r = receipt_mod.assemble_receipt(cur, lid, date.today())
+        except Exception:  # noqa: BLE001 - bad id / cast error => treat as unresolvable
+            r = None
+        (receipts.append(r) if r is not None else unresolved.append(lid))
+    if not receipts:
+        raise HTTPException(status_code=404, detail=f"No leads resolve: {req.lead_ids}")
+    batch = cert_mod.build_batch_certificate(receipts, cert_mod.org_from_env(),
+                                             cert_mod.signing_key_from_env(),
+                                             issued_at=date.today().isoformat())
+    if (req.format or "json") == "html":
+        return HTMLResponse(cert_mod.render_batch_html(batch))
+    return {**batch, "unresolved_lead_ids": unresolved}
 
 
 # /hunt writes job records, so unlike the read-only /land-dd + /lead-receipt guard

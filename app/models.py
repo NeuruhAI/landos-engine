@@ -6,7 +6,7 @@ If APG sends a malformed request, FastAPI rejects it with a clear 422 error
 BEFORE any of our code runs. Defaults mean every field is optional — a parcel
 with only a couple of known signals still scores fine.
 """
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel
 
 
@@ -148,3 +148,9 @@ class DecideRequest(BaseModel):
     action: str                          # 'approve' | 'reject'
     note: Optional[str] = None
     decided_by: Optional[str] = None     # profiles.id (uuid), stamped by the CRM
+
+
+class ComplianceCertBatchRequest(BaseModel):
+    # A data buyer / tenant pulls a batch of Compliance Certificates for leads they hold.
+    lead_ids: List[str]                  # engine owner_leads.lead_id OR board acquisition_leads.lead_id
+    format: Optional[str] = "json"       # "json" (programmatic) | "html" (rendered document)
