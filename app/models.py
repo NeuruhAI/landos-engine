@@ -124,3 +124,27 @@ class HuntRequest(BaseModel):
     territory: list[HuntTerritoryEntry]
     recipe: Optional[dict] = None       # {signal_types: [...], thresholds: {...}}
     requested_by: Optional[str] = None
+
+
+# --- RECIPE-2: composer (compose a goal into a proposal; decide it) ---
+class DispoInventoryItem(BaseModel):
+    lead_id: str
+    disposition_id: Optional[str] = None
+    county_fips: Optional[str] = None
+
+
+class DispoPayload(BaseModel):
+    inventory: list[DispoInventoryItem] = []
+    params: dict = {}
+
+
+class ComposeRequest(BaseModel):
+    goal_type: str                       # 'acquire' | 'dispose'
+    goal_text: str
+    dispo: Optional[DispoPayload] = None
+
+
+class DecideRequest(BaseModel):
+    action: str                          # 'approve' | 'reject'
+    note: Optional[str] = None
+    decided_by: Optional[str] = None     # profiles.id (uuid), stamped by the CRM

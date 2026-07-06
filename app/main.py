@@ -34,12 +34,13 @@ from .models import (
     EmergingOpportunity,
     LandDDRequest,
 )
-from .models import HuntRequest
+from .models import HuntRequest, ComposeRequest, DecideRequest
 from .scoring import score_parcel, DEFAULT_WEIGHTS, EDGE_PROFILE
 from . import nve_land
 from . import land_dd_adapters as lda
 from . import receipt as receipt_mod
 from . import hunt_core
+from . import recipe_core
 from .fips import resolve_county
 
 app = FastAPI(title="LandOS Engine", version="1.0.0")
@@ -299,6 +300,71 @@ def hunt_status(job_id: str, _=Depends(auth_hunt)):
         "error": job["error"],
         "created_at": job["created_at"], "updated_at": job["updated_at"],
     }
+
+
+# RECIPE-2 composer guard. The CRM's compose/decide proxies send
+# `Authorization: Bearer {COMPOSER_TOKEN}` when that env is set. Like /hunt this
+# is a WRITE path (it syncs proposals/runs), so it never ships open: Bearer
+# COMPOSER_TOKEN when configured, X-LANDOS-SECRET always accepted, and with no
+# COMPOSER_TOKEN set the secret is required outright.
+def auth_composer(authorization: str = Header(default=""),
+                  x_landos_secret: str = Header(default="")):
+    required = os.environ.get("COMPOSER_TOKEN")
+    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    if required and bearer == required:
+        return True
+    if x_landos_secret and x_landos_secret == LANDOS_SECRET:
+        return True
+    raise HTTPException(status_code=401, detail="Invalid or missing composer credential")
+
+
+@app.post("/compose")
+def compose(req: ComposeRequest, _=Depends(auth_composer)):
+    """RECIPE-2 (t1 Part 4): turn an operator goal into a recipe_proposals_view
+    row. Deterministic, $0, grounded in the live queue — the engine is the SOLE
+    writer of the projection (mig 060). ALWAYS syncs a proposal row (status
+    'proposed', or 'needs_clarification' with inline questions when the goal
+    can't be grounded) and returns its proposal_id; the CRM re-reads the
+    projection to render the card. NO owner_leads / queue write — composing is
+    read-only against the spine; only the projection is written."""
+    goal_type = req.goal_type if req.goal_type in ("acquire", "dispose") else None
+    goal_text = (req.goal_text or "").strip()
+    if not goal_type:
+        raise HTTPException(status_code=422, detail="goal_type must be 'acquire' or 'dispose'")
+    if not goal_text:
+        raise HTTPException(status_code=422, detail="describe the goal first")
+    dispo = req.dispo.model_dump() if req.dispo else None
+    if goal_type == "dispose" and not (dispo and dispo.get("inventory")):
+        raise HTTPException(status_code=422,
+                            detail="pick at least one deal — a sale needs inventory")
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            proposal_id, body = recipe_core.compose_and_sync(cur, goal_type, goal_text, dispo)
+    return {"proposal_id": proposal_id, "status": body["status"],
+            "needs_clarification": body["needs_clarification"]}
+
+
+@app.post("/proposals/{proposal_id}/decide")
+def proposal_decide(proposal_id: str, req: DecideRequest, _=Depends(auth_composer)):
+    """RECIPE-2: approve|reject a proposal (the CRM desk-gates the actor; this is
+    the engine backstop). approve → status approved + the composed hunt_recipes
+    row (source='composed', proposal_id + rationale_hash) + one executed run into
+    recipe_runs_view. reject → status rejected. Both stamp decided_at/decided_by."""
+    action = req.action if req.action in ("approve", "reject") else None
+    if not action:
+        raise HTTPException(status_code=422, detail="action must be 'approve' or 'reject'")
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                result = recipe_core.decide(cur, proposal_id, action,
+                                            decided_by=req.decided_by, note=req.note)
+            except LookupError:
+                raise HTTPException(status_code=404, detail=f"no proposal {proposal_id}")
+            except ValueError as e:
+                # already-decided is a 409; anything else a 422
+                code = 409 if "already" in str(e) else 422
+                raise HTTPException(status_code=code, detail=str(e))
+    return result
 
 
 @app.post("/evaluate")
