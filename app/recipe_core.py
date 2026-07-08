@@ -417,11 +417,22 @@ def _ratio_case(alias="a"):
     return f"(case left({alias}.county_fips, 2) {whens} else null end)"
 
 
+def _num_sql(expr):
+    """Guarded numeric extraction from raw_payload text: strip $ , and spaces, then
+    regex-match a number, else NULL. Amounts vary ('TBA' pending sales, '$23.02'
+    dollar-formatted) — never crash the cast, never coerce garbage into a number."""
+    cleaned = f"regexp_replace({expr}, '[$, ]', '', 'g')"
+    return f"(case when {cleaned} ~ '^-?[0-9]+(\\.[0-9]+)?$' then {cleaned}::numeric end)"
+
+
+_SEV_SQL = _num_sql("s.raw_payload->>'sev'")
+_MINBID_SQL = _num_sql("coalesce(s.raw_payload->>'min_bid', s.raw_payload->>'minimum_bid')")
+
 # per-lead (sev, min_bid) rolled up from the lead's tax-sale signals
-_VAL_CTE = """val as (
+_VAL_CTE = f"""val as (
     select a.lead_id,
-           max(nullif(s.raw_payload->>'sev','')::numeric)                                     as sev,
-           min(nullif(coalesce(s.raw_payload->>'min_bid', s.raw_payload->>'minimum_bid'),'')::numeric) as min_bid
+           max({_SEV_SQL})    as sev,
+           min({_MINBID_SQL}) as min_bid
     from public.acquisition_leads a
     join lateral jsonb_array_elements(
            case when jsonb_typeof(a.emerging_signals)='array' then a.emerging_signals else '[]'::jsonb end) e on true
@@ -551,8 +562,7 @@ def rank_top(cur, spec, tenant=TENANT, limit=10, axis=None, equity_min=None):
                            ({stack}) as stack_score, {dim_arr} as stack_dims
                     from public.acquisition_leads a
                     left join lateral (
-                      select max(nullif(s.raw_payload->>'sev','')::numeric) as sev,
-                             min(nullif(coalesce(s.raw_payload->>'min_bid', s.raw_payload->>'minimum_bid'),'')::numeric) as min_bid
+                      select max({_SEV_SQL}) as sev, min({_MINBID_SQL}) as min_bid
                       from jsonb_array_elements(
                         case when jsonb_typeof(a.emerging_signals)='array' then a.emerging_signals else '[]'::jsonb end) e
                       join landos.discovery_signals s
