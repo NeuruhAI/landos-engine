@@ -346,9 +346,14 @@ def compose_dispose(cur, goal_text, dispo, tenant=TENANT):
 # tag (signal_tags is empty). Equity is uncomputable (0 rows valued: assessed/
 # owed/market all NULL) so the ≥70% floor and the ≥60% override resolve to
 # PENDING, never a fake miss (same doctrine as min_spread in count_acquire).
-# The distress stack has one real axis (taxsale) + 1 probate row; absentee/
-# code_violation/divorce/lis_pendens are not ingested — so RANK collapses to
-# score_distress today. compose_distress states all of this against real counts
+# The distress stack has one real axis (taxsale) + 1 probate row + absentee (450,
+# from parcel_meta). code_violation: 237 raw signals ARE now ingested (2026-07-08,
+# South Bend new-geography) but sit in landos.discovery_signals UNRESOLVED — only
+# 2/222 overlap the owned book, and none are projected onto a lead's
+# emerging_signals yet — so the RANK axis on leads is still 0 (needs the resolver;
+# these 237 seed NEW leads, they do not deepen the existing stack). divorce/
+# lis_pendens not ingested. RANK collapses to score_distress today.
+# compose_distress states all of this against real counts
 # and emits a grounded punch_list: exactly what enrichment/ingest lights each
 # dead clause (the Phase B spec, auto-derived — never guessed).
 #

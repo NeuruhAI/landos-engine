@@ -2,6 +2,19 @@
 
 **Date:** 2026-07-07 · **Status:** SPEC (for landos-ingest) · **Author:** landos-engine (distress-recipe Phase B b2)
 
+> **CANON CORRECTION (2026-07-08) — the first `code_violation` batch is NEW-GEOGRAPHY DISCOVERY, not stack-enrichment.**
+> t5 staged 237 `code_violation` signals (South Bend, IN — sections `71-08-…`) and t2 loaded them
+> into `landos.discovery_signals`. Only **2 of 222** distinct parcels overlap the owned tax-sale
+> book (which is sections `71-02/03-…`), so **these 237 do NOT deepen the existing 927-lead
+> stack.** They are a **separate discovery pool = 237 potential NEW targets** awaiting the
+> **resolver** to project them into workable leads. The `distress_coverage` axis on existing
+> leads is **unchanged** (absentee 450 · probate 1 · `code_violation` still **0** on leads).
+> The mechanism below is still correct — a `code_violation` signal that resolves to a lead
+> already carrying `taxsale` DOES add stack depth — but that is not what THIS batch did (2-parcel
+> overlap). **NEXT STEP: the resolver must run** to turn the 237 into leads. Read every
+> "increases stack depth / stack≥2" statement below as the general mechanism, not the outcome of
+> the first load.
+
 ## Purpose
 
 Light the two remaining distress-stack axes the distress recipe ranks by but the
