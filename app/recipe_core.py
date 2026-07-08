@@ -434,7 +434,8 @@ _VAL_CTE = """val as (
 # market/debt prefer materialized columns, else provenance; equity NULL outside a
 # calibrated state ratio (honest pending, never a fabricated number).
 _MARKET = f"(coalesce(a.assessed_total, v.sev) * {_ratio_case()})"
-_DEBT = "coalesce(a.amount_owed, v.min_bid, 0)"
+# unknown debt is PENDING, not zero — a null lien must NOT read as 100% equity
+_DEBT = "coalesce(a.amount_owed, v.min_bid)"
 _EQUITY = (f"case when coalesce(a.assessed_total, v.sev) > 0 and {_ratio_case()} is not null "
            f"then round(({_MARKET} - {_DEBT}) / {_MARKET} * 100.0, 1) else null end")
 
