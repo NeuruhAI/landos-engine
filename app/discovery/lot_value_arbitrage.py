@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from .base import DiscoveryAdapter, DiscoverySignal
@@ -207,32 +208,62 @@ def census(parcels: List[Dict[str, Any]], luxury_zips: set,
     return out
 
 
+def _tenure_from_sale_date(sale_date: Optional[str]) -> Optional[float]:
+    """Years held, from a captured last-sale date (YYYY... prefix). None when absent
+    or unparseable — never a fabricated tenure. Reads today's year at call time; the
+    adapter is ordinary runtime code (no workflow-script date restriction)."""
+    if not sale_date:
+        return None
+    m = re.match(r"\s*(\d{4})", str(sale_date))
+    if not m:
+        return None
+    yrs = date.today().year - int(m.group(1))
+    return float(yrs) if 0 <= yrs <= 200 else None
+
+
 def load_parcel_records(cur, tenant_id: str) -> List[Dict[str, Any]]:
     """Load parcel assessor facts from the live spine into the adapter's record
-    shape, REUSING the enrichment capture (landos.owner_leads.raw_meta). Today
-    raw_meta carries `sev` (total) + `situs_zip` but NO land_value / yr_blt / last
-    sale, so land_assessed/year_built/tenure come back None and the census reports
-    the gap — this is the honest live wiring, not a stub."""
+    shape, REUSING the enrichment capture (landos.owner_leads.raw_meta). Reads the
+    exact keys the ReportAll/county_rest capture SHOULD write (docs/
+    enrich_priority_reportall_capture.md): land_value, sev (already present), yr_blt,
+    last_sale_date. Today raw_meta carries only `sev` + `situs_zip`, so land_assessed/
+    year_built/tenure come back None and the census reports the gap — the moment the
+    ingest capture lands those keys, this loader arms the adapter with NO code change."""
     cur.execute(
         """select county_fips, parcel_apn,
-                  raw_meta->>'situs_zip'     as zip,
-                  raw_meta->>'land_value'    as land_assessed,
-                  raw_meta->>'sev'           as total_assessed,
-                  raw_meta->>'yr_blt'        as year_built
+                  raw_meta->>'situs_zip'      as zip,
+                  raw_meta->>'land_value'     as land_assessed,
+                  raw_meta->>'sev'            as total_assessed,
+                  raw_meta->>'yr_blt'         as year_built,
+                  raw_meta->>'last_sale_date' as last_sale_date
            from landos.owner_leads
            where tenant_id = %s and parcel_apn is not null and raw_meta is not null""",
         (tenant_id,))
     return [
         {"county_fips": row[0], "parcel_apn": row[1], "zip": row[2],
          "land_assessed": row[3], "total_assessed": row[4],
-         "year_built": row[5], "tenure_years": None}    # no subject-parcel sale date on the spine
+         "year_built": row[5], "tenure_years": _tenure_from_sale_date(row[6])}
         for row in cur.fetchall()
     ]
 
 
+def load_luxury_zips(cur, tenant_id: str) -> set:
+    """Load the operator-defined luxury-zip SET from CRM config (public.option_sets
+    field_key='luxury_zip', seeded by apg-land-crm migration 066). This is a MARKET
+    definition, not a spine fact — the adapter's zip basis is config, tunable by the
+    operator, read live. Empty set until seeded (census then reports the gap)."""
+    cur.execute(
+        """select value from public.option_sets
+           where tenant_id = %s and field_key = 'luxury_zip' and is_active = true""",
+        (tenant_id,))
+    return {row[0].strip() for row in cur.fetchall() if row[0]}
+
+
 def census_live(cur, tenant_id: str, luxury_zips: Optional[set] = None) -> Dict[str, Dict[str, Any]]:
-    """Per-county teardown-arbitrage census against the live spine."""
-    return census(load_parcel_records(cur, tenant_id), luxury_zips or set())
+    """Per-county teardown-arbitrage census against the live spine. The luxury-zip
+    set defaults to the CRM config (option_sets) when not supplied explicitly."""
+    zips = luxury_zips if luxury_zips is not None else load_luxury_zips(cur, tenant_id)
+    return census(load_parcel_records(cur, tenant_id), zips)
 
 
 class LotValueArbitrageAdapter(DiscoveryAdapter):

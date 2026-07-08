@@ -152,9 +152,12 @@ def test_live_census_reports_gap_today():
         pytest.skip(f"database unreachable: {e}")
     try:
         with conn.cursor() as cur:
-            # even WITH a luxury set supplied, the land/total split isn't captured,
+            # the luxury-zip set now defaults to the CRM config (option_sets/mig 066),
+            # so the zip BASIS is wired — but the land/total split still isn't captured,
             # so every county is an honest gap and 0 candidates surface.
-            rep = lva.census_live(cur, TENANT, luxury_zips={"48009", "48301", "46530"})
+            zips = lva.load_luxury_zips(cur, TENANT)
+            rep = lva.census_live(cur, TENANT)          # defaults to the config set
+        assert zips, "expected the luxury_zip set to be seeded (mig 066)"
         assert rep, "expected parcels on the spine"
         assert all(not c["covered"] for c in rep.values())
         assert all(c["valuation_split_captured"] == 0 for c in rep.values())
