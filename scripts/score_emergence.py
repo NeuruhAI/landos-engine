@@ -52,11 +52,13 @@ from app.config import DATABASE_URL
 # --- moat IP: scoring tables (TUNABLE) --------------------------------------------------
 EMERGENCE_WEIGHTS = {
     "probate_in": 1.0, "probate": 1.0, "taxsale": 0.9, "taxdelinquent": 0.7,
-    "estate_sale": 0.6, "permit": 0.4, "rezoning": 0.4,
+    "estate_sale": 0.6, "code_violation": 0.6, "lis_pendens": 0.8,
+    "permit": 0.4, "rezoning": 0.4,
 }
 HALF_LIFE_DAYS = {
     "probate_in": 180, "probate": 180, "taxsale": 90, "taxdelinquent": 180,
-    "estate_sale": 30, "permit": 60, "rezoning": 90,
+    "estate_sale": 30, "code_violation": 120, "lis_pendens": 150,
+    "permit": 60, "rezoning": 90,
 }
 DEFAULT_WEIGHT = 0.5
 DEFAULT_HALF_LIFE = 90
@@ -74,6 +76,12 @@ QUALIFYING_SIGNALS = """
     where ds.signal_class = 'temporal'
       and ds.matched_lead_id is not null
       and ds.signal_date is not null
+      and (%(sources)s::text[] is null or ds.matched_lead_id in (
+          select ds_filter.matched_lead_id
+          from landos.discovery_signals ds_filter
+          where ds_filter.source_type = any(%(sources)s)
+            and ds_filter.matched_lead_id is not null
+      ))
     order by ds.matched_lead_id, ds.signal_date
 """
 
@@ -104,10 +112,11 @@ def score_signal(row, today):
     return contribution, audit
 
 
-def main(dry_run=False):
+def main(dry_run=False, sources=None):
     today = date.today()
+    source_filter = list(sources) if sources else None
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
-        cur.execute(QUALIFYING_SIGNALS)
+        cur.execute(QUALIFYING_SIGNALS, {"sources": source_filter})
         signals = cur.fetchall()
 
         # RAIL (assert, defense in depth): a structural row must NEVER reach the scorer.
@@ -162,4 +171,6 @@ def main(dry_run=False):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="CC2 step 2 — emergence scorer (writes landos.owner_leads)")
     ap.add_argument("--dry-run", action="store_true", help="compute + preview; write nothing")
-    main(dry_run=ap.parse_args().dry_run)
+    ap.add_argument("--source", action="append", help="limit to leads touched by this source_type; repeatable")
+    args = ap.parse_args()
+    main(dry_run=args.dry_run, sources=args.source)

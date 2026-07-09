@@ -36,6 +36,12 @@ def test_foreclosure_maps_to_pre_foreclosure():
     assert a["coverage"]["distress"]["modeled_tokens"] == ["foreclosure"]
 
 
+def test_lis_pendens_maps_to_pre_foreclosure():
+    a = assemble(_lead(distress_tokens=["lis_pendens"]), W)
+    assert a["inputs"]["distress"] == {"pre_foreclosure": True}
+    assert a["coverage"]["distress"]["modeled_tokens"] == ["lis_pendens"]
+
+
 def test_environmental_and_brownfield_map_to_environmental_key():
     """Part 201 + brownfield both map to the single 'environmental' distress key
     (default v3, weight 0.15): grounded, component = 0.15*100 = 15, NOT NULL."""
