@@ -107,6 +107,7 @@ TARGET_QUERY = """
       and owner_name not ilike all(%s)
       {prov}
       {county}
+      {only}
     order by lead_id
 """
 
@@ -133,12 +134,13 @@ def _norm_name(s):
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
-def select_targets(cur, provenance, limit, county=None):
+def select_targets(cur, provenance, limit, county=None, only_leads=None):
     prov = "and provenance = %s" if provenance else ""
     cty = "and county_fips = %s" if county else ""
+    only = "and lead_id = any(%s)" if only_leads else ""
     params = ([TENANT, DROP_PATTERNS] + ([provenance] if provenance else [])
-              + ([county] if county else []))
-    cur.execute(TARGET_QUERY.format(prov=prov, county=cty), params)
+              + ([county] if county else []) + ([list(only_leads)] if only_leads else []))
+    cur.execute(TARGET_QUERY.format(prov=prov, county=cty, only=only), params)
     rows = cur.fetchall()
     return rows[:limit] if limit else rows
 
@@ -589,12 +591,12 @@ def _est(n):
     return n * credits * COST_PER_CREDIT, credits
 
 
-def _select(provenance, limit, county=None):
+def _select(provenance, limit, county=None, only_leads=None):
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         conn.read_only = True
         with conn.cursor() as cur:
             cur.execute("set statement_timeout = 60000")
-            return select_targets(cur, provenance, limit, county)
+            return select_targets(cur, provenance, limit, county, only_leads)
 
 
 def run_from_export(from_export, provenance, limit, ts, signal_filter=True):
@@ -687,14 +689,15 @@ def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None, signal_fi
 
 
 def main(mode="dry-run", limit=None, provenance=None, from_export=None, confirm=False, do_dnc=False,
-         resume_queue_id=None, signal_filter=True, county=None):
+         resume_queue_id=None, signal_filter=True, county=None, only_leads=None):
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     if from_export:
         run_from_export(from_export, provenance, limit, ts, signal_filter=signal_filter)
         return
-    targets = _select(provenance, limit, county)
+    targets = _select(provenance, limit, county, only_leads)
     print(f"qualified named-individual targets: {len(targets)} "
-          f"(provenance={provenance or 'ALL'}, county={county or 'ALL'}, limit={limit or 'none'})")
+          f"(provenance={provenance or 'ALL'}, county={county or 'ALL'}, "
+          f"only_leads={len(only_leads) if only_leads else 0}, limit={limit or 'none'})")
     if mode == "dry-run":
         run_dry(targets)
         return
@@ -735,7 +738,11 @@ if __name__ == "__main__":
     ap.add_argument("--no-signal-filter", action="store_false", dest="signal_filter",
                     help="disable the owner-occupant doctrine (let SURNAME_ONLY leads be callable); "
                          "by default surname-only leads are forced to mail-only")
+    ap.add_argument("--only-leads",
+                    help="comma-separated owner_leads lead_ids to scope the trace to (intersected with "
+                         "the qualified individual pool) — the exact-cohort spend gate")
     a = ap.parse_args()
+    only = [s.strip() for s in a.only_leads.split(",") if s.strip()] if a.only_leads else None
     main(mode=a.mode, limit=a.limit, provenance=a.provenance, from_export=a.from_export,
          confirm=a.confirm, do_dnc=a.dnc, resume_queue_id=a.resume_queue, signal_filter=a.signal_filter,
-         county=a.county)
+         county=a.county, only_leads=only)
