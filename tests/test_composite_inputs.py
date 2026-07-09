@@ -30,6 +30,16 @@ def test_distress_modeled_token_is_grounded():
     assert a["null_components"]["distress"] is False  # component stored, not NULL
 
 
+def test_taxsale_aliases_to_tax_delinquent():
+    """Ingest source_type 'taxsale' (in-tax-sale = severely tax-delinquent) maps to the
+    modeled 'tax_delinquent' key: grounded, component stored (not NULL/unmodeled)."""
+    a = assemble(_lead(distress_tokens=["taxsale"]), W)
+    assert a["coverage"]["distress"]["status"] == "grounded"
+    assert a["inputs"]["distress"] == {"tax_delinquent": True}
+    assert a["null_components"]["distress"] is False
+    assert score_parcel(a["inputs"], W)["distress_component"] > 0
+
+
 def test_foreclosure_maps_to_pre_foreclosure():
     a = assemble(_lead(distress_tokens=["foreclosure"]), W)
     assert a["inputs"]["distress"] == {"pre_foreclosure": True}

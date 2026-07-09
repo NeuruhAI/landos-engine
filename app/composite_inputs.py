@@ -40,6 +40,7 @@ from app.comps import arbitrage_feasibility  # pure (no DB/network), like this m
 # as grounded-but-unmodeled (recorded, but it cannot move the modeled component).
 DISTRESS_TOKEN_MAP: Dict[str, str] = {
     "tax_delinquent": "tax_delinquent",   # exact
+    "taxsale": "tax_delinquent",          # ingest source_type 'taxsale' == in-tax-sale == severely tax-delinquent
     "foreclosure": "pre_foreclosure",     # family map (engine emits 'foreclosure'); flagged in coverage
     "environmental_part201": "environmental",  # MI Part 201 contamination -> 'environmental' (family map)
     "brownfield": "environmental",             # brownfield -> 'environmental' (family map)
