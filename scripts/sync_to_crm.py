@@ -156,7 +156,8 @@ def parcel_meta_from_raw(rm):
     }
 
 
-def main(dry_run: bool = False) -> None:
+def main(dry_run: bool = False, lead_ids=None) -> None:
+    lead_filter = list(lead_ids) if lead_ids else None
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute(
             """select lead_id, owner_name, situs_lat, situs_lng, skip_trace_status,
@@ -170,7 +171,8 @@ def main(dry_run: bool = False) -> None:
                       provenance, parcel_apn, county_fips, raw_meta, situs_address,
                       owner_mailing_address, owner_mailing_city, owner_mailing_state, owner_mailing_zip
                from landos.owner_leads
-               where tenant_id = %s and not discovery_seed""", (TENANT,))
+               where tenant_id = %s and not discovery_seed
+                 and (%s::uuid[] is null or lead_id = any(%s))""", (TENANT, lead_filter, lead_filter))
         leads = cur.fetchall()
 
         # latest composite score per lead — for the score_* projection (one-way,
@@ -545,4 +547,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="landos -> CRM projection (single writer)")
     ap.add_argument("--dry-run", action="store_true",
                     help="compose + preview Jarvis briefs (5); write nothing")
-    main(dry_run=ap.parse_args().dry_run)
+    ap.add_argument("--lead-id", action="append",
+                    help="project only this landos.owner_leads lead_id; repeatable")
+    args = ap.parse_args()
+    main(dry_run=args.dry_run, lead_ids=args.lead_id)
