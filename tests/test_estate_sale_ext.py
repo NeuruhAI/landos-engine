@@ -96,6 +96,20 @@ def test_adapter_uses_canon_apn_when_toplevel_null():
     assert a.fetch()[0]["parcel_apn"] == "CANON123"
 
 
+def test_adapter_skips_rows_lacking_both_listing_id_and_apn():
+    # honest-null: no stable natural key -> skip + count, never a listing_text[:48]
+    # silent-collide. A motivated row with an apn but no listing_id still emits (ref=apn).
+    recs = [
+        _r("", title="downsizing", listing_id=None),          # motivated but NO ref -> skip
+        _r("HAS_APN", title="downsizing", listing_id=None),   # no listing_id but apn -> ref=apn
+    ]
+    a = EstateSaleExtAdapter(TENANT, records=recs)
+    sigs = a.fetch()
+    assert len(sigs) == 1 and a.skipped_no_ref == 1
+    assert sigs[0]["parcel_apn"] == "HAS_APN"
+    assert sigs[0]["source_ref"] == "HAS_APN:estate_sale_ext"
+
+
 # ---- DB-backed: live census must show motivated listings (adapter arms) -----
 
 def test_live_census_arms_today():

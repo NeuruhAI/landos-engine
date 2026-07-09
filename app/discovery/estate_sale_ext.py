@@ -147,6 +147,7 @@ class EstateSaleExtAdapter(DiscoveryAdapter):
         self.county_fips = county_fips
         self.last_census: Dict[str, Dict[str, Any]] = {}
         self.non_matches = 0
+        self.skipped_no_ref = 0
 
     def fetch(self) -> List[DiscoverySignal]:
         recs = self.records
@@ -156,13 +157,17 @@ class EstateSaleExtAdapter(DiscoveryAdapter):
 
         signals: List[DiscoverySignal] = []
         self.non_matches = 0
+        self.skipped_no_ref = 0
         for r in recs:
             tags = extract_motivations(_listing_text(r))
             if not tags:
                 self.non_matches += 1                   # listing with text, no motivation
                 continue
             apn = (r.get("parcel_apn") or "").strip() or None
-            ref = r.get("listing_id") or apn or _listing_text(r)[:48]
+            ref = r.get("listing_id") or apn
+            if not ref:
+                self.skipped_no_ref += 1                # no stable natural key -> honest skip, never a text-prefix collide
+                continue
             signals.append({
                 "source_ref": f"{ref}:estate_sale_ext",
                 "source_url": None,
