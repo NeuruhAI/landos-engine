@@ -47,6 +47,9 @@ from app.jarvis_brief import compose_brief
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 THRESHOLD = 0.6  # {{CONFIDENCE_THRESHOLD}} — same cutoff the importer validates
+# Phase B b1: assessed/SEV -> market ratio by state FIPS. MI SEV is ~50% of true
+# cash value (statute) -> x2. Unmapped state -> equity stays NULL (pending), never guessed.
+MARKET_MULT = {"26": 2.0}
 
 # ENRICH-1 P1 (2026-07-05): owner_name projection uses the asset_class idiom —
 # EXISTING-FIRST coalesce. Enrichment fills blanks (NULL or '') and NEVER overwrites
@@ -201,6 +204,27 @@ def main(dry_run: bool = False) -> None:
                 {"name": kr["relative_name"], "relationship": kr["relationship"],
                  "is_heir": kr["is_heir"]})
 
+        # Phase B b1: tax-sale valuation provenance per lead (sev, min_bid,
+        # current_tax) from its matched taxsale signals — the source of the equity
+        # the CRM displays. Keyed by owner_leads.lead_id (= acquisition_leads.source_lead_id).
+        # guarded cast: raw_payload amounts vary — "TBA" (pending TX sales) and
+        # dollar/comma-formatted ("$23.02"). Strip $ , and spaces, then regex-match a
+        # number or yield NULL — never crash, never coerce garbage.
+        _num = lambda expr: (f"(case when regexp_replace({expr}, '[$, ]', '', 'g') ~ '^-?[0-9]+(\\.[0-9]+)?$' "
+                             f"then regexp_replace({expr}, '[$, ]', '', 'g')::numeric end)")
+        _minbid = "coalesce(ds.raw_payload->>'min_bid', ds.raw_payload->>'minimum_bid')"
+        cur.execute(f"""
+            select ol.lead_id, left(ol.county_fips, 2) as st,
+                   max({_num("ds.raw_payload->>'sev'")})          as sev,
+                   min({_num(_minbid)})                            as min_bid,
+                   max({_num("ds.raw_payload->>'current_tax'")})  as current_tax
+            from landos.owner_leads ol
+            join landos.discovery_signals ds
+              on ds.matched_lead_id = ol.lead_id and ds.source_type = 'taxsale'
+            where ol.tenant_id = %s and not ol.discovery_seed
+            group by ol.lead_id, left(ol.county_fips, 2)""", (TENANT,))
+        valuation = {row["lead_id"]: row for row in cur.fetchall()}
+
         as_of = datetime.now(timezone.utc).isoformat()
         jarvis_briefs = []
 
@@ -316,6 +340,21 @@ def main(dry_run: bool = False) -> None:
             disc_asset_class = (disc_asset_class_from_raw(r["raw_meta"], r["parcel_apn"])
                                 if is_disc else None)
 
+            # ---- Phase B b1 valuation projection (SEV x2 - min_bid) --------------
+            # market = SEV x state ratio (MI only); equity = (market - lien)/market.
+            # Unknown lien (min_bid null) => equity NULL (pending), never a false 100%.
+            # Negatives (lien > market) are written TRUE (underwater), operator-confirmed.
+            v = valuation.get(r["lead_id"])
+            market_value_est = equity_pct = taxes_annual = None
+            if v:
+                ratio = MARKET_MULT.get(v["st"])
+                sev, min_bid = v["sev"], v["min_bid"]
+                taxes_annual = float(v["current_tax"]) if v["current_tax"] is not None else None
+                if ratio and sev and float(sev) > 0:
+                    market_value_est = round(float(sev) * ratio, 2)
+                    if min_bid is not None:
+                        equity_pct = round((market_value_est - float(min_bid)) / market_value_est * 100, 1)
+
             if dry_run:
                 continue   # compose-only preview; no write
 
@@ -336,6 +375,9 @@ def main(dry_run: bool = False) -> None:
                      amount_owed = coalesce(%s, amount_owed),
                      assessed_total = coalesce(%s, assessed_total),
                      asset_class = coalesce(asset_class, %s),
+                     market_value_est = coalesce(market_value_est, %s),
+                     equity_pct = coalesce(equity_pct, %s),
+                     taxes_annual = coalesce(taxes_annual, %s),
                      jarvis_brief = %s
                    where source_lead_id = %s""",
                 (r["recipe"], r["ch_name"], r["caf"], hub,
@@ -346,6 +388,7 @@ def main(dry_run: bool = False) -> None:
                  Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
                  disc_owner, disc_addr, pm, owed, assessed,
                  disc_asset_class,
+                 market_value_est, equity_pct, taxes_annual,
                  Jsonb(brief), r["lead_id"]))
             if cur.rowcount == 0:
                 # The curated set stays UPDATE-only. The ONE exception: the 'discovered' intake
@@ -358,12 +401,14 @@ def main(dry_run: bool = False) -> None:
                         """insert into public.acquisition_leads
                              (source_lead_id, tenant_id, status, owner_name, parcel_apn, county_fips,
                               situs_lat, situs_lng, situs_address, emerging_score, emerging_signals,
-                              parcel_meta, amount_owed, assessed_total, jarvis_brief, asset_class)
-                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                              parcel_meta, amount_owed, assessed_total, jarvis_brief, asset_class,
+                              market_value_est, equity_pct, taxes_annual)
+                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (r["lead_id"], TENANT, r["owner_name"], r["parcel_apn"], r["county_fips"],
                          r["situs_lat"], r["situs_lng"], disc_addr, r["emerging_score"],
                          Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
-                         pm, owed, assessed, Jsonb(brief), disc_asset_class))
+                         pm, owed, assessed, Jsonb(brief), disc_asset_class,
+                         market_value_est, equity_pct, taxes_annual))
                     discovered_inserted += 1
                     jarvis_composed += 1
                     continue

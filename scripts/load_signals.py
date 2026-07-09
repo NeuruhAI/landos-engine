@@ -47,10 +47,18 @@ from app.config import DATABASE_URL
 from app.freshness import upcoming_taxsale
 
 SIGNAL_CLASS = "temporal"
-INGEST_ROOT = os.path.expanduser("~/repos/landos-ingest/data/strategy/signals")
+# Canonical landos-ingest repo. (~/repos/landos-ingest is only a personal symlink to
+# this path — depending on it silently breaks on any host without that symlink.)
+INGEST_ROOT = os.path.expanduser("~/neuruh-repos/NeuruhAI/landos-ingest/data/strategy/signals")
 SOURCES = {
-    "taxsale":     os.path.join(INGEST_ROOT, "tax_sale/staged/stjoseph_taxsale_signals.jsonl"),
-    "estate_sale": os.path.join(INGEST_ROOT, "estate_sales/staged/estatesales_signals.jsonl"),
+    "taxsale":        os.path.join(INGEST_ROOT, "tax_sale/staged/stjoseph_taxsale_signals.jsonl"),
+    "estate_sale":    os.path.join(INGEST_ROOT, "estate_sales/staged/estatesales_signals.jsonl"),
+    # LANE D (t5 commit b504dfc): two new source_types. code_violation is ARMED
+    # (stjoseph, 237 signals, 237/237 canonical parcel match); lis_pendens is
+    # DISARMED (ToU-gated operator_file drop — staged file absent until a legally
+    # obtained export lands). A missing file is skipped, not fatal (see main()).
+    "code_violation": os.path.join(INGEST_ROOT, "code_violation/staged/stjoseph_code_violation_signals.jsonl"),
+    "lis_pendens":    os.path.join(INGEST_ROOT, "lis_pendens/staged/stjoseph_lis_pendens_signals.jsonl"),
 }
 
 INSERT = """
@@ -154,6 +162,11 @@ def main(sources, dry_run):
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         for key in sources:
             path = SOURCES[key]
+            if not os.path.exists(path):
+                # A disarmed/not-yet-staged source (or reorganized upstream tree) is
+                # an honest skip, never a crash — the loader must survive `--source all`.
+                print(f"  [{key}] SKIP — no staged file at {path}")
+                continue
             r, i, s, rej = load_file(cur, path, dry_run)
             verb = "would_insert" if dry_run else "inserted"
             print(f"  [{key}] read={r} {verb}={i} skipped_dup={s} rejected_stale={rej}")
