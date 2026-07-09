@@ -59,6 +59,14 @@ SOURCES = {
     # obtained export lands). A missing file is skipped, not fatal (see main()).
     "code_violation": os.path.join(INGEST_ROOT, "code_violation/staged/stjoseph_code_violation_signals.jsonl"),
     "lis_pendens":    os.path.join(INGEST_ROOT, "lis_pendens/staged/stjoseph_lis_pendens_signals.jsonl"),
+    # ENGINE CROSS-FEED §5 (landos-ingest docs/engine_cross_feeds.md): rental_license is
+    # PARCEL-DIRECT / directly-usable — the generic map_row stores it as-is (71-form
+    # parcel_apn from detail_json.parcel_state_number; landlord_exit / absentee_rental /
+    # data_vintage ride into raw_payload). 1,347 staged (509 landlord-exit, all absentee).
+    # HISTORIC/2024 vintage: many rows carry no event_date -> signal_date NULL (honest, not
+    # backfilled). Value = the landlord_exit subset crossed with absentee + tax-delinquent
+    # for motivated-landlord ranking (t2 cross; no resolver needed to LOAD).
+    "rental_license": os.path.join(INGEST_ROOT, "rental_license/staged/stjoseph_rental_license_signals.jsonl"),
 }
 
 INSERT = """
