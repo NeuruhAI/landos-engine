@@ -295,6 +295,11 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                     "top_factors": sc["top_factors"],
                     "requires_bea": snap.get("requires_bea"),
                     "contamination_kind": snap.get("contamination_kind"),
+                    # JOB 8: post-floor call-disposition modifier baked into composite_score
+                    # above (null when no disposition) — surfaced so the board can explain
+                    # why a lead moved (e.g. "raised: owner interested"). Audit copy lives
+                    # in landos.scores.inputs_snapshot.outcome_modifier.
+                    "outcome_modifier": snap.get("outcome_modifier"),
                     "computed_at": sc["computed_at"].isoformat() if sc["computed_at"] else None,
                 }
                 s_signals = Jsonb(signals_dict)

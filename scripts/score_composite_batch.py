@@ -47,6 +47,18 @@ TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 BATCH_TAG = "composite_136_v1"
 TRACED = ("traced_web", "traced_paid")
 
+# JOB 8 — deterministic post-floor outcome modifier (docs/lead_outcomes_scorer_modifier.md).
+# Applied to the COMPOSITE score AFTER the axis floor — never inside an axis, because a
+# call disposition is a REACHABILITY fact, not distress/owner/arbitrage evidence. The axis
+# components (comp{}) are left untouched; only the composite ranking value moves.
+OUTCOME_MODIFIER = {
+    "interested":   1.15,   # owner engaged — strongest live signal (cap 100)
+    "callback":     1.05,   # reached, deferred
+    "wrong_number": 0.90,   # bad contact data (reachability, not the parcel)
+    "dnc":          0.85,   # do-not-call (dialing already suppressed at the sync boundary)
+    "dead":         0.50,   # owner deceased / hard no
+}
+
 
 def active_weights(cur) -> tuple[int, dict]:
     """Mirror app.main._active_weights for the default profile."""
@@ -138,6 +150,28 @@ def main() -> None:
             for r in cur.fetchall():
                 comps_by_apn.setdefault(r["subject_apn"], []).append(r)
 
+            # JOB 8 — latest CALL DISPOSITION per lead (deterministic post-floor modifier).
+            # Bridge: lead_outcomes.lead_id = acquisition_leads.lead_id (CRM PK, from
+            # lead_activity); acq -> owner_leads by (parcel_apn, county_fips). This parcel
+            # seam was verified equal to the authoritative acquisition_leads.source_lead_id
+            # link (2/2 leads, zero divergence, 0 null source_lead_id) before shipping.
+            # distinct on (ol.lead_id) + noted_at desc, id desc = latest-wins, deterministic.
+            outcomes: dict = {}
+            cur.execute(
+                """select distinct on (ol.lead_id)
+                          ol.lead_id ol_lead_id, lo.disposition, lo.source_ref
+                     from landos.owner_leads ol
+                     join public.acquisition_leads a
+                       on a.parcel_apn = ol.parcel_apn and a.county_fips = ol.county_fips
+                     join landos.lead_outcomes lo on lo.lead_id = a.lead_id
+                    where ol.tenant_id = %s and not ol.discovery_seed
+                      and ol.lead_id = any(%s)
+                    order by ol.lead_id, lo.noted_at desc, lo.id desc""",
+                (TENANT, lead_ids))
+            for orow in cur.fetchall():
+                outcomes[orow["ol_lead_id"]] = {
+                    "disposition": orow["disposition"], "source_ref": orow["source_ref"]}
+
             print(f"\n{'='*72}\nBATCH composite scorer — {mode}\n{'='*72}")
             print(f"tenant={TENANT}  leads={len(leads)}  weights_version={version}  "
                   f"batch_tag={BATCH_TAG}")
@@ -188,9 +222,26 @@ def main() -> None:
                     "requires_bea": a["requires_bea"],
                     "contamination_kind": a["contamination_kind"],
                 }
+
+                # JOB 8 — deterministic post-floor outcome modifier. The floor over
+                # modeled axes is the BASE; the latest call disposition (if any) scales
+                # it. base_score is recorded so the composite stays fully auditable and
+                # the movement is reversible (drop outcome_modifier -> base restored).
+                base_score = res["score"]
+                om = outcomes.get(r["lead_id"])
+                if om:
+                    mod = OUTCOME_MODIFIER[om["disposition"]]
+                    final_score = round(min(100.0, base_score * mod), 2)
+                    snapshot["outcome_modifier"] = {
+                        "disposition": om["disposition"], "modifier": mod,
+                        "source_ref": om["source_ref"], "base_score": base_score}
+                else:
+                    final_score = base_score
+                    snapshot["outcome_modifier"] = None
+
                 results.append({
-                    "lead": r, "score": res["score"], "comp": comp,
-                    "top_factors": res["top_factors"], "snapshot": snapshot,
+                    "lead": r, "score": final_score, "base_score": base_score,
+                    "comp": comp, "top_factors": res["top_factors"], "snapshot": snapshot,
                     "confidence": a["confidence"], "coverage": a["coverage"],
                     "owner_hash": owner_hash_for(r["owner_name"], r["lead_id"]),
                 })
@@ -268,6 +319,7 @@ def main() -> None:
 
     # ---- COVERAGE REPORT + DELTA/GATES (always) -------------------------------
     report(results, version)
+    outcome_movement_report(results)
     gates_pass = delta_gates(results, version, crm_nonnull)
     if not args.apply:
         print("\n" + ("ALL GATES PASS — safe to --apply."
@@ -323,6 +375,36 @@ def report(results, version) -> None:
         facts = ", ".join(f["factor"] for f in x["top_factors"]) or "—"
         print(f"    {x['score']:>5}  conf={x['confidence']:.2f}  o/d/a={cov}  "
               f"{x['lead']['parcel_apn']:<16} [{facts}]")
+    print()
+
+
+def outcome_movement_report(results) -> None:
+    """JOB 8 — how the deterministic post-floor modifier moved the composite. SANITY
+    BAND: only leads with a real disposition can move; a mass move means the
+    acq->owner_leads join fanned out — investigate before trusting the write."""
+    moved = []
+    for x in results:
+        om = x["snapshot"].get("outcome_modifier")
+        if not om:
+            continue
+        delta = round(x["score"] - om["base_score"], 2)
+        if abs(delta) >= 0.01:
+            moved.append((x, om, delta))
+    tagged = sum(1 for x in results if x["snapshot"].get("outcome_modifier"))
+    print(f"\n{'='*72}\nJOB 8 — OUTCOME MODIFIER MOVEMENT (deterministic, post-floor)\n{'='*72}")
+    print(f"  leads carrying a disposition: {tagged}/{len(results)}    "
+          f"leads whose score MOVED (Δ≠0): {len(moved)}")
+    if not moved:
+        print("  (no composite moved — a disposition with base score 0 stays 0, or none present)")
+        return
+    ups = [d for *_, d in moved if d > 0]
+    downs = [d for *_, d in moved if d < 0]
+    print(f"  direction split: {len(ups)} up / {len(downs)} down    "
+          f"max Δ: +{max(ups) if ups else 0.0} / {min(downs) if downs else 0.0}")
+    for x, om, delta in sorted(moved, key=lambda t: -abs(t[2])):
+        print(f"    {om['base_score']:>6} -> {x['score']:<6} "
+              f"({'+' if delta >= 0 else ''}{delta})  ×{om['modifier']}  "
+              f"{om['disposition']:<12} {x['lead']['parcel_apn']}")
     print()
 
 
