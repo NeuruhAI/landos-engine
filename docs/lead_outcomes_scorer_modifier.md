@@ -6,11 +6,12 @@ scorer-modifier in `scripts/score_composite_batch.py` + CRM projection in
 17.5→20.12; wrong_number `03-6790-…` 21.25→19.12) — inside the ≤10 sanity band, join
 verified against the authoritative `source_lead_id` seam (0 divergence).
 
-> ⚠ **OPEN — flagged, awaiting operator ruling (do NOT silently fix): Caller Desk vocab
-> mismatch.** See the "Caller Desk ingest gap" section at the bottom. The reader currently
-> parses the LOSSY `lead_activity.outcome` funnel, not the precise
-> `lead_activity.meta->>'disposition'`. Once ccT1's Caller Desk popup drives volume, this
-> drops `dnc_request` + `no_answer` and mis-reads `not_interested` as `interested`.
+> ✅ **RESOLVED 2026-07-09 (operator-ruled APPLY): Caller Desk vocab fix shipped.** The
+> reader now prefers `lead_activity.meta->>'disposition'` for `meta.source='caller_desk'`
+> rows (falls back to the legacy `.outcome` funnel), so `dnc_request` is captured and a
+> `not_interested` decline records as `dead` (not a `×1.15` raise). The upsert self-heals
+> (`ON CONFLICT DO UPDATE`) — the 6 pre-existing mis-mapped facts were corrected on re-run
+> (interested 6 → callback 5 / dead 1 / interested 1). See "Caller Desk ingest fix" below.
 
 ## What's shipped
 - `landos.lead_outcomes` (mig 018) — durable feedback-fact store, idempotent on
@@ -53,7 +54,18 @@ Building it = edit `score_composite_batch` (apply modifier post-floor) → full 
 
 ---
 
-## ⚠ Caller Desk ingest gap (flagged 2026-07-09 — awaiting ruling)
+## ✅ Caller Desk ingest fix (APPLIED 2026-07-09 — operator-ruled)
+
+**Fix shipped:** `read_lead_outcomes.resolve_disposition(outcome, meta)` prefers
+`meta.disposition` when `meta.source='caller_desk'` (via `CALLER_DESK_MAP`), else the legacy
+`.outcome` funnel via `OUTCOME_MAP`. Upsert switched to `ON CONFLICT DO UPDATE` so a re-run
+re-maps existing facts to the current vocabulary (self-heal, no delete). Re-ingest corrected
+the 6 poisoned facts, rescore + sync settled `03-4810-…` 20.12→**18.38** (interested→callback)
+and left `03-6790-…` 19.12; the healed `not_interested` fact is now `dead`. Contract tests
+pin all four rulings + the dnc_request→dnc landing + the inversion guard. **Original diagnosis
+retained below for the record.**
+
+## ⚠ Caller Desk ingest gap (original diagnosis, 2026-07-09)
 
 `read_lead_outcomes.py` reads `public.lead_activity.outcome`. There are **two writers**
 into that column with **different vocabularies**, and the Caller Desk (the path ccT1's
