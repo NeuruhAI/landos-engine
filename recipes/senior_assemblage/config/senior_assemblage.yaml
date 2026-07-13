@@ -1,0 +1,59 @@
+# Senior-Tenure Lakefront Assemblage — jurisdiction config (the white-label boundary).
+# Logic never hardcodes a jurisdiction; new county = new block here, zero code.
+recipe_id: senior_lakefront_assemblage_v1
+recipe_label: Senior-Tenure Lakefront Assemblage
+category: sourcing
+executor_kind: script
+tenant_id: 1840ac90-54bd-4b3d-8baf-227c8d84ab5a
+
+crs: "EPSG:26916"          # NAD83 / UTM 16N — Berrien -> LaPorte, meters everywhere
+lake_buffer_m: 300
+qualify_threshold: 55
+min_cluster_size: 2
+asof_date: "2026-07-12"
+
+jurisdictions:
+  laporte_in:
+    state: IN
+    county_fips: "18091"
+    parcel_file: data/in/laporte_parcels.geojson    # county AGOL layer, 64,775 polygons (manifest-sealed)
+    attr_file:   data/in/laporte_scored.csv         # built by build_attrs_laporte.py (layer attrs + SDF tenure)
+    apn_field_geo: parcel_num
+    apn_field_attr: parcel_apn
+    owner_field: owner_name
+    sale_date_field: last_sale_date                 # last tenure-resetting conveyance (SDF 2008->asof)
+    acres_field: acres
+    lake_file: data/in/in_lakes.geojson             # NHD waterbody NW Indiana (staged in landos-ingest)
+    lake_name_field: GNIS_NAME
+    lake_names: ["Lake Michigan"]                   # LaPorte inland lakes deliberately excluded (locked 2026-07-12)
+    over65_available: false                         # flip true when county deduction data lands
+    over65_field: over65_deduction
+    circuit_breaker_field: over65_circuit_breaker
+    homestead_field: owner_occupied_proxy           # mailing==situs proxy until deduction data lands
+    # No SDF sale 2008->asof = tenure >=18y (window-dark). E[ladder points | >=18y]
+    # at ~3.5%/yr turnover ~= 22/30. Calibration item: refine after spot-checks.
+    tenure_floor_points: 22
+    sdf_window_start: 2008                          # documentation; builder enforces
+    exclude_entities: true                          # utilities/gov/LLC can't be seniors; trusts KEPT (surname carries)
+    weights: {over65: 40, circuit_breaker: 10, tenure: [[30,30],[25,25],[20,18],[15,10]], homestead: 10, probate_surname: 10}
+
+  berrien_mi:
+    state: MI
+    county_fips: "26021"
+    parcel_file: data/mi/berrien_parcels.shp        # ◄ from county GIS request / ReportAll / Regrid
+    attr_file:   data/mi/berrien_equalization.csv   # ◄ FOIA roll (TV/SEV/PRE/sale date)
+    apn_field_geo: PARCELID                         # ◄ confirm on delivery
+    apn_field_attr: parcel_number
+    owner_field: owner_name
+    sale_date_field: sale_date
+    acres_field: acres
+    sev_field: sev
+    tv_field: taxable_value
+    pre_field: pre_pct
+    lake_file: data/mi/mi_lakes.geojson             # Michigan GIS Open Data statewide hydro
+    lake_name_field: NAME
+    lake_names: ["Lake Michigan", "Paw Paw Lake"]   # Berrien scope; add lakes as needed
+    exclude_entities: true
+    weights: {tv_sev_bins: [[0.45,40],[0.55,32],[0.65,24],[0.75,14],[0.85,6]], tenure: [[30,30],[25,25],[20,18],[15,10]], pre: 15, probate_surname: 15}
+
+probate_surnames_file: data/probate_surnames.csv    # 0-byte until probate pipeline covers these counties

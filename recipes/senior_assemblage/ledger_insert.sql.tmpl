@@ -1,0 +1,17 @@
+-- recipe_runs ledger row — one per run, append-only. Errors get a NEW row
+-- with status='failed' + error populated; never UPDATE/DELETE ledger rows.
+-- Fill :params from out/<runid>/run_manifest.json, :leads_in = gates.parcels_attr,
+-- :leads_out = data rows in out/<runid>/cluster_parcels.csv.
+insert into public.recipe_runs
+  (tenant_id, recipe_id, recipe_label, category, executor_kind,
+   params, status, leads_in, leads_out, created_at, finished_at)
+values
+  ('1840ac90-54bd-4b3d-8baf-227c8d84ab5a',
+   'senior_lakefront_assemblage_v1',
+   'Senior-Tenure Lakefront Assemblage',
+   'sourcing', 'script',
+   :'params'::jsonb,
+   'succeeded',
+   :leads_in, :leads_out,
+   now(), now())
+returning id, created_at;
