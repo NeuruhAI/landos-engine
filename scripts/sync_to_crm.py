@@ -156,6 +156,56 @@ def parcel_meta_from_raw(rm):
     }
 
 
+# --- recipe intake (spec §9.2 — senior_lakefront_assemblage_v1) ---------------------
+# Rows minted by scripts/mint_recipe_leads.py carry provenance='discovered_recipe' and a
+# raw_meta the minter stowed (recipe_id/run_id + per-parcel recipe measures). They ride
+# the SAME discovered-tier path as the tax-sale mint — single-writer rule intact — only
+# the jsonb composition differs: cluster stats -> parcel_meta, recipe measures ->
+# score_signals, tags -> signal_tags (text[]), source stamped 'recipe:<recipe_id>'.
+
+def is_recipe_meta(rm):
+    """True when raw_meta was stowed by the recipe minter (recipe_id is its marker)."""
+    return bool((rm or {}).get("recipe_id"))
+
+
+def parcel_meta_from_recipe(rm):
+    """§9.2: cluster stats -> parcel_meta jsonb. NO tax-sale keys are fabricated —
+    downstream reads of amount_owed/assessed_total must .get() (honest absent)."""
+    return {
+        "recipe": {"recipe_id": rm.get("recipe_id"), "run_id": rm.get("run_id")},
+        "cluster": {
+            "cluster_id": rm.get("cluster_id"),
+            "cluster_size": rm.get("cluster_size"),
+            "same_surname_family": rm.get("same_surname_family"),
+        },
+        "tenure_floor": rm.get("tenure_floor"),
+        "owner_occupied_proxy": rm.get("owner_occupied_proxy"),
+    }
+
+
+def score_signals_from_recipe(rm):
+    """§9.2: senior_score / tenure_years / dist_to_lake_m -> score_signals jsonb.
+    tenure_years None = SDF-window-dark (floor-scored), never a fabricated 0."""
+    return {
+        "senior_score": rm.get("senior_score"),
+        "tenure_years": rm.get("tenure_years"),
+        "dist_to_lake_m": rm.get("dist_to_lake_m"),
+        "recipe_id": rm.get("recipe_id"),
+        "run_id": rm.get("run_id"),
+    }
+
+
+def recipe_signal_tags(rm):
+    """§9.2: signal_tags text[] — e.g. ['senior_tenure','lake_proximity','assemblage']."""
+    tags = rm.get("signal_tags") or []
+    return [t for t in tags if t] or None
+
+
+def recipe_source(rm):
+    """§9.2: acquisition_leads.source = 'recipe:<recipe_id>'."""
+    return f"recipe:{rm['recipe_id']}"
+
+
 def main(dry_run: bool = False, lead_ids=None) -> None:
     lead_filter = list(lead_ids) if lead_ids else None
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
@@ -243,7 +293,7 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
 
         enriched = phones_set = phones_cleared = hubs_stamped = unmatched = 0
         dnc_suppressed = bea_flagged = score_projected = jarvis_composed = 0
-        discovered_inserted = 0
+        discovered_inserted = recipe_stamped = 0
         for r in leads:
             # DNC GATE (compliance, hard): a lead scrubbed 'do_not_call' NEVER
             # becomes callable — phones are not projected regardless of trace
@@ -307,6 +357,15 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
             else:
                 s_owner = s_distress = s_arb = s_signals = signals_dict = alt_use = None
 
+            # recipe intake (§9.2): recipe-minted discovered rows have no landos.scores
+            # row — score_signals carries the recipe measures instead (synthesized every
+            # run: idempotent, convergent; a later real composite in landos.scores wins).
+            is_disc = (r.get("provenance") or "").startswith("discovered")
+            recipe_rm = r["raw_meta"] if (is_disc and is_recipe_meta(r["raw_meta"])) else None
+            if recipe_rm and s_signals is None:
+                signals_dict = score_signals_from_recipe(recipe_rm)
+                s_signals = Jsonb(signals_dict)
+
             # ---- Jarvis brief (engine-composed; projected, NOT an LLM call here) ----
             brief = compose_brief({
                 "controlling_human": r["ch_name"], "portfolio_hub": hub,
@@ -320,8 +379,13 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
 
             # discovered-tier county data (the 87 tax-sale leads only; curated 136 stay NULL).
             # coalesce(%s, col) in the UPDATE => passing None for the 136 keeps their value.
-            is_disc = (r.get("provenance") or "").startswith("discovered")
-            pm_dict = parcel_meta_from_raw(r["raw_meta"]) if (is_disc and r["raw_meta"]) else None
+            # recipe intake (§9.2): recipe-minted rows get recipe-shaped jsonb, not tax keys.
+            sig_tags = recipe_signal_tags(recipe_rm) if recipe_rm else None
+            lead_source = recipe_source(recipe_rm) if recipe_rm else None
+            if recipe_rm:
+                pm_dict = parcel_meta_from_recipe(recipe_rm)
+            else:
+                pm_dict = parcel_meta_from_raw(r["raw_meta"]) if (is_disc and r["raw_meta"]) else None
             if pm_dict and r.get("owner_mailing_address"):
                 # owner mailing (step 4d) -> on the card; out-of-state mailing = absentee signal
                 st = (r.get("owner_mailing_state") or "").strip().upper()
@@ -338,8 +402,9 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
             # land on the board as a "name".
             disc_owner = ((r["owner_name"] or "").strip() or None) if is_disc else None
             # typed, sortable: amount_owed + assessed_total also as numeric cols (kept in pm too)
-            owed = pm_dict["amount_owed"] if pm_dict else None
-            assessed = pm_dict["assessed_total"] if pm_dict else None
+            # .get: recipe-shaped parcel_meta carries NO tax keys (honest absent, never 0)
+            owed = pm_dict.get("amount_owed") if pm_dict else None
+            assessed = pm_dict.get("assessed_total") if pm_dict else None
             # asset_class: carried NATIVELY on the discovered tier, normalized to the canonical six.
             # Source today is raw_meta->>'asset_class' (the mint stows the true six there); when it
             # graduates to an owner_leads column, only this expression changes. Curated UPDATE path
@@ -385,6 +450,8 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                      market_value_est = coalesce(market_value_est, %s),
                      equity_pct = coalesce(equity_pct, %s),
                      taxes_annual = coalesce(taxes_annual, %s),
+                     signal_tags = coalesce(%s, signal_tags),
+                     source = coalesce(%s, source),
                      jarvis_brief = %s
                    where source_lead_id = %s""",
                 (r["recipe"], r["ch_name"], r["caf"], hub,
@@ -396,6 +463,7 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                  disc_owner, disc_addr, pm, owed, assessed,
                  disc_asset_class,
                  market_value_est, equity_pct, taxes_annual,
+                 sig_tags, lead_source,
                  Jsonb(brief), r["lead_id"]))
             if cur.rowcount == 0:
                 # The curated set stays UPDATE-only. The ONE exception: the 'discovered' intake
@@ -409,15 +477,19 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                              (source_lead_id, tenant_id, status, owner_name, parcel_apn, county_fips,
                               situs_lat, situs_lng, situs_address, emerging_score, emerging_signals,
                               parcel_meta, amount_owed, assessed_total, jarvis_brief, asset_class,
-                              market_value_est, equity_pct, taxes_annual)
-                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                              market_value_est, equity_pct, taxes_annual,
+                              score_signals, signal_tags, source)
+                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (r["lead_id"], TENANT, r["owner_name"], r["parcel_apn"], r["county_fips"],
                          r["situs_lat"], r["situs_lng"], disc_addr, r["emerging_score"],
                          Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
                          pm, owed, assessed, Jsonb(brief), disc_asset_class,
-                         market_value_est, equity_pct, taxes_annual))
+                         market_value_est, equity_pct, taxes_annual,
+                         s_signals if recipe_rm else None, sig_tags, lead_source))
                     discovered_inserted += 1
                     jarvis_composed += 1
+                    if recipe_rm:
+                        recipe_stamped += 1
                     continue
                 unmatched += 1
                 print(f"  WARN no acquisition_leads row for {r['owner_name']!r} "
@@ -425,6 +497,8 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                 continue
             enriched += 1
             jarvis_composed += 1
+            if recipe_rm:
+                recipe_stamped += 1
             if requires_bea:
                 bea_flagged += 1
             if sc is not None and s_owner is not None:
@@ -449,6 +523,7 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
         conn.commit()
 
     print(f"\nsync summary: enriched={enriched} discovered_inserted={discovered_inserted} "
+          f"recipe_stamped={recipe_stamped} "
           f"phones_projected={phones_set} "
           f"non-callable_kept_phoneless={phones_cleared} dnc_suppressed={dnc_suppressed} "
           f"hub_labeled={hubs_stamped} bea_flagged={bea_flagged} "
