@@ -37,6 +37,8 @@ SPACING_S = 1.2
 
 # County registry — one entry per free parcel FeatureServer. Berrien MI stays a
 # named gap (BS&A bans automation; no free polygon layer) per the spec.
+# A county may instead carry `geojson_file`: a manifest-sealed LOCAL pull (already
+# fetched $0 by another lane) loaded through the same upsert path — no network.
 COUNTIES = {
     "stjoseph": {
         "county_fips": "18141",
@@ -45,6 +47,19 @@ COUNTIES = {
         "apn_field": "PARCELSTAT",   # canonical 71-form, same string owner_leads stores
         "oid_field": "FID",
         "source": "arcgis:stjoseph_parcel25",
+    },
+    "laporte": {
+        # senior_assemblage Track-A pull (LaPorte County AGOL Laporte_Parcels layer),
+        # manifest-sealed sha256 66206c02… = the exact input the sealed run consumed.
+        # parcel_num = the state-formatted APN ('46-01-21-304-006.000-022'), VERBATIM the
+        # form cluster_parcels.csv / the recipe intake mints — contract term 1 holds with
+        # zero fuzzy matching. ~703 features carry a blank APN (ROW/rail/water slivers) ->
+        # honest skips. Duplicate-APN condo stacks upsert-converge to one boundary.
+        "county_fips": "18091",
+        "geojson_file": "recipes/senior_assemblage/data/in/laporte_parcels.geojson",
+        "apn_field": "parcel_num",
+        "oid_field": "FID",
+        "source": "arcgis:laporte_parcels_agol",
     },
 }
 
@@ -126,6 +141,16 @@ def _upsert_page(cur, rows):
         return ok, bad
 
 
+def _local_pages(cfg):
+    """Manifest-sealed local GeoJSON -> the same page stream the REST path yields.
+    64k features / 61MB fits in memory fine; paging only batches the upserts."""
+    with open(cfg["geojson_file"]) as fh:
+        feats = json.load(fh).get("features", [])
+    for i in range(0, len(feats), PAGE_SIZE):
+        yield feats[i:i + PAGE_SIZE]
+    yield []                                      # terminator, same as an empty REST page
+
+
 def main(county="stjoseph", dry_run=False):
     cfg = COUNTIES[county]
     with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
@@ -138,10 +163,14 @@ def main(county="stjoseph", dry_run=False):
         skips = {"no_apn": 0, "bad_geom": 0}
         bad_rows = []
         offset = 0
+        local = iter(_local_pages(cfg)) if cfg.get("geojson_file") else None
         while True:
-            if offset:
-                time.sleep(SPACING_S)
-            feats = _fetch_page(cfg, offset)
+            if local is not None:
+                feats = next(local)
+            else:
+                if offset:
+                    time.sleep(SPACING_S)
+                feats = _fetch_page(cfg, offset)
             if not feats:
                 break
             seen += len(feats)
