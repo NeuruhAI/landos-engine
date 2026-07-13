@@ -67,6 +67,28 @@ SOURCES = {
     # backfilled). Value = the landlord_exit subset crossed with absentee + tax-delinquent
     # for motivated-landlord ranking (t2 cross; no resolver needed to LOAD).
     "rental_license": os.path.join(INGEST_ROOT, "rental_license/staged/stjoseph_rental_license_signals.jsonl"),
+    # FLEET LOAD 2026-07-13 (cross-feed §§1-3). A lane may stage MULTIPLE county files —
+    # values here may be a list; main() normalizes. All three ride the generic map_row
+    # (11-col contract). rental_license precedent governs the class: facts load as
+    # temporal with honest-NULL fields, resolution is a separate step.
+    #   ground_lease  (§1, spatial_deferred): parcel_apn empty by design; detail.lat/lng
+    #     PIP-resolves to the HOST parcel engine-side. ⚠ owner_name = FCC registrant
+    #     (tower company), NEVER the lead — the host parcel's assessor owner is.
+    #   flood_remap   (§2, community_macro): community-grain (FEMA CID), parcel_apn empty;
+    #     resolution = community join, NOT parcel PIP.
+    #   layoff_notice (§3, area_deferred): geography='18' = STATE-grain (honest, per
+    #     contract); county_fips lands as '18'. LOAD ONLY — the WARN ZIP-heat resolver and
+    #     any WARN scoring are UNGREEN (operator gate); nothing downstream may consume
+    #     unresolved WARN rows (matched_lead_id stays NULL).
+    "ground_lease": [
+        os.path.join(INGEST_ROOT, "ground_lease/staged/stjoseph_ground_lease_signals.jsonl"),
+        os.path.join(INGEST_ROOT, "ground_lease/staged/berrien_ground_lease_signals.jsonl"),
+    ],
+    "flood_remap": [
+        os.path.join(INGEST_ROOT, "flood_remap/staged/stjoseph_flood_remap_signals.jsonl"),
+        os.path.join(INGEST_ROOT, "flood_remap/staged/berrien_flood_remap_signals.jsonl"),
+    ],
+    "layoff_notice": os.path.join(INGEST_ROOT, "layoff_notice/staged/indiana_warn_signals.jsonl"),
 }
 
 INSERT = """
@@ -169,16 +191,18 @@ def main(sources, dry_run):
     tot_read = tot_ins = tot_skip = tot_rej = 0
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         for key in sources:
-            path = SOURCES[key]
-            if not os.path.exists(path):
-                # A disarmed/not-yet-staged source (or reorganized upstream tree) is
-                # an honest skip, never a crash — the loader must survive `--source all`.
-                print(f"  [{key}] SKIP — no staged file at {path}")
-                continue
-            r, i, s, rej = load_file(cur, path, dry_run)
-            verb = "would_insert" if dry_run else "inserted"
-            print(f"  [{key}] read={r} {verb}={i} skipped_dup={s} rejected_stale={rej}")
-            tot_read += r; tot_ins += i; tot_skip += s; tot_rej += rej
+            spec = SOURCES[key]
+            for path in (spec if isinstance(spec, list) else [spec]):
+                if not os.path.exists(path):
+                    # A disarmed/not-yet-staged source (or reorganized upstream tree) is
+                    # an honest skip, never a crash — the loader must survive `--source all`.
+                    print(f"  [{key}] SKIP — no staged file at {path}")
+                    continue
+                r, i, s, rej = load_file(cur, path, dry_run)
+                verb = "would_insert" if dry_run else "inserted"
+                print(f"  [{key}] {os.path.basename(path)}: read={r} {verb}={i} "
+                      f"skipped_dup={s} rejected_stale={rej}")
+                tot_read += r; tot_ins += i; tot_skip += s; tot_rej += rej
         if dry_run:
             conn.rollback()
             print(f"\n=== LOAD DRY-RUN — read {tot_read}, would_insert {tot_ins}, "
