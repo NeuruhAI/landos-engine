@@ -1,7 +1,15 @@
 -- recipe_runs ledger row — one per run, append-only. Errors get a NEW row
--- with status='failed' + error populated; never UPDATE/DELETE ledger rows.
--- Fill :params from out/<runid>/run_manifest.json, :leads_in = gates.parcels_attr,
--- :leads_out = data rows in out/<runid>/cluster_parcels.csv.
+-- with status='error' + error populated; never UPDATE/DELETE ledger rows.
+--
+-- Live check constraints (mig 018): category IN (scrape,import,enrich,outreach),
+-- executor_kind IN (crm-action,engine-stage), status IN (staged,awaiting_engine,
+-- synced,error). The plan-spec labels (sourcing/script/succeeded) predate the
+-- live schema — mapping: scrape / engine-stage / staged, spec labels preserved
+-- inside params.spec_labels. status flips to 'synced' when the CRM sync lane
+-- consumes the run's cluster_parcels.csv.
+--
+-- Fill :params from out/<runid>/run_manifest.json (with spec_labels merged),
+-- :leads_in = gates.parcels_attr, :leads_out = cluster_parcels.csv data rows.
 insert into public.recipe_runs
   (tenant_id, recipe_id, recipe_label, category, executor_kind,
    params, status, leads_in, leads_out, created_at, finished_at)
@@ -9,9 +17,9 @@ values
   ('1840ac90-54bd-4b3d-8baf-227c8d84ab5a',
    'senior_lakefront_assemblage_v1',
    'Senior-Tenure Lakefront Assemblage',
-   'sourcing', 'script',
+   'scrape', 'engine-stage',
    :'params'::jsonb,
-   'succeeded',
+   'staged',
    :leads_in, :leads_out,
    now(), now())
-returning id, created_at;
+returning id, status, created_at;
