@@ -70,10 +70,13 @@ def test_table_is_additive_pk_rls_and_vintage_flag():
         assert banned not in s
 
 
-def test_loader_upsert_is_on_conflict_do_nothing():
+def test_loader_upsert_backfills_on_conflict():
+    # W0 widen (mig 026): reload backfills the new mine columns via DO UPDATE;
+    # owner_name/mailing are coalesced so a blank never clobbers.
     s = re.sub(r"\s+", " ", INSERT_SQL.lower())
     assert "insert into landos.parcel_owner" in s
-    assert "on conflict (county_fips, parcel_apn) do nothing" in s
+    assert "on conflict (county_fips, parcel_apn) do update set" in s
+    assert "coalesce(excluded.owner_name, landos.parcel_owner.owner_name)" in s
     assert COUNTIES["laporte"]["county_fips"] == "18091"
 
 

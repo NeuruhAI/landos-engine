@@ -44,6 +44,7 @@ from psycopg.types.json import Jsonb
 
 from app.config import DATABASE_URL
 from app.jarvis_brief import compose_brief
+from scripts.seller_contact import upsert_seller_contact_phone
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 THRESHOLD = 0.6  # {{CONFIDENCE_THRESHOLD}} — same cutoff the importer validates
@@ -510,8 +511,16 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
             if hub:
                 hubs_stamped += 1
 
+        # === A8.2 CONTACT BRIDGE (RULING 2026-07-14) — sole writer of spine seller
+        # contacts. Every callable lead gets its seller send-target row; a
+        # suppressed lead's spine-owned phone is retracted (consent rail). Then the
+        # leak assertion fails LOUDLY if any callable lead is still contactless. ===
+        contact_stats = sync_seller_contacts(cur)
+        assert_no_orphan_callable_leads(cur)
+
         if dry_run:
             conn.rollback()
+            print(f"\n=== CONTACT BRIDGE DRY-RUN — {dict(contact_stats)} (rolled back) ===")
             print(f"\n=== JARVIS BRIEF DRY-RUN — {len(jarvis_briefs)} composed, NO writes ===")
             for r, brief in jarvis_briefs[:5]:
                 print(f"\nlead {r['lead_id']}  ({r['owner_name']})")
@@ -521,6 +530,8 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
             print("\nHARD STOP — dry-run only (nothing written). Re-run without --dry-run to project.")
             return
         conn.commit()
+        print(f"\ncontact bridge: {dict(contact_stats)} "
+              f"(seller send-target rows; source='spine_sync', single writer)")
 
     print(f"\nsync summary: enriched={enriched} discovered_inserted={discovered_inserted} "
           f"recipe_stamped={recipe_stamped} "
@@ -531,6 +542,86 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
     print(f"hubs in effect ({len(hub_label)}):")
     for k in sorted(hub_label, key=lambda k: -groups[k]["count"]):
         print(f"  {hub_label[k]}")
+
+
+CALLABLE_OR_SUPPRESSED = """
+    select lead_id, owner_name, phone_1, coalesce(dnc, false) as dnc
+    from public.acquisition_leads
+    where tenant_id = %s
+      and ( (phone_1 is not null and phone_1 <> '') or coalesce(dnc, false) )
+"""
+
+# JOB 4 — the leak assertion. A callable lead (phone on the board, not DNC) with
+# no seller contact carrying a phone is UNTEXTABLE — the exact class of leak the
+# ruling closes. It must never be silent again.
+ORPHAN_CALLABLE = """
+    select a.lead_id, a.owner_name
+    from public.acquisition_leads a
+    where a.tenant_id = %s
+      and a.phone_1 is not null and a.phone_1 <> ''
+      and not coalesce(a.dnc, false)
+      and not exists (
+        select 1 from public.contacts c
+        where c.related_lead_id = a.lead_id
+          and c.contact_type = 'seller'
+          and coalesce(c.phone, '') <> '')
+"""
+
+
+def sync_seller_contacts(cur):
+    """The A8.2 bridge pass — sole writer of spine seller contacts. Idempotent:
+    callable leads get (or keep) a seller send-target row; suppressed leads have
+    their spine-owned phone retracted. Human contacts are never touched."""
+    cur.execute(CALLABLE_OR_SUPPRESSED, (TENANT,))
+    leads = cur.fetchall()
+    stats = Counter()
+    for L in leads:
+        callable_ = bool((L["phone_1"] or "").strip()) and not L["dnc"]
+        outcome = upsert_seller_contact_phone(
+            cur, lead_id=L["lead_id"], tenant_id=TENANT,
+            owner_name=L["owner_name"], phone=L["phone_1"], callable=callable_)
+        stats[outcome] += 1
+    return stats
+
+
+def assert_no_orphan_callable_leads(cur):
+    """Errors-visible doctrine: raise LOUDLY if any callable lead lacks a seller
+    contact. Runs inside the sync txn, so a violation aborts (rolls back) the run."""
+    cur.execute(ORPHAN_CALLABLE, (TENANT,))
+    orphans = cur.fetchall()
+    if orphans:
+        sample = ", ".join(f"{o['lead_id']} ({o['owner_name']!r})" for o in orphans[:5])
+        raise AssertionError(
+            f"CONTACT LEAK — {len(orphans)} callable lead(s) have NO seller contact "
+            f"row (untextable): {sample}{' …' if len(orphans) > 5 else ''}. "
+            f"The A8.2 bridge failed to close; aborting sync.")
+
+
+def backfill_contacts(dry_run: bool = False):
+    """JOB 3 — close the bridge for the existing orphans in the same motion
+    (same writer, same shape). Census before/after; the leak assertion gates it."""
+    import psycopg
+    from psycopg.rows import dict_row
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+        def census():
+            cur.execute("select count(*) n from public.contacts "
+                        "where contact_type='seller' and coalesce(phone,'')<>'' and tenant_id=%s", (TENANT,))
+            with_phone = cur.fetchone()["n"]
+            cur.execute(ORPHAN_CALLABLE, (TENANT,))
+            orphans = len(cur.fetchall())
+            return with_phone, orphans
+        b_contacts, b_orphans = census()
+        print(f"[census] before: seller contacts w/ phone={b_contacts}  callable-without-contact={b_orphans}")
+        stats = sync_seller_contacts(cur)
+        assert_no_orphan_callable_leads(cur)
+        a_contacts, a_orphans = census()
+        if dry_run:
+            conn.rollback()
+            print(f"[dry-run] would: {dict(stats)} -> contacts w/ phone={a_contacts} orphans={a_orphans} (rolled back)")
+            return
+        conn.commit()
+        print(f"[census] after:  seller contacts w/ phone={a_contacts}  callable-without-contact={a_orphans}")
+        print(f"contact backfill: {dict(stats)} (source='spine_sync', single writer)")
 
 
 # === DEPRECATED — DO NOT CALL (superseded 2026-06-22, AXON Emergence Loop step 2) ===
@@ -629,5 +720,10 @@ if __name__ == "__main__":
                     help="compose + preview Jarvis briefs (5); write nothing")
     ap.add_argument("--lead-id", action="append",
                     help="project only this landos.owner_leads lead_id; repeatable")
+    ap.add_argument("--backfill-contacts", action="store_true",
+                    help="JOB 3: run ONLY the A8.2 seller-contact bridge pass (census + gated)")
     args = ap.parse_args()
-    main(dry_run=args.dry_run, lead_ids=args.lead_id)
+    if args.backfill_contacts:
+        backfill_contacts(dry_run=args.dry_run)
+    else:
+        main(dry_run=args.dry_run, lead_ids=args.lead_id)
