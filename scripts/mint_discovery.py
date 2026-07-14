@@ -48,6 +48,50 @@ OWNER_TYPE_EXPR = """
          when po.owner_kind = 'human'  then 'individual' end
 """
 
+# CONVERSION exclusions: the vintage_flag='govt' filter (in _candidate_sql) only catches
+# counties whose roll is stamped. On an UNSTAMPED roll (e.g. LaPorte, vintage_flag NULL) a
+# 'COUNTY OF … TREASURER' / school district / cemetery would slip the flag — the exact leak
+# that put govt + surname-collision rows into the CONVERSION lens. So exclude them by NAME
+# pattern too (mirrors scripts/scrub_conversion). Note the CORRECTED cemetery pattern
+# `cemeter|cemetar` — `\ycemeter\y` fails on "Cemetery" (no boundary between 'r' and 'y').
+_CONVERSION_EXCLUDE = (
+    r" and po.owner_name !~* '\y(state of|county of|city of|village of|township of|twp of|"
+    r"land ?bank|treasurer|natural resources|road commission|drain commission|school district|"
+    r"public schools|board of education|housing (commission|authority)|redevelopment authority)\y'"
+    r" and po.owner_name !~* '(cemeter|cemetar|\yburial\y|\ymausoleum\y|memorial (garden|park))'"
+    r" and po.owner_name !~* '\y(school|academ|educat|college|universit|seminary)\y'"
+    r" and po.owner_name !~* '\y(hospital|health|medical|clinic|sanitarium)\y'"
+)
+
+# STRUCTURAL DISCRIMINATOR (ccT4): a SURNAME COLLISION ("Church Sandra", "Temple Patrick &
+# Roxann" — a homeowner) once could NOT be excluded in SQL. It can now: an INSTITUTION
+# carries a denomination / fraternal / civic QUALIFIER token (has_org_token); a family does
+# not. So mine_exempt REQUIRES has_org_token — a bare trigger + a personal name no longer
+# mints. This is the SAME gate as landos.v_mine_exempt_institutional.mintable (migration
+# 033) — keep the two regexes in LOCKSTEP. TRADEOFF (deliberate, safety over yield): a
+# legit church whose name carries no qualifier ("Sauktown Church") also fails this gate and
+# is HELD, not discarded — it lands in the view's review bucket for the operator, and the
+# spot-check gate (mint_discovery --spot-check / scrub_conversion --spot-check) stays
+# MANDATORY before any CONVERSION fire on a new county. 🔴 This lens is REGEX-derived, not
+# exempt-roll-derived; it must not be bulk-fired on Berrien (86k) without a real exempt
+# source or the human gate — see migration 033's view comment.
+_CONVERSION_MINTABLE = (
+    r" and (po.owner_name ~* "
+    r"'\y(baptist|methodist|meth|umc|lutheran|luth|luthern|catholic|presbyterian|pentecostal|"
+    r"pentacostal|apostolic|mennonite|brethren|wesleyan|adventist|nazarene|disciples|gospel|bible|"
+    r"christian|cristiana|iglesia|jehovah|witnesses|trinity|calvary|emmanuel|immanuel|sinai|"
+    r"deliverance|revival|lighthouse|crossroads|freewill|sanctuary|fellowship|assembly|outreach|"
+    r"congregation|ministr|mission|missionary|diocese|parsonage|synod|conference|sacred|holy|"
+    r"cathedral|redeemer|savior|shepherd|evangelical|evang|episcopal|orthodox|reformed|covenant|"
+    r"foursquare|elks|moose|masonic|masons|shrine|shriner|aerie|eagles|legion|vfw|amvets|veterans|"
+    r"fraternal|benevolent|loyal|knights|inc|llc|ltd|corp|company|assn|association|society|trustees|"
+    r"foundation|center|centre|district|council|club|habitat|salvation|ymca|ywca|goodwill|first|"
+    r"second|third|greater|united|community|of|syrian|greek|serbian|coptic|russian|romanian|"
+    r"ukrainian|antiochian|maronite|melkite)\y'"
+    r" or po.owner_name ~* '(#\s*[0-9]{1,5}\y|\y(no|post)\s+[0-9]{1,5}\y|\y[0-9]{2,5}\y)'"
+    r" or po.owner_name ~* '\ya?\.?\s*f\s*&\s*a\.?\s*m\y')"
+)
+
 # Each DISCOVERY source: the candidate predicate over the (non-govt) owner roll.
 # lens is read from the registry at run time (single source of truth).
 MINE_SOURCES = {
@@ -57,7 +101,8 @@ MINE_SOURCES = {
     "mine_exempt": "po.owner_name ~* "
                    "'\\y(church|chapel|parish|ministr|congregation|temple|mosque|synagogue|diocese|"
                    "tabernacle|worship|lodge|elks|moose|masonic|odd ?fellows|knights of|shriner|"
-                   "eagles aerie|vfw|veterans of foreign|american legion|amvets|legion post|grange)\\y'",
+                   "eagles aerie|vfw|veterans of foreign|american legion|amvets|legion post|grange)\\y'"
+                   + _CONVERSION_EXCLUDE + _CONVERSION_MINTABLE,
     "mine_same_owner_adjacent": "exists (select 1 from landos.v_mine_same_owner_adjacent v "
                                 "where v.county_fips = po.county_fips and v.parcel_apn = po.parcel_apn)",
     # UNBLOCKED by the assessor widen (mig 030) + Vanderburgh's roll (year_built + assessed +
@@ -211,9 +256,11 @@ def _cand_for(source):
 
 def spot_check(source, n=10):
     """Render N candidate rows for an eyeball BEFORE firing (the 624 gate pattern). For
-    CONVERSION (mine_exempt) the false positives to hunt are a 'church' that is really a
-    cemetery association or school district — though the govt vintage-flag already excludes
-    both (GOVT_RE covers school/cemetery). No writes."""
+    CONVERSION (mine_exempt) the false positive to hunt is a SURNAME COLLISION — a homeowner
+    named Church/Temple/Parish/Lodge. The has_org_token gate (_CONVERSION_MINTABLE, in
+    lockstep with the view's `mintable`) now holds those back structurally, but the eyeball
+    stays MANDATORY on a new county: this lens is regex-derived, not exempt-roll-derived. No
+    writes."""
     cand = _cand_for(source)
     if cand is None:
         raise SystemExit(f"no candidate SQL for {source!r} (flood/HOLD or unknown)")
