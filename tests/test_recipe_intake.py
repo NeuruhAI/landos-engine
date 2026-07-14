@@ -111,4 +111,8 @@ def test_parcel_meta_carries_cluster_stats_and_no_tax_keys(mapped):
 
 
 def test_source_projection(mapped):
-    assert recipe_source(mapped["raw_meta"]) == "recipe:senior_lakefront_assemblage_v1"
+    # §9.2 originally specified source='recipe:<id>', but that value violates
+    # acquisition_leads_source_check (the CheckViolation that blocked the 624 mint).
+    # Recipe leads are engine-synced -> 'engine_sync'; provenance is not lost (it rides in
+    # signal_tags / score_signals.recipe / parcel_meta.recipe / owner_leads.source).
+    assert recipe_source(mapped["raw_meta"]) == "engine_sync"

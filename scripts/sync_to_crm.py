@@ -203,8 +203,57 @@ def recipe_signal_tags(rm):
 
 
 def recipe_source(rm):
-    """§9.2: acquisition_leads.source = 'recipe:<recipe_id>'."""
-    return f"recipe:{rm['recipe_id']}"
+    """acquisition_leads.source for a recipe-minted lead.
+
+    §9.2 originally specified source='recipe:<recipe_id>', but public.acquisition_leads
+    carries a controlled-vocabulary CHECK (acquisition_leads_source_check): source ∈
+    {engine_sync, manual, public_found, inbound_form, cold_caller}. Every engine-synced
+    lead (1,516+ tax-sale discovered rows) uses 'engine_sync'; recipe leads are engine-
+    synced too, so they take the same value. Recipe provenance is not lost — it lives in
+    landos.owner_leads.source ('recipe:<recipe_id>', reachable via source_lead_id), in
+    signal_tags, and in parcel_meta's recipe block.
+    """
+    return "engine_sync"
+
+
+# public.acquisition_leads.source is a controlled vocabulary — CHECK
+# acquisition_leads_source_check, verified live 2026-07-14 — and it is NOT NULL with
+# DEFAULT 'engine_sync'. This is the ONE place the allowed set is named; both the
+# pre-insert guard and the --check-constraints probe read it. If the DB CHECK ever
+# widens, change it HERE in the same commit that migrates the constraint.
+ALLOWED_SOURCES = ("engine_sync", "manual", "public_found", "inbound_form", "cold_caller")
+
+
+def assert_source_allowed(source):
+    """JOB 2 — guard acquisition_leads_source_check BEFORE a row reaches the DB. The
+    lesson of the recipe CheckViolation: fail readably HERE (naming the bad value + the
+    allowed set), not with a raw psycopg 23514 six hundred rows into a sync. None is
+    legal: on the UPDATE path it means 'no change' (coalesce keeps the existing value),
+    and on a bare INSERT the column DEFAULT ('engine_sync') applies. A stray non-null
+    value — e.g. the old 'recipe:<id>' — raises."""
+    if source is None or source in ALLOWED_SOURCES:
+        return source
+    raise ValueError(
+        f"acquisition_leads.source={source!r} violates acquisition_leads_source_check "
+        f"(allowed: {list(ALLOWED_SOURCES)}, or NULL). Recipe provenance rides in "
+        f"signal_tags / score_signals.recipe / parcel_meta.recipe / landos.owner_leads.source "
+        f"— never the CRM source enum; map it to 'engine_sync'.")
+
+
+# The discovered-tier INSERT (single-writer rule: this is the ONLY path that creates an
+# acquisition_leads row). Named once so the --check-constraints probe (JOB 3) exercises
+# the EXACT SQL the sync runs — a dry-run that never touches the DB cannot validate DB
+# acceptance, so the probe must round-trip THIS statement. status='discovered' is a
+# literal; 21 placeholders follow.
+DISCOVERED_INSERT_SQL = """
+    insert into public.acquisition_leads
+      (source_lead_id, tenant_id, status, owner_name, parcel_apn, county_fips,
+       situs_lat, situs_lng, situs_address, emerging_score, emerging_signals,
+       parcel_meta, amount_owed, assessed_total, jarvis_brief, asset_class,
+       market_value_est, equity_pct, taxes_annual,
+       score_signals, signal_tags, source)
+    values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+"""
 
 
 def main(dry_run: bool = False, lead_ids=None) -> None:
@@ -383,6 +432,13 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
             # recipe intake (§9.2): recipe-minted rows get recipe-shaped jsonb, not tax keys.
             sig_tags = recipe_signal_tags(recipe_rm) if recipe_rm else None
             lead_source = recipe_source(recipe_rm) if recipe_rm else None
+            # UPDATE keeps source unchanged when lead_source is None (coalesce below); an
+            # INSERT cannot — source is NOT NULL — so the discovered tier defaults to
+            # 'engine_sync' (it IS an engine sync). Guard BOTH values against the live CHECK
+            # before either statement runs (JOB 2): a stray source dies here, readably.
+            insert_source = lead_source or "engine_sync"
+            assert_source_allowed(lead_source)     # UPDATE path (None = no change)
+            assert_source_allowed(insert_source)   # INSERT path (never NULL)
             if recipe_rm:
                 pm_dict = parcel_meta_from_recipe(recipe_rm)
             else:
@@ -474,19 +530,13 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                 # the CRM's own intake (warn + skip).
                 if (r.get("provenance") or "").startswith("discovered"):
                     cur.execute(
-                        """insert into public.acquisition_leads
-                             (source_lead_id, tenant_id, status, owner_name, parcel_apn, county_fips,
-                              situs_lat, situs_lng, situs_address, emerging_score, emerging_signals,
-                              parcel_meta, amount_owed, assessed_total, jarvis_brief, asset_class,
-                              market_value_est, equity_pct, taxes_annual,
-                              score_signals, signal_tags, source)
-                           values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        DISCOVERED_INSERT_SQL,
                         (r["lead_id"], TENANT, r["owner_name"], r["parcel_apn"], r["county_fips"],
                          r["situs_lat"], r["situs_lng"], disc_addr, r["emerging_score"],
                          Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
                          pm, owed, assessed, Jsonb(brief), disc_asset_class,
                          market_value_est, equity_pct, taxes_annual,
-                         s_signals if recipe_rm else None, sig_tags, lead_source))
+                         s_signals if recipe_rm else None, sig_tags, insert_source))
                     discovered_inserted += 1
                     jarvis_composed += 1
                     if recipe_rm:
@@ -624,6 +674,61 @@ def backfill_contacts(dry_run: bool = False):
         print(f"contact backfill: {dict(stats)} (source='spine_sync', single writer)")
 
 
+def check_constraints():
+    """JOB 3 — the lesson of the recipe CheckViolation, made a standing check: a dry-run
+    that never touches the database cannot validate database acceptance. This mode
+    round-trips synthetic discovered-tier rows through a REAL transaction against
+    public.acquisition_leads — the EXACT DISCOVERED_INSERT_SQL the sync runs, exercising
+    every NOT NULL, CHECK and DEFAULT the live table enforces — then ROLLS BACK, so
+    nothing persists. It proves two things the old dry-run could not:
+      (1) the mapped source ('engine_sync') shape is DB-legal, and
+      (2) the live CHECK actually REJECTS the old 'recipe:<id>' value —
+    so assert_source_allowed defends a real constraint, not a phantom.
+    Exit 1 on any surprise (accepted-when-should-reject, or vice-versa)."""
+    from psycopg import Rollback
+
+    PROBE_ID = "0eadbeef-0000-4000-8000-000000000001"  # a source_lead_id no real row uses
+
+    def probe(conn, cur, source):
+        # synthetic, type-valid values for every column of DISCOVERED_INSERT_SQL (21).
+        params = (PROBE_ID, TENANT, "PROBE — rolled back", "PROBE-APN", "18091",
+                  None, None, None, None, None,
+                  Jsonb({"recipe": {"recipe_id": "probe"}}), None, None, Jsonb({"probe": True}), "unknown",
+                  None, None, None,
+                  Jsonb({"recipe_id": "probe"}), ["probe"], source)
+        try:
+            with conn.transaction():           # SAVEPOINT — isolates this probe
+                cur.execute(DISCOVERED_INSERT_SQL, params)
+                raise Rollback                 # accepted by the DB -> undo, never persist
+            return True, None
+        except psycopg.errors.Error as e:      # the DB refused the row (CHECK/NOT NULL/…)
+            return False, e
+
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+        ok, ok_err = probe(conn, cur, "engine_sync")       # mapped value MUST be accepted
+        bad, bad_err = probe(conn, cur, "recipe:probe")    # old buggy value MUST be rejected
+        conn.rollback()                                    # belt-and-suspenders; nothing sticks
+
+    bad_is_source_check = (
+        bad is False
+        and isinstance(bad_err, psycopg.errors.CheckViolation)
+        and getattr(bad_err.diag, "constraint_name", "") == "acquisition_leads_source_check")
+
+    print(f"\n{'='*68}\n--check-constraints: real-txn round-trip vs the LIVE table (rolled back)\n{'='*68}")
+    print(f"  source='engine_sync'  -> " +
+          ("ACCEPTED (DB-legal)" if ok else f"REJECTED — UNEXPECTED: {ok_err}"))
+    print(f"  source='recipe:probe' -> " +
+          ("REJECTED by acquisition_leads_source_check (expected)" if bad_is_source_check
+           else ("ACCEPTED — UNEXPECTED (the CHECK is not protecting us!)" if bad
+                 else f"REJECTED, but not by the source CHECK: {bad_err}")))
+    passed = ok and bad_is_source_check
+    print(f"\n  RESULT: " + ("PASS — the projection shape is DB-legal AND the source CHECK is real."
+                             if passed else "FAIL — see above."))
+    if not passed:
+        raise SystemExit(1)
+    return passed
+
+
 # === DEPRECATED — DO NOT CALL (superseded 2026-06-22, AXON Emergence Loop step 2) ===
 # emerging_score / emerging_signals are now projected by main() above, read STRAIGHT from
 # landos.owner_leads (written by scripts/score_emergence.py — the single source of the moat
@@ -721,9 +826,14 @@ if __name__ == "__main__":
     ap.add_argument("--lead-id", action="append",
                     help="project only this landos.owner_leads lead_id; repeatable")
     ap.add_argument("--backfill-contacts", action="store_true",
-                    help="JOB 3: run ONLY the A8.2 seller-contact bridge pass (census + gated)")
+                    help="run ONLY the A8.2 seller-contact bridge pass (census + gated)")
+    ap.add_argument("--check-constraints", action="store_true",
+                    help="round-trip a synthetic row through a REAL txn + ROLLBACK; prove the "
+                         "projection is DB-legal and the source CHECK is real (writes nothing)")
     args = ap.parse_args()
-    if args.backfill_contacts:
+    if args.check_constraints:
+        check_constraints()
+    elif args.backfill_contacts:
         backfill_contacts(dry_run=args.dry_run)
     else:
         main(dry_run=args.dry_run, lead_ids=args.lead_id)
