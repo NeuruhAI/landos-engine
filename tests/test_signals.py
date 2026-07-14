@@ -1,3 +1,9 @@
+from datetime import date
+import os
+
+os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+os.environ.setdefault("LANDOS_SECRET", "test-secret")
+
 from app.normalizers.tax_sale_info import TaxSaleInfoNormalizer
 from scripts.lead_queue import correlation_boost
 
@@ -51,3 +57,31 @@ def test_corr_is_capped():
     sigs = [{"signal_type": f"t{i}", "signal_strength": 1.0} for i in range(20)]
     b, _n, _t = correlation_boost(sigs)
     assert b == 1.40
+
+
+def test_code_violation_and_lis_pendens_have_explicit_emergence_calibration():
+    from scripts.score_emergence import EMERGENCE_WEIGHTS, HALF_LIFE_DAYS, score_signal
+
+    today = date(2026, 7, 8)
+    rows = {
+        "code_violation": {
+            "source_type": "code_violation",
+            "signal_date": today,
+            "confidence": 1.0,
+            "signal_id": "00000000-0000-0000-0000-000000000001",
+        },
+        "lis_pendens": {
+            "source_type": "lis_pendens",
+            "signal_date": today,
+            "confidence": 1.0,
+            "signal_id": "00000000-0000-0000-0000-000000000002",
+        },
+    }
+
+    assert EMERGENCE_WEIGHTS["code_violation"] == 0.6
+    assert HALF_LIFE_DAYS["code_violation"] == 120
+    assert EMERGENCE_WEIGHTS["lis_pendens"] == 0.8
+    assert HALF_LIFE_DAYS["lis_pendens"] == 150
+
+    assert score_signal(rows["code_violation"], today)[0] == 0.6
+    assert score_signal(rows["lis_pendens"], today)[0] == 0.8

@@ -41,6 +41,7 @@ from app.comps import arbitrage_feasibility  # pure (no DB/network), like this m
 DISTRESS_TOKEN_MAP: Dict[str, str] = {
     "tax_delinquent": "tax_delinquent",   # exact
     "foreclosure": "pre_foreclosure",     # family map (engine emits 'foreclosure'); flagged in coverage
+    "lis_pendens": "pre_foreclosure",     # legal notice family -> pre-foreclosure pressure
     "environmental_part201": "environmental",  # MI Part 201 contamination -> 'environmental' (family map)
     "brownfield": "environmental",             # brownfield -> 'environmental' (family map)
     "probate": "probate",                 # from discovery_signals (source_type probate_in -> 'probate')
