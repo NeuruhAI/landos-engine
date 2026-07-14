@@ -16,7 +16,10 @@ import pytest
 
 import scripts.sync_to_crm as sync
 from scripts.sync_to_crm import (ALLOWED_SOURCES, assert_source_allowed,
-                                 recipe_source, DISCOVERED_INSERT_SQL)
+                                 recipe_source, DISCOVERED_INSERT_SQL,
+                                 DISCOVERED_INSERT_COLS, ACQ_NOT_NULL_COLS,
+                                 assert_insert_row_valid, default_signal_tags,
+                                 discovered_signal_tags)
 
 
 # ---- JOB 1: the mapping (recipe provenance -> CRM's controlled vocabulary) ----------
@@ -74,15 +77,69 @@ def test_guard_is_wired_into_main_and_insert_uses_engine_sync_fallback():
     # both write paths are guarded before any statement runs.
     assert "assert_source_allowed(lead_source)" in src
     assert "assert_source_allowed(insert_source)" in src
-    # the INSERT binds insert_source (never the possibly-NULL lead_source) to source.
-    assert "sig_tags, insert_source))" in src
+    # the INSERT binds insert_source (never the possibly-NULL lead_source) to source, and
+    # insert_sig_tags (never a null) to signal_tags — guarded before the execute runs.
+    assert "insert_sig_tags, insert_source)" in src
+    assert "insert_sig_tags = sig_tags or default_signal_tags(" in src
+    assert "assert_insert_row_valid(insert_values)" in src
     assert "DISCOVERED_INSERT_SQL" in src                   # main() runs the shared SQL
 
 
 def test_check_constraints_round_trips_the_real_insert():
-    # JOB 3 proves DB-acceptance against the live table, not a phantom: it must run the
-    # EXACT projection SQL and roll back.
+    # The probe proves DB-acceptance against the live table, not a phantom: it must run the
+    # EXACT projection SQL and roll back, and assert BOTH the source CHECK and the
+    # signal_tags NOT NULL fire.
     src = inspect.getsource(sync.check_constraints)
     assert "DISCOVERED_INSERT_SQL" in src
     assert "conn.transaction()" in src and "Rollback" in src
     assert "acquisition_leads_source_check" in src          # asserts the CHECK actually fires
+    assert "NotNullViolation" in src and "signal_tags" in src   # and the NOT NULL landmine
+
+
+# ---- JOB 1 (defuse): signal_tags NOT NULL landmine ---------------------------------
+
+def test_default_signal_tags_taxsale_gets_tax_delinquent():
+    # the Vanderburgh-502 case: an unmatched tax-sale row carries no explicit tags.
+    assert default_signal_tags("discovered_taxsale") == ["tax_delinquent"]
+    assert default_signal_tags("discovered_tax_sale") == ["tax_delinquent"]
+    assert default_signal_tags("discovered_signal") == ["discovered"]   # honest non-null fallback
+    assert default_signal_tags(None) == ["discovered"]
+
+
+def test_discovered_signal_tags_reads_raw_meta_for_discovery_rows():
+    rm = {"signal_tags": ["ground_lease", "income_under_asset"]}
+    assert discovered_signal_tags(rm, is_disc=True) == ["ground_lease", "income_under_asset"]
+    assert discovered_signal_tags({}, is_disc=True) is None          # tag-less -> None (default fills)
+    assert discovered_signal_tags(rm, is_disc=False) is None         # curated rows untouched
+
+
+def _valid_row(**over):
+    """A minimal DB-legal discovered-tier bind (all NOT NULL binds satisfied)."""
+    base = {c: None for c in DISCOVERED_INSERT_COLS}
+    base.update(source_lead_id="L1", tenant_id="T", signal_tags=["tax_delinquent"], source="engine_sync")
+    base.update(over)
+    return tuple(base[c] for c in DISCOVERED_INSERT_COLS)
+
+
+def test_guard_passes_a_legal_discovered_bind():
+    assert_insert_row_valid(_valid_row())   # no raise
+
+
+def test_guard_rejects_null_signal_tags_naming_the_column():
+    with pytest.raises(ValueError) as e:
+        assert_insert_row_valid(_valid_row(signal_tags=None))
+    msg = str(e.value)
+    assert "signal_tags" in msg and "NOT NULL" in msg
+    assert "tax_delinquent" in msg          # points to the fix
+
+
+def test_guard_rejects_bad_source_through_the_sibling_path():
+    with pytest.raises(ValueError):
+        assert_insert_row_valid(_valid_row(source="recipe:x"))
+
+
+def test_not_null_set_matches_the_bound_columns():
+    # signal_tags + source are the only NOT NULL columns this INSERT actually binds
+    # (the rest of the NOT NULL set uses column DEFAULTs — omitted from the INSERT).
+    bound_notnull = set(DISCOVERED_INSERT_COLS) & ACQ_NOT_NULL_COLS
+    assert bound_notnull == {"signal_tags", "source"}

@@ -165,12 +165,110 @@ def dry_run(sources=None):
     return rows
 
 
+# --- GATED LIVE FIRE (owner_leads writes; NEVER touches public.acquisition_leads) -----
+# Net-new candidate rows -> landos.owner_leads, provenance='discovered_signal',
+# source='signal:<source_type>', raw_meta carrying the lens + signal_tags + asset_class.
+# sync_to_crm (the single writer) projects them on its next run — same discovered tier as
+# the recipe/taxsale mint. ON CONFLICT + left-join net-new => idempotent (re-fire mints 0).
+FIRE_SQL = """
+    insert into landos.owner_leads
+        (tenant_id, county_fips, parcel_apn, owner_name, situs_address,
+         owner_mailing_address, owner_mailing_city, owner_mailing_state, owner_mailing_zip,
+         owner_type, discovery_seed, source, provenance, raw_meta)
+    select %(tenant)s, c.county_fips, c.parcel_apn, c.owner_name, c.situs_address,
+           c.owner_mailing_address, c.owner_mailing_city, c.owner_mailing_state, c.owner_mailing_zip,
+           c.owner_type, false, %(source)s, %(provenance)s,
+           jsonb_build_object(
+             'source_type', %(source_type)s::text,
+             'lens', %(lens)s::text,
+             'signal_tags', jsonb_build_array(%(source_type)s::text, %(lens_lower)s::text),
+             'asset_class', c.asset_class)
+    from ({cand}) c
+    left join landos.owner_leads ol
+      on ol.tenant_id = %(tenant)s and ol.county_fips = c.county_fips and ol.parcel_apn = c.parcel_apn
+    where ol.lead_id is null
+    on conflict (tenant_id, county_fips, parcel_apn) do nothing
+"""
+
+
+def _cand_for(source):
+    """The candidate SQL for a fireable discovery source (govt already excluded).
+    flood_remap is a parcel_flood join of a different shape — not fired through this path."""
+    if source in MINE_SOURCES:
+        return _candidate_sql(source, MINE_SOURCES[source])
+    if source == "ground_lease":
+        return GROUND_LEASE_CAND
+    return None
+
+
+def spot_check(source, n=10):
+    """Render N candidate rows for an eyeball BEFORE firing (the 624 gate pattern). For
+    CONVERSION (mine_exempt) the false positives to hunt are a 'church' that is really a
+    cemetery association or school district — though the govt vintage-flag already excludes
+    both (GOVT_RE covers school/cemetery). No writes."""
+    cand = _cand_for(source)
+    if cand is None:
+        raise SystemExit(f"no candidate SQL for {source!r} (flood/HOLD or unknown)")
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+        cur.execute("set statement_timeout = '120s'")
+        cur.execute(f"select * from ({cand}) c order by c.county_fips, c.parcel_apn limit %s", (n,))
+        rows = cur.fetchall()
+    print(f"\n{'='*74}\nSPOT-CHECK {source} — {len(rows)} candidate rows (eyeball for false positives)\n{'='*74}")
+    for i, r in enumerate(rows, 1):
+        print(f"{i:2}. {r['owner_name']!r}  [{r.get('owner_type')}]  asset={r.get('asset_class')}")
+        print(f"     {r['county_fips']}/{r['parcel_apn']}  situs={r.get('situs_address')!r}  "
+              f"mail={r.get('owner_mailing_city')},{r.get('owner_mailing_state')}")
+    return rows
+
+
+def fire(sources):
+    """Live-fire: write net-new candidates to owner_leads for each source (registry-gated
+    on mints=true). Prints per-source minted count + before/after census. Idempotent."""
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+        cur.execute("set statement_timeout = '300s'")
+        reg = registry_lens(cur)
+        results = []
+        for src in sources:
+            meta = reg.get(src, {})
+            lens = meta.get("lens")
+            if not meta.get("mints"):
+                print(f"  SKIP {src}: registry mints=false (not a discovery mint source)"); continue
+            cand = _cand_for(src)
+            if cand is None:
+                print(f"  SKIP {src}: no fire candidate SQL (flood/HOLD or unknown)"); continue
+            cur.execute("select count(*) c from landos.owner_leads where tenant_id=%s and source=%s",
+                        (APG_TENANT, f"signal:{src}"))
+            before = cur.fetchone()["c"]
+            cur.execute(FIRE_SQL.format(cand=cand),
+                        {"tenant": APG_TENANT, "source": f"signal:{src}", "provenance": PROVENANCE,
+                         "source_type": src, "lens": lens, "lens_lower": (lens or "").lower()})
+            minted = cur.rowcount
+            conn.commit()
+            cur.execute("select count(*) c from landos.owner_leads where tenant_id=%s and source=%s",
+                        (APG_TENANT, f"signal:{src}"))
+            after = cur.fetchone()["c"]
+            results.append((src, lens, minted, before, after))
+            print(f"  FIRED {src} [{lens}]: minted={minted}  owner_leads[signal:{src}] {before}->{after}")
+    print("\nNext: `python -m scripts.sync_to_crm` (single writer) projects these to "
+          "public.acquisition_leads as status='discovered'.")
+    return results
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="lens-aware discovery mint (dry-run counts by default)")
     ap.add_argument("--source", action="append", help="a discovery source_type; repeatable")
     ap.add_argument("--all", action="store_true", help="all mine + ground_lease sources")
-    ap.add_argument("--dry-run", action="store_true", help="count net-new; write nothing (default behavior of this build)")
+    ap.add_argument("--dry-run", action="store_true", help="count net-new; write nothing (default)")
+    ap.add_argument("--spot-check", metavar="SOURCE", help="render N candidate rows for eyeball (no writes)")
+    ap.add_argument("--n", type=int, default=10, help="spot-check sample size")
+    ap.add_argument("--fire", action="store_true",
+                    help="LIVE: write net-new candidates to landos.owner_leads (requires --source; gated)")
     a = ap.parse_args()
-    srcs = None if a.all else a.source
-    # This build ships the DRY-RUN counter (JOB 3). Live fire is a gated follow-up.
-    dry_run(srcs)
+    if a.spot_check:
+        spot_check(a.spot_check, a.n)
+    elif a.fire:
+        if not a.source:
+            raise SystemExit("--fire requires explicit --source (no accidental --all fire)")
+        fire(a.source)
+    else:
+        dry_run(None if a.all else a.source)

@@ -202,6 +202,30 @@ def recipe_signal_tags(rm):
     return [t for t in tags if t] or None
 
 
+def discovered_signal_tags(raw_meta, is_disc):
+    """Discovery-minted rows (mint_discovery: ground_lease / mine_exempt / …) stow their
+    lens + signal tags in raw_meta.signal_tags. Read them so the discovered-tier INSERT —
+    signal_tags is NOT NULL on the board — never lands a null. Tax-sale discovered rows
+    carry no such key -> None; default_signal_tags supplies their thesis tag at the bind."""
+    if not is_disc:
+        return None
+    tags = (raw_meta or {}).get("signal_tags") or []
+    return [t for t in tags if t] or None
+
+
+def default_signal_tags(provenance):
+    """acquisition_leads.signal_tags is NOT NULL. When a discovered row carries no explicit
+    tags — an unmatched TAX-SALE parcel (the Vanderburgh-502 landmine) — default to the tag
+    that names its thesis so the INSERT never trips NOT NULL and the board never shows an
+    empty motivation. Mirrors the source->'engine_sync' mapping: a correct default at the
+    bind, not a crash six hundred rows deep. Any other tag-less discovered provenance falls
+    back to ['discovered'] (honest, non-null)."""
+    p = (provenance or "").lower()
+    if "taxsale" in p or "tax_sale" in p or "tax_delinquent" in p:
+        return ["tax_delinquent"]
+    return ["discovered"]
+
+
 def recipe_source(rm):
     """acquisition_leads.source for a recipe-minted lead.
 
@@ -254,6 +278,40 @@ DISCOVERED_INSERT_SQL = """
        score_signals, signal_tags, source)
     values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
+
+# The columns DISCOVERED_INSERT_SQL binds, in VALUES order ('status' is a literal, so it
+# is NOT here). Zipped with the value tuple to guard the bind against the live schema.
+DISCOVERED_INSERT_COLS = (
+    "source_lead_id", "tenant_id", "owner_name", "parcel_apn", "county_fips",
+    "situs_lat", "situs_lng", "situs_address", "emerging_score", "emerging_signals",
+    "parcel_meta", "amount_owed", "assessed_total", "jarvis_brief", "asset_class",
+    "market_value_est", "equity_pct", "taxes_annual",
+    "score_signals", "signal_tags", "source")
+
+# The live NOT NULL set on public.acquisition_leads (verified 2026-07-14). Of these, only
+# the columns this INSERT actually binds (signal_tags, source) can trip a 23502 — the rest
+# (lead_id/dnc/requires_bea/stage/funded/card_state) are omitted from the INSERT so their
+# DEFAULT applies. Named here so the guard validates the bind against the live schema.
+ACQ_NOT_NULL_COLS = frozenset({
+    "lead_id", "dnc", "requires_bea", "signal_tags", "stage", "source", "funded", "card_state"})
+
+
+def assert_insert_row_valid(values):
+    """JOB 1 (defuse) — sibling of assert_source_allowed: validate the discovered-tier INSERT
+    bind against the live NOT NULL schema BEFORE the row reaches the DB. A None bound to a
+    NOT NULL column — signal_tags for an unmatched tax-sale row was the Vanderburgh-502
+    landmine — raises a readable error naming the column, never a raw psycopg 23502 mid-mint.
+    Also re-checks source against the CHECK vocabulary. Returns the row dict."""
+    row = dict(zip(DISCOVERED_INSERT_COLS, values))
+    nulls = [c for c, v in row.items() if c in ACQ_NOT_NULL_COLS and v is None]
+    if nulls:
+        raise ValueError(
+            f"discovered-tier INSERT would violate NOT NULL on {nulls} "
+            f"(source_lead_id={row.get('source_lead_id')!r}). Every NOT NULL bind must be "
+            f"non-null: signal_tags defaults to a thesis tag (['tax_delinquent'] for tax-sale, "
+            f"['discovered'] otherwise), source to 'engine_sync'.")
+    assert_source_allowed(row["source"])
+    return row
 
 
 def main(dry_run: bool = False, lead_ids=None) -> None:
@@ -430,7 +488,8 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
             # discovered-tier county data (the 87 tax-sale leads only; curated 136 stay NULL).
             # coalesce(%s, col) in the UPDATE => passing None for the 136 keeps their value.
             # recipe intake (§9.2): recipe-minted rows get recipe-shaped jsonb, not tax keys.
-            sig_tags = recipe_signal_tags(recipe_rm) if recipe_rm else None
+            sig_tags = (recipe_signal_tags(recipe_rm) if recipe_rm
+                        else discovered_signal_tags(r["raw_meta"], is_disc))
             lead_source = recipe_source(recipe_rm) if recipe_rm else None
             # UPDATE keeps source unchanged when lead_source is None (coalesce below); an
             # INSERT cannot — source is NOT NULL — so the discovered tier defaults to
@@ -439,6 +498,10 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
             insert_source = lead_source or "engine_sync"
             assert_source_allowed(lead_source)     # UPDATE path (None = no change)
             assert_source_allowed(insert_source)   # INSERT path (never NULL)
+            # signal_tags is NOT NULL on the board. UPDATE coalesces (None keeps existing);
+            # the INSERT cannot, so a tag-less discovered row (unmatched tax-sale) defaults
+            # to its thesis tag. This defuses the Vanderburgh-502 landmine at the bind.
+            insert_sig_tags = sig_tags or default_signal_tags(r.get("provenance"))
             if recipe_rm:
                 pm_dict = parcel_meta_from_recipe(recipe_rm)
             else:
@@ -529,14 +592,15 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                 # separate from the curated set; every other unmatched owner_lead is still left to
                 # the CRM's own intake (warn + skip).
                 if (r.get("provenance") or "").startswith("discovered"):
-                    cur.execute(
-                        DISCOVERED_INSERT_SQL,
-                        (r["lead_id"], TENANT, r["owner_name"], r["parcel_apn"], r["county_fips"],
-                         r["situs_lat"], r["situs_lng"], disc_addr, r["emerging_score"],
-                         Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
-                         pm, owed, assessed, Jsonb(brief), disc_asset_class,
-                         market_value_est, equity_pct, taxes_annual,
-                         s_signals if recipe_rm else None, sig_tags, insert_source))
+                    insert_values = (
+                        r["lead_id"], TENANT, r["owner_name"], r["parcel_apn"], r["county_fips"],
+                        r["situs_lat"], r["situs_lng"], disc_addr, r["emerging_score"],
+                        Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
+                        pm, owed, assessed, Jsonb(brief), disc_asset_class,
+                        market_value_est, equity_pct, taxes_annual,
+                        s_signals if recipe_rm else None, insert_sig_tags, insert_source)
+                    assert_insert_row_valid(insert_values)   # NOT NULL + CHECK guard, pre-DB
+                    cur.execute(DISCOVERED_INSERT_SQL, insert_values)
                     discovered_inserted += 1
                     jarvis_composed += 1
                     if recipe_rm:
@@ -675,55 +739,74 @@ def backfill_contacts(dry_run: bool = False):
 
 
 def check_constraints():
-    """JOB 3 — the lesson of the recipe CheckViolation, made a standing check: a dry-run
-    that never touches the database cannot validate database acceptance. This mode
-    round-trips synthetic discovered-tier rows through a REAL transaction against
-    public.acquisition_leads — the EXACT DISCOVERED_INSERT_SQL the sync runs, exercising
-    every NOT NULL, CHECK and DEFAULT the live table enforces — then ROLLS BACK, so
-    nothing persists. It proves two things the old dry-run could not:
-      (1) the mapped source ('engine_sync') shape is DB-legal, and
-      (2) the live CHECK actually REJECTS the old 'recipe:<id>' value —
-    so assert_source_allowed defends a real constraint, not a phantom.
-    Exit 1 on any surprise (accepted-when-should-reject, or vice-versa)."""
+    """The lesson of the recipe CheckViolation, made a standing check: a dry-run that never
+    touches the database cannot validate database acceptance. This mode round-trips synthetic
+    discovered-tier rows through a REAL transaction against public.acquisition_leads — the
+    EXACT DISCOVERED_INSERT_SQL the sync runs, exercising every NOT NULL, CHECK and DEFAULT
+    the live table enforces — then ROLLS BACK, so nothing persists. It proves what a zero-DB
+    dry-run could not:
+      (1) the mapped source ('engine_sync') + a real tag set is DB-legal,
+      (2) the live CHECK REJECTS the old 'recipe:<id>' source, and
+      (3) the live NOT NULL REJECTS a null signal_tags — the Vanderburgh-502 landmine —
+          AND the in-code guard (assert_insert_row_valid) catches both before the DB does.
+    Exit 1 on any surprise. The pre-DB guard is the first line; the DB is the backstop."""
     from psycopg import Rollback
 
     PROBE_ID = "0eadbeef-0000-4000-8000-000000000001"  # a source_lead_id no real row uses
 
-    def probe(conn, cur, source):
+    def _params(source, signal_tags):
         # synthetic, type-valid values for every column of DISCOVERED_INSERT_SQL (21).
-        params = (PROBE_ID, TENANT, "PROBE — rolled back", "PROBE-APN", "18091",
-                  None, None, None, None, None,
-                  Jsonb({"recipe": {"recipe_id": "probe"}}), None, None, Jsonb({"probe": True}), "unknown",
-                  None, None, None,
-                  Jsonb({"recipe_id": "probe"}), ["probe"], source)
+        return (PROBE_ID, TENANT, "PROBE — rolled back", "PROBE-APN", "18091",
+                None, None, None, None, None,
+                Jsonb({"recipe": {"recipe_id": "probe"}}), None, None, Jsonb({"probe": True}), "unknown",
+                None, None, None,
+                Jsonb({"recipe_id": "probe"}), signal_tags, source)
+
+    def probe(conn, cur, source, signal_tags):
         try:
             with conn.transaction():           # SAVEPOINT — isolates this probe
-                cur.execute(DISCOVERED_INSERT_SQL, params)
+                cur.execute(DISCOVERED_INSERT_SQL, _params(source, signal_tags))
                 raise Rollback                 # accepted by the DB -> undo, never persist
             return True, None
         except psycopg.errors.Error as e:      # the DB refused the row (CHECK/NOT NULL/…)
             return False, e
 
+    def guard_rejects(source, signal_tags):
+        """True if the in-code assert_insert_row_valid rejects this bind (no DB touched)."""
+        try:
+            assert_insert_row_valid(_params(source, signal_tags))
+            return False
+        except ValueError:
+            return True
+
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
-        ok, ok_err = probe(conn, cur, "engine_sync")       # mapped value MUST be accepted
-        bad, bad_err = probe(conn, cur, "recipe:probe")    # old buggy value MUST be rejected
-        conn.rollback()                                    # belt-and-suspenders; nothing sticks
+        ok, ok_err = probe(conn, cur, "engine_sync", ["tax_delinquent"])   # legal shape -> accept
+        bad_src, bad_src_err = probe(conn, cur, "recipe:probe", ["x"])     # old source -> reject
+        bad_tag, bad_tag_err = probe(conn, cur, "engine_sync", None)       # null tags  -> reject
+        conn.rollback()                                                    # nothing sticks
 
-    bad_is_source_check = (
-        bad is False
-        and isinstance(bad_err, psycopg.errors.CheckViolation)
-        and getattr(bad_err.diag, "constraint_name", "") == "acquisition_leads_source_check")
+    src_check = (bad_src is False and isinstance(bad_src_err, psycopg.errors.CheckViolation)
+                 and getattr(bad_src_err.diag, "constraint_name", "") == "acquisition_leads_source_check")
+    tag_notnull = (bad_tag is False and isinstance(bad_tag_err, psycopg.errors.NotNullViolation)
+                   and getattr(bad_tag_err.diag, "column_name", "") == "signal_tags")
+    # the in-code guard must catch BOTH before the DB ever sees them.
+    guard_src = guard_rejects("recipe:probe", ["x"])
+    guard_tag = guard_rejects("engine_sync", None)
 
-    print(f"\n{'='*68}\n--check-constraints: real-txn round-trip vs the LIVE table (rolled back)\n{'='*68}")
-    print(f"  source='engine_sync'  -> " +
+    print(f"\n{'='*70}\n--check-constraints: real-txn round-trip vs the LIVE table (rolled back)\n{'='*70}")
+    print(f"  [DB] source=engine_sync + tags=['tax_delinquent'] -> " +
           ("ACCEPTED (DB-legal)" if ok else f"REJECTED — UNEXPECTED: {ok_err}"))
-    print(f"  source='recipe:probe' -> " +
-          ("REJECTED by acquisition_leads_source_check (expected)" if bad_is_source_check
-           else ("ACCEPTED — UNEXPECTED (the CHECK is not protecting us!)" if bad
-                 else f"REJECTED, but not by the source CHECK: {bad_err}")))
-    passed = ok and bad_is_source_check
-    print(f"\n  RESULT: " + ("PASS — the projection shape is DB-legal AND the source CHECK is real."
-                             if passed else "FAIL — see above."))
+    print(f"  [DB] source='recipe:probe'                        -> " +
+          ("REJECTED by acquisition_leads_source_check ✓" if src_check
+           else ("ACCEPTED — UNEXPECTED!" if bad_src else f"REJECTED, wrong reason: {bad_src_err}")))
+    print(f"  [DB] signal_tags=NULL                             -> " +
+          ("REJECTED by NOT NULL (signal_tags) ✓" if tag_notnull
+           else ("ACCEPTED — UNEXPECTED (the landmine is live!)" if bad_tag else f"REJECTED, wrong reason: {bad_tag_err}")))
+    print(f"  [in-code guard] rejects bad source                -> {'✓' if guard_src else 'MISS'}")
+    print(f"  [in-code guard] rejects null signal_tags          -> {'✓' if guard_tag else 'MISS'}")
+    passed = ok and src_check and tag_notnull and guard_src and guard_tag
+    print(f"\n  RESULT: " + ("PASS — shape DB-legal; source CHECK + signal_tags NOT NULL are real; "
+                             "the in-code guard catches both first." if passed else "FAIL — see above."))
     if not passed:
         raise SystemExit(1)
     return passed
