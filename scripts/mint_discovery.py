@@ -32,9 +32,12 @@ from app.config import DATABASE_URL
 APG_TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 PROVENANCE = "discovered_signal"
 
-# asset_class from the roll's cheap facts (canonical six; honest 'unknown').
+# asset_class from the roll's cheap facts (canonical six; honest 'unknown'). DLGF class
+# 4xx = commercial (checked first so a big-acreage golf course reads 'commercial', not
+# 'acreage'); 529/530 residential; >=10 ac acreage.
 ASSET_CLASS_EXPR = """
-    case when coalesce(po.acres,0) >= 10 then 'acreage'
+    case when po.property_class ~ '^4[0-9][0-9]$' then 'commercial'
+         when coalesce(po.acres,0) >= 10 then 'acreage'
          when po.property_class in ('529','530') then 'residential'
          else 'unknown' end
 """
@@ -57,6 +60,11 @@ MINE_SOURCES = {
                    "eagles aerie|vfw|veterans of foreign|american legion|amvets|legion post|grange)\\y'",
     "mine_same_owner_adjacent": "exists (select 1 from landos.v_mine_same_owner_adjacent v "
                                 "where v.county_fips = po.county_fips and v.parcel_apn = po.parcel_apn)",
+    # UNBLOCKED by the assessor widen (mig 030) + Vanderburgh's roll (year_built + assessed +
+    # real DLGF class codes). Both lens=CONVERSION, HELD per the ruling (mint=true = counted).
+    "mine_teardown": "po.year_built between 1 and 1960 and po.improvement_assessed > 0 "
+                     "and po.land_assessed > 0 and po.improvement_assessed < 0.5 * po.land_assessed",
+    "mine_class_play": "po.property_class in ('410','411','416','462','463','481')",
 }
 
 

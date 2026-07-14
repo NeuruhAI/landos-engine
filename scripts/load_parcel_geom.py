@@ -61,6 +61,37 @@ COUNTIES = {
         "oid_field": "FID",
         "source": "arcgis:laporte_parcels_agol",
     },
+    # --- W0 multi-county load (../landos-ingest manifest-sealed $0 pulls, gitignored) -----
+    # Each geojson is the receipt-backed local stage; apn_field = the SAME state parcel key
+    # the county's owner CSV carries, so parcel_geom<->parcel_owner join with zero fuzzing.
+    "vanderburgh": {
+        "county_fips": "18163",
+        "geojson_file": "../landos-ingest/data/strategy/parcel_geom/staged/vanderburgh_parcel_geom.geojson",
+        "apn_field": "StatePIN",          # '82-03-13-035-093.032-031' == owner CSV StatePIN
+        "oid_field": "OBJECTID",
+        "source": "arcgis:vanderburgh_evansvillegis_parcels",
+    },
+    "delaware": {
+        "county_fips": "18035",
+        "geojson_file": "../landos-ingest/data/strategy/parcel_geom/staged/delaware_parcel_geom.geojson",
+        "apn_field": "PIN",               # == owner CSV PIN
+        "oid_field": "OBJECTID",
+        "source": "arcgis:delaware_parcels",
+    },
+    "madison": {
+        "county_fips": "18095",
+        "geojson_file": "../landos-ingest/data/strategy/parcel_geom/staged/madison_parcel_geom.geojson",
+        "apn_field": "state_parcel_id",   # geometry-only (owner-dark), IndianaMap-style keys
+        "oid_field": "OBJECTID",
+        "source": "arcgis:madison_parcels",
+    },
+    "hendricks": {
+        "county_fips": "18063",
+        "geojson_file": "../landos-ingest/data/strategy/parcel_geom/staged/hendricks_parcel_geom.geojson",
+        "apn_field": "state_parcel_id",   # geometry-only (owner-dark)
+        "oid_field": "OBJECTID",
+        "source": "arcgis:hendricks_parcels",
+    },
 }
 
 UPSERT_SQL = """

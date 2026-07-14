@@ -25,6 +25,7 @@ import psycopg
 
 from app.config import DATABASE_URL
 from app.run_manifest import sha256_file
+from app.score_absentee import classify_owner_type
 
 # County registry — one entry per manifest-sealed owner pull. LaPorte = the
 # assemblage Track-A scored parcels (sha 48b3b0b2… = the sealed recipe input).
@@ -34,6 +35,38 @@ COUNTIES = {
         "csv": os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "recipes/senior_assemblage/data/in/laporte_scored.csv"),
         "source": "assemblage:laporte_scored.csv (LaPorte County GIS AGOL owner roll)",
+    },
+    # --- W0 multi-county owner loads (../landos-ingest manifest-sealed CSVs, gitignored) ---
+    # colmap folds each county's native header into the canonical shape. Vanderburgh is the
+    # rich roll — YearBuilt + land/imp/tot assessed + LastSale* — that unblocks teardown +
+    # class-code. Delaware carries class + acreage only (no year_built/assessed -> honest NULL).
+    "vanderburgh": {
+        "county_fips": "18163",
+        "csv": "../landos-ingest/data/strategy/parcel_owner/staged/vanderburgh_parcel_owner.csv",
+        "source": "arcgis:vanderburgh_evansvillegis_parcels (owner/assessor)",
+        "derive_owner_kind": True,
+        "colmap": {
+            "parcel_apn": "StatePIN", "owner_name": "OwnerName",
+            "owner_mailing_address": "own_street", "owner_mailing_city": "own_city",
+            "owner_mailing_state": "own_state", "owner_mailing_zip": "own_zip",
+            "situs_address": "prop_street", "class_code": "property_class",
+            "acres": "acreage", "last_sale_date": "LastSaleDate", "year_built": "YearBuilt",
+            "land_assessed": "land_assess", "improvement_assessed": "imp_assess",
+            "total_assessed": "tot_assess", "last_sale_price": "LastSalePrice",
+        },
+    },
+    "delaware": {
+        "county_fips": "18035",
+        "csv": "../landos-ingest/data/strategy/parcel_owner/staged/delaware_parcel_owner.csv",
+        "source": "arcgis:delaware_parcels (owner/assessor)",
+        "derive_owner_kind": True,
+        "colmap": {
+            "parcel_apn": "PIN", "owner_name": "OwnerName",
+            "owner_mailing_address": "OwnerAddress", "owner_mailing_city": "OwnerCity",
+            "owner_mailing_state": "OwnerState", "owner_mailing_zip": "OwnerZip",
+            "situs_address": "StreetAddress", "class_code": "PropertyClassNum",
+            "acres": "TotalAcreage",
+        },
     },
 }
 
@@ -61,12 +94,15 @@ INSERT_SQL = """
     insert into landos.parcel_owner
       (county_fips, parcel_apn, owner_name, owner_mailing, source, source_ref, vintage_flag,
        situs_address, owner_mailing_city, owner_mailing_state, owner_mailing_zip,
-       property_class, acres, owner_kind, owner_occupied_proxy, last_sale_date, tenure_floor)
+       property_class, acres, owner_kind, owner_occupied_proxy, last_sale_date, tenure_floor,
+       year_built, land_assessed, improvement_assessed, total_assessed, last_sale_price)
     values (%(county_fips)s, %(parcel_apn)s, %(owner_name)s, %(owner_mailing)s,
             %(source)s, %(source_ref)s, %(vintage_flag)s,
             %(situs_address)s, %(owner_mailing_city)s, %(owner_mailing_state)s, %(owner_mailing_zip)s,
             %(property_class)s, %(acres)s, %(owner_kind)s, %(owner_occupied_proxy)s,
-            %(last_sale_date)s, %(tenure_floor)s)
+            %(last_sale_date)s, %(tenure_floor)s,
+            %(year_built)s, %(land_assessed)s, %(improvement_assessed)s, %(total_assessed)s,
+            %(last_sale_price)s)
     on conflict (county_fips, parcel_apn) do update set
       owner_name           = coalesce(excluded.owner_name, landos.parcel_owner.owner_name),
       owner_mailing        = coalesce(excluded.owner_mailing, landos.parcel_owner.owner_mailing),
@@ -80,7 +116,12 @@ INSERT_SQL = """
       owner_kind           = excluded.owner_kind,
       owner_occupied_proxy = excluded.owner_occupied_proxy,
       last_sale_date       = excluded.last_sale_date,
-      tenure_floor         = excluded.tenure_floor
+      tenure_floor         = excluded.tenure_floor,
+      year_built           = excluded.year_built,
+      land_assessed        = excluded.land_assessed,
+      improvement_assessed = excluded.improvement_assessed,
+      total_assessed       = excluded.total_assessed,
+      last_sale_price      = excluded.last_sale_price
 """
 
 
@@ -103,6 +144,27 @@ def _date(v):
     return s or None          # ISO 'YYYY-MM-DD' or '' -> NULL; psycopg casts to date
 
 
+def _sale_date(v):
+    """Robust county sale-date -> ISO 'YYYY-MM-DD' or NULL. Accepts ISO and US
+    M/D/YYYY (Vanderburgh's LastSaleDate); anything else -> None (never crash the cast)."""
+    s = (v or "").strip()
+    if not s:
+        return None
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        return s[:10]
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", s)
+    if m:
+        mo, d, y = m.groups()
+        return f"{y}-{int(mo):02d}-{int(d):02d}"
+    return None
+
+
+def _year_built(v):
+    """YearBuilt -> int, but 0 / blank / pre-1700 = unknown -> NULL (never a fake year)."""
+    y = _int(v)
+    return y if (y and y > 1700) else None
+
+
 def assemble_mailing(row: dict) -> str | None:
     line = (row.get("owner_mailing_address") or "").strip()
     csz = " ".join(p for p in [(row.get("owner_mailing_city") or "").strip(),
@@ -116,34 +178,65 @@ def vintage_flag_for(owner_name: str) -> str | None:
     return "govt" if GOVT_RE.search(owner_name or "") else None
 
 
+def derive_owner_kind(owner: str) -> str | None:
+    """human | entity from the shared classifier. govt is left to vintage_flag (never a
+    seller), so a govt name maps to NULL here rather than a fake 'human'/'entity'."""
+    t = classify_owner_type(owner)                 # 'entity' | 'individual' | 'govt'
+    return "entity" if t == "entity" else ("human" if t == "individual" else None)
+
+
 def rows_from_csv(cfg: dict, source_ref: str):
+    """One owner CSV row -> parcel_owner params. A per-county `colmap` (canonical_key ->
+    source column) folds each county's native header into the canonical shape; absent =>
+    identity (LaPorte's CSV already uses canonical names). owner_kind is derived from the
+    name when the county carries no such column (derive_owner_kind=True)."""
     fips = cfg["county_fips"]
+    cmap = cfg.get("colmap", {})
+    want_kind = cfg.get("derive_owner_kind", False)
+
+    def g(row, key):                                # read a canonical field through the map
+        return row.get(cmap.get(key, key))
+
     with open(cfg["csv"], newline="") as f:
         for r in csv.DictReader(f):
-            apn = (r.get("parcel_apn") or "").strip()
-            owner = (r.get("owner_name") or "").strip()
+            apn = (g(r, "parcel_apn") or "").strip()
+            owner = (g(r, "owner_name") or "").strip()
             if not apn:
                 yield None, "no_apn"; continue
             if not owner:
                 yield None, "no_owner"; continue
+            mailing_row = {
+                "owner_mailing_address": (g(r, "owner_mailing_address") or "").strip(),
+                "owner_mailing_city": (g(r, "owner_mailing_city") or "").strip(),
+                "owner_mailing_state": (g(r, "owner_mailing_state") or "").strip(),
+                "owner_mailing_zip": (g(r, "owner_mailing_zip") or "").strip(),
+            }
+            owner_kind = (g(r, "owner_kind") or "").strip() or None
+            if not owner_kind and want_kind:
+                owner_kind = derive_owner_kind(owner)
             yield {
                 "county_fips": fips,
                 "parcel_apn": apn,
                 "owner_name": owner,
-                "owner_mailing": assemble_mailing(r),
+                "owner_mailing": assemble_mailing(mailing_row),
                 "source": cfg["source"],
                 "source_ref": source_ref,
                 "vintage_flag": vintage_flag_for(owner),
-                "situs_address": (r.get("situs_address") or "").strip() or None,
-                "owner_mailing_city": (r.get("owner_mailing_city") or "").strip() or None,
-                "owner_mailing_state": (r.get("owner_mailing_state") or "").strip() or None,
-                "owner_mailing_zip": (r.get("owner_mailing_zip") or "").strip() or None,
-                "property_class": (r.get("class_code") or "").strip() or None,
-                "acres": _num(r.get("acres")),
-                "owner_kind": (r.get("owner_kind") or "").strip() or None,
-                "owner_occupied_proxy": _int(r.get("owner_occupied_proxy")),
-                "last_sale_date": _date(r.get("last_sale_date")),
-                "tenure_floor": _num(r.get("tenure_floor")),
+                "situs_address": (g(r, "situs_address") or "").strip() or None,
+                "owner_mailing_city": mailing_row["owner_mailing_city"] or None,
+                "owner_mailing_state": mailing_row["owner_mailing_state"] or None,
+                "owner_mailing_zip": mailing_row["owner_mailing_zip"] or None,
+                "property_class": (g(r, "class_code") or "").strip() or None,
+                "acres": _num(g(r, "acres")),
+                "owner_kind": owner_kind,
+                "owner_occupied_proxy": _int(g(r, "owner_occupied_proxy")),
+                "last_sale_date": _sale_date(g(r, "last_sale_date")),
+                "tenure_floor": _num(g(r, "tenure_floor")),
+                "year_built": _year_built(g(r, "year_built")),
+                "land_assessed": _num(g(r, "land_assessed")),
+                "improvement_assessed": _num(g(r, "improvement_assessed")),
+                "total_assessed": _num(g(r, "total_assessed")),
+                "last_sale_price": _num(g(r, "last_sale_price")),
             }, None
 
 
