@@ -54,13 +54,53 @@ GOVT_RE = re.compile(
     r"public|forest|cemetery"
     r")\b", re.IGNORECASE)
 
+# W0 widen (mig 026): the mine attributes ride ON CONFLICT DO UPDATE so a reload
+# backfills existing rows. owner_name/vintage/source are coalesced (never clobbered
+# by a blank); the attribute columns are refreshed from the sealed CSV.
 INSERT_SQL = """
     insert into landos.parcel_owner
-      (county_fips, parcel_apn, owner_name, owner_mailing, source, source_ref, vintage_flag)
+      (county_fips, parcel_apn, owner_name, owner_mailing, source, source_ref, vintage_flag,
+       situs_address, owner_mailing_city, owner_mailing_state, owner_mailing_zip,
+       property_class, acres, owner_kind, owner_occupied_proxy, last_sale_date, tenure_floor)
     values (%(county_fips)s, %(parcel_apn)s, %(owner_name)s, %(owner_mailing)s,
-            %(source)s, %(source_ref)s, %(vintage_flag)s)
-    on conflict (county_fips, parcel_apn) do nothing
+            %(source)s, %(source_ref)s, %(vintage_flag)s,
+            %(situs_address)s, %(owner_mailing_city)s, %(owner_mailing_state)s, %(owner_mailing_zip)s,
+            %(property_class)s, %(acres)s, %(owner_kind)s, %(owner_occupied_proxy)s,
+            %(last_sale_date)s, %(tenure_floor)s)
+    on conflict (county_fips, parcel_apn) do update set
+      owner_name           = coalesce(excluded.owner_name, landos.parcel_owner.owner_name),
+      owner_mailing        = coalesce(excluded.owner_mailing, landos.parcel_owner.owner_mailing),
+      vintage_flag         = excluded.vintage_flag,
+      situs_address        = excluded.situs_address,
+      owner_mailing_city   = excluded.owner_mailing_city,
+      owner_mailing_state  = excluded.owner_mailing_state,
+      owner_mailing_zip    = excluded.owner_mailing_zip,
+      property_class       = excluded.property_class,
+      acres                = excluded.acres,
+      owner_kind           = excluded.owner_kind,
+      owner_occupied_proxy = excluded.owner_occupied_proxy,
+      last_sale_date       = excluded.last_sale_date,
+      tenure_floor         = excluded.tenure_floor
 """
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int(v):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _date(v):
+    s = (v or "").strip()
+    return s or None          # ISO 'YYYY-MM-DD' or '' -> NULL; psycopg casts to date
 
 
 def assemble_mailing(row: dict) -> str | None:
@@ -94,6 +134,16 @@ def rows_from_csv(cfg: dict, source_ref: str):
                 "source": cfg["source"],
                 "source_ref": source_ref,
                 "vintage_flag": vintage_flag_for(owner),
+                "situs_address": (r.get("situs_address") or "").strip() or None,
+                "owner_mailing_city": (r.get("owner_mailing_city") or "").strip() or None,
+                "owner_mailing_state": (r.get("owner_mailing_state") or "").strip() or None,
+                "owner_mailing_zip": (r.get("owner_mailing_zip") or "").strip() or None,
+                "property_class": (r.get("class_code") or "").strip() or None,
+                "acres": _num(r.get("acres")),
+                "owner_kind": (r.get("owner_kind") or "").strip() or None,
+                "owner_occupied_proxy": _int(r.get("owner_occupied_proxy")),
+                "last_sale_date": _date(r.get("last_sale_date")),
+                "tenure_floor": _num(r.get("tenure_floor")),
             }, None
 
 
