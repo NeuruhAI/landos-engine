@@ -68,6 +68,23 @@ COUNTIES = {
             "acres": "TotalAcreage",
         },
     },
+    # Berrien MI 26021 — the JV's home county (ccT7 $0 GIS pull, 86,327 rows / 99.5% named).
+    # Split owner name (ownername1 + ownername2 spouse) -> folded owner-of-record. homestead
+    # (MI Principal Residence Exemption) is a true owner-occupied proxy. No year_built/assessed
+    # in this roll -> honest NULL. VINTAGE-CAPTURE LAW applies: govt/treasurer names flagged.
+    "berrien": {
+        "county_fips": "26021",
+        "csv": "../mineral-scout/data/berrien/berrien_parcel_owner.csv",
+        "source": "mineral-scout:berrien_gis_parcels ($0 ccT7 pull, owner/assessor)",
+        "derive_owner_kind": True,
+        "colmap": {
+            "parcel_apn": "PIN", "owner_name": "ownername1", "owner_name2": "ownername2",
+            "owner_mailing_address": "ownerstree", "owner_mailing_city": "ownercity",
+            "owner_mailing_state": "ownerstate", "owner_mailing_zip": "ownerzip",
+            "situs_address": "Full_Address", "class_code": "propclass",
+            "acres": "Acres", "owner_occupied_proxy": "homestead",
+        },
+    },
 }
 
 PAGE = 2000
@@ -200,7 +217,10 @@ def rows_from_csv(cfg: dict, source_ref: str):
     with open(cfg["csv"], newline="") as f:
         for r in csv.DictReader(f):
             apn = (g(r, "parcel_apn") or "").strip()
-            owner = (g(r, "owner_name") or "").strip()
+            # a trailing '&' on the primary (Berrien 'THOMPSON CLETIAUS L &') just signals
+            # the co-owner continues in owner_name2 — strip it so it neither double-amps the
+            # fold nor trips the entity classifier on an ordinary couple's primary name.
+            owner = re.sub(r"\s*&\s*$", "", (g(r, "owner_name") or "").strip())
             if not apn:
                 yield None, "no_apn"; continue
             if not owner:
@@ -213,11 +233,18 @@ def rows_from_csv(cfg: dict, source_ref: str):
             }
             owner_kind = (g(r, "owner_kind") or "").strip() or None
             if not owner_kind and want_kind:
-                owner_kind = derive_owner_kind(owner)
+                owner_kind = derive_owner_kind(owner)   # from the PRIMARY name only
+            # optional secondary owner (spouse/co-owner, e.g. Berrien ownername2). Folded
+            # into the stored owner-of-record for contact completeness, but vintage_flag +
+            # owner_kind stay derived from the PRIMARY name — combining adds a ' & ' that
+            # would otherwise misfire the entity classifier on an ordinary married couple.
+            owner2 = re.sub(r"^\s*&\s*", "", (g(r, "owner_name2") or "").strip())
+            owner_display = (f"{owner} & {owner2}"
+                             if owner2 and owner2.upper() != owner.upper() else owner)
             yield {
                 "county_fips": fips,
                 "parcel_apn": apn,
-                "owner_name": owner,
+                "owner_name": owner_display,
                 "owner_mailing": assemble_mailing(mailing_row),
                 "source": cfg["source"],
                 "source_ref": source_ref,
