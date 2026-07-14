@@ -87,5 +87,11 @@ def test_registry_entries_carry_full_provenance():
     for cfg in COUNTIES.values():
         assert re.fullmatch(r"\d{5}", cfg["county_fips"])
         assert cfg["source"].startswith("arcgis:")
-        assert cfg["layer"].startswith("https://") and "/query" in cfg["layer"]
+        # Two lanes, one contract: a REST entry pins its /query endpoint; a
+        # manifest-sealed local entry pins the repo-relative geojson it consumed.
+        if "geojson_file" in cfg:
+            assert cfg["geojson_file"].endswith(".geojson")
+            assert not cfg["geojson_file"].startswith("/")   # repo-relative, portable
+        else:
+            assert cfg["layer"].startswith("https://") and "/query" in cfg["layer"]
         assert cfg["apn_field"] and cfg["oid_field"]
