@@ -14,7 +14,9 @@ This is the exact 48-target queue cohort, not a projection.
 | Before recovery | 0 | 46 | 2 | 0 |
 | After intake and sync | 43 | 1 | 4 | 43 |
 
-The honest callable result is **43**.
+The projected callable result is **43**, but two of those rows are synthetic
+555-range P3 gate-test fixtures, not dialable owners. The true reachable-owner
+count is **41 real + 2 synthetic**. See "Real vs synthetic callable" below.
 
 Tracerfy returned 48 canonical results: 45 clean and 3 DNC. Their database
 shape was:
@@ -28,6 +30,22 @@ shape was:
 Thus 45 provider-clean results were reconciled, but only 43 were eligible for
 the sole-writer sync. The other two were deliberately not described as
 "synced."
+
+## Real vs synthetic callable
+
+The 48-phone cohort includes three P3 gate-test fixtures carrying reserved NANP
+`555`-NXX numbers (never dialable). All three returned `clean` from the provider.
+Their disposition, verified against the live spine on 2026-07-15:
+
+- Two are spine-linked with `dnc_status='clear'` and were projected callable —
+  they sit inside the 43 (`target_key` `087a66d2…`, `1adeac15…`).
+- One has no spine row and was not projected; it is one of the two
+  clean/no-spine skips (`target_key` `1ccf7876…`).
+
+Therefore the 43 projected-callable rows are **41 real reachable owners + 2
+synthetic 555 fixtures**. The remaining 42 clean numbers and all 3 DNC numbers
+are real. Classifier: NANP `NXX == 555`; broader synthetic patterns, if any,
+are not claimed here. Operator-true callable = **41**.
 
 ## Paid-queue recovery
 

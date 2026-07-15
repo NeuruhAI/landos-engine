@@ -9,6 +9,19 @@ Recovery and the authorized intake/sync are complete. See
 and remote-backed handoff. The commands below preserve the original recovery
 gates for audit and reproduction.
 
+## Final outcome (2026-07-15 closeout)
+
+- Zero new Tracerfy spend; queue 2353 recovered GET-only; receipt SHA-256
+  `bcb698a975d18bf56869b7ef384c319c0a635daa1addbbc129e359ec34da4809`.
+- 45 clean / 3 DNC reconciled; 43 clean linked to spine and projected callable.
+- **Honest callable count: 43 projected = 41 real reachable owners + 2 synthetic
+  `555`-range P3 gate-test fixtures.** The operator-true callable number is
+  **41**. Detail in [`DNC-LANE-STATE.md`](DNC-LANE-STATE.md) → "Real vs synthetic
+  callable".
+- Branch `fix/dnc-queue-2353-recovery` committed, pushed, and merged to `main`
+  (no-ff; FF was impossible because `main` advanced to the tax-sale promote gate
+  after the branch was cut — the two change sets are disjoint and merged clean).
+
 ## Proven state
 
 - Queue envelope: `id=2353`, `pending=false`, `rows_uploaded=48`,
