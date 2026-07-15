@@ -73,7 +73,8 @@ def _adj(name: str, input_desc: str, factor: Optional[float], rationale: str,
 def land_value(base_ppa: Optional[float], gross_acres: Optional[float], *,
                buildable_fraction: Optional[float] = None, buildable_input: Optional[str] = None,
                in_sfha: Optional[bool] = None, dist_to_water_m: Optional[float] = None,
-               road_frontage_ft: Optional[float] = None) -> Dict[str, Any]:
+               road_frontage_ft: Optional[float] = None,
+               ppa_p25: Optional[float] = None, ppa_p75: Optional[float] = None) -> Dict[str, Any]:
     """PURE land value from comp $/acre + measured overlays. Returns value, range,
     confidence and the itemized adjustment ledger. base_ppa None (no comps) -> null value
     but the ledger still returns (auditable absence)."""
@@ -150,14 +151,31 @@ def land_value(base_ppa: Optional[float], gross_acres: Optional[float], *,
 
     factor = curve * (bf + (1.0 - bf) * 0.25) * flood_f * water_f
     value = round(ppa * acres * factor, 2)
-    # range from the adjustment uncertainty: ±15% base, widened when overlays are unverified
     unverified = sum(1 for a in adjustments if not a["verified"])
-    spread = 0.15 + 0.05 * unverified
+
+    # Range: prefer the ACTUAL comp $/acre dispersion (p25–p75 of the banded comps) over a
+    # cosmetic ±%. A band that mixes lakefront and interior lots has a wide real spread, and an
+    # honest range must SHOW it — a $18k point value with a [$12k,$25k] range on a lot that is
+    # really worth $150k is exactly the "confidently wrong" number the doctrine forbids. The
+    # spread ALSO drives confidence down: a p75/p25 ratio ≥ 3 means the comps don't agree.
+    disp_ratio = None
+    if ppa_p25 and ppa_p75 and ppa_p25 > 0:
+        rng = [round(_f(ppa_p25) * acres * factor, 2), round(_f(ppa_p75) * acres * factor, 2)]
+        disp_ratio = ppa_p75 / ppa_p25
+    else:
+        spread = 0.15 + 0.05 * unverified
+        rng = [round(value * (1 - spread), 2), round(value * (1 + spread), 2)]
+
+    if unverified >= 3 or (disp_ratio and disp_ratio >= 3):
+        confidence = "low"
+    elif unverified >= 1 or (disp_ratio and disp_ratio >= 1.8):
+        confidence = "medium"
+    else:
+        confidence = "high"
     return {
-        "value": value,
-        "range": [round(value * (1 - spread), 2), round(value * (1 + spread), 2)],
-        "confidence": "low" if unverified >= 3 else ("medium" if unverified >= 1 else "high"),
+        "value": value, "range": rng, "confidence": confidence,
         "base_ppa": round(ppa, 2), "gross_acres": acres, "net_factor": round(factor, 4),
+        "comp_dispersion": (round(disp_ratio, 2) if disp_ratio else None),
         "adjustments": adjustments,
     }
 
@@ -323,6 +341,137 @@ COMP_OUT = lambda c: {"comp_apn": c.get("apn"), "sale_date": c.get("sold_date"),
                       "price_per_acre": c.get("per_ac"), "source": c.get("source")}
 
 
+# ---- county+acreage comp POOL (landos.parcel_sale) — the land basis -----------------
+# landos.comps is subject_apn-keyed (a comp ATTACHED to one subject) — a COUNTY sales pool has
+# no subject, which is why a county+band selector over landos.comps reads empty. This selector
+# reads the POOL and grounds a land $/acre with three guards against a garbage number:
+#   (1) LAND classes only — a residential-IMPROVED sale (MI class x01) carries a house; its
+#       $/acre is a building price, not land. We use VACANT classes (x02) + timber (50x),
+#       matched to the subject's class FAMILY (a res lot ≠ an ag field per acre).
+#   (2) acreage BAND — $/acre is not linear; a 0.2-ac lot and a 200-ac field don't compare.
+#   (3) IQR TRIM — drop $/acre outliers so a single odd sale can't drag the median.
+VACANT_LAND_CLASSES = {"402", "102", "202", "302", "502", "504"}
+_CLASS_FAMILY_PREF = {"4": ["402"], "1": ["102", "101"], "2": ["202"], "3": ["302"],
+                      "5": ["502", "504"]}
+_PPA_FLOOR, _PPA_CEIL = 50.0, 3_000_000.0   # land can be cheap (raw ag) — floor below comps_for's
+
+
+def _class_pref(subject_class: Optional[str]) -> Optional[List[str]]:
+    """Preferred vacant comp classes for the subject's family; None -> caller uses all vacant."""
+    fam = str(subject_class)[0] if subject_class else ""
+    return _CLASS_FAMILY_PREF.get(fam)
+
+
+def _iqr_trim(pool: List[Dict[str, Any]], key: str = "per_ac") -> List[Dict[str, Any]]:
+    """Drop per-acre outliers outside [Q1 − 1.5·IQR, Q3 + 1.5·IQR]. Needs >=8 points: below
+    that a single extreme value inflates the quartile it lands in and the fence can't catch it
+    — and the MEDIAN is already outlier-robust, so small bands are left to it untrimmed."""
+    xs = sorted(c[key] for c in pool)
+    n = len(xs)
+    if n < 8:
+        return pool
+    q1, q3 = statistics.median(xs[:n // 2]), statistics.median(xs[(n + 1) // 2:])
+    iqr = q3 - q1
+    lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    trimmed = [c for c in pool if lo <= c[key] <= hi]
+    return trimmed if len(trimmed) >= 3 else pool
+
+
+def _band_and_trim(pool: List[Dict[str, Any]], subject_acres: Optional[float]) -> tuple:
+    """Acreage-band the pool to the subject (widen until >=3), then IQR-trim. Returns
+    (used_comps, method_note)."""
+    def banded(lo, hi):
+        return [c for c in pool if c["size"] and lo * subject_acres <= c["size"] <= hi * subject_acres]
+    used, note = pool, "unbanded (no subject acreage)"
+    if subject_acres:
+        for lo, hi, nm in ((0.5, 2.0, "0.5-2x"), (0.25, 4.0, "0.25-4x")):
+            b = banded(lo, hi)
+            if len(b) >= 3:
+                used, note = b, f"{nm} acreage band"
+                break
+        else:
+            b = banded(0.25, 4.0)
+            used, note = (b or pool), ("0.25-4x band" if b else "unbanded (band too thin)")
+    trimmed = _iqr_trim(used)
+    return (trimmed, note + (", IQR-trimmed" if len(trimmed) < len(used) else ""))
+
+
+POOL_SQL = """
+    select parcel_apn, sale_price, sale_date, acreage, class_code, source
+      from landos.parcel_sale
+     where county_fips = %(fips)s
+       and sale_price is not null and sale_price > 0
+       and acreage is not null and acreage > 0
+       and class_code = any(%(classes)s)
+       and (%(excl)s::text is null or parcel_apn <> %(excl)s)
+"""
+
+
+def comps_by_county_acreage(cur, county_fips: Optional[str], subject_acres: Optional[float],
+                            subject_class: Optional[str] = None,
+                            exclude_apn: Optional[str] = None) -> Dict[str, Any]:
+    """Median $/acre from the county SALES POOL (landos.parcel_sale), NOT subject_apn. Same
+    return shape as land_dd_adapters.comps_for, so value_land_for_lead is source-agnostic."""
+    if not county_fips:
+        return {"comp_median": None, "comps": [], "n": 0, "source": "landos.parcel_sale",
+                "grounded": False, "confidence": 0.0, "method": "no county"}
+    pref = _class_pref(subject_class)
+    classes = pref or sorted(VACANT_LAND_CLASSES)
+    cur.execute(POOL_SQL, {"fips": county_fips, "classes": classes, "excl": exclude_apn})
+    pool = []
+    for r in cur.fetchall():
+        ac, px = _f(r.get("acreage")), _f(r.get("sale_price"))
+        if not ac or not px:
+            continue
+        ppa = px / ac
+        if not (_PPA_FLOOR <= ppa <= _PPA_CEIL):
+            continue
+        pool.append({"apn": r.get("parcel_apn"), "per_ac": round(ppa, 2), "size": ac,
+                     "price": px, "sold_date": str(r.get("sale_date") or ""),
+                     "source": r.get("source")})
+    # family-preferred set too thin -> widen to ALL vacant land classes (once).
+    if len(pool) < 3 and pref is not None:
+        return comps_by_county_acreage(cur, county_fips, subject_acres,
+                                       subject_class=None, exclude_apn=exclude_apn)
+    used, band_note = _band_and_trim(pool, _f(subject_acres))
+    if len(used) < 3:
+        return {"comp_median": None, "comps": used[:25], "n": len(used),
+                "source": "landos.parcel_sale", "grounded": False, "confidence": 0.2,
+                "method": f"only {len(used)} land comps in county+band"}
+    ppas = sorted(c["per_ac"] for c in used)
+    med = statistics.median(ppas)
+    p25, p75 = _percentile(ppas, 0.25), _percentile(ppas, 0.75)
+    return {"comp_median": round(med, 2), "ppa_p25": round(p25, 2), "ppa_p75": round(p75, 2),
+            "comps": sorted(used, key=lambda c: c["sold_date"], reverse=True)[:25],
+            "n": len(used), "source": "landos.parcel_sale", "grounded": True, "confidence": 0.7,
+            "method": f"median $/ac over {len(used)} {band_note} vacant-land comps (class {'/'.join(classes)})"}
+
+
+def _percentile(sorted_vals: List[float], p: float) -> float:
+    """Nearest-rank percentile of an already-sorted list (empty -> 0)."""
+    if not sorted_vals:
+        return 0.0
+    i = max(0, min(len(sorted_vals) - 1, int(round(p * (len(sorted_vals) - 1)))))
+    return sorted_vals[i]
+
+
+SALE_SUBJECT_SQL = """
+    select acreage, class_code from landos.parcel_sale
+     where county_fips = %s and parcel_apn = %s
+     order by sale_date desc nulls last limit 1
+"""
+
+
+def _sale_fabric_subject(cur, county_fips, parcel_apn) -> Dict[str, Any]:
+    """The subject's own acreage + class from the sale fabric (for counties with no
+    parcel_geom/parcel_owner loaded, e.g. Cass). None-safe."""
+    if not county_fips or not parcel_apn:
+        return {"acres": None, "class_code": None}
+    cur.execute(SALE_SUBJECT_SQL, (county_fips, parcel_apn))
+    r = cur.fetchone()
+    return {"acres": _f(r["acreage"]), "class_code": r["class_code"]} if r else {"acres": None, "class_code": None}
+
+
 def value_land_for_lead(cur, lead: Dict[str, Any], federal: bool = False) -> Dict[str, Any]:
     """The land contract for a resolved lead. Comps ALWAYS returned (even when too few to
     ground a value). Overlays: flood from the stored layer; wetlands/slope only when
@@ -336,8 +485,22 @@ def value_land_for_lead(cur, lead: Dict[str, Any], federal: bool = False) -> Dic
     geom = _geom_parcel(cur, lead.get("county_fips"), lead.get("parcel_apn"))
     if acres is None and geom["acres"]:
         acres, acres_source = round(geom["acres"], 4), "parcel_geom ST_Area (geodesic, measured)"
+    # sale-fabric fallback for acreage + class family (counties with no parcel_geom/owner
+    # loaded, e.g. Cass): the assessor acreage rides with each sale row.
+    subj = _sale_fabric_subject(cur, lead.get("county_fips"), lead.get("parcel_apn"))
+    if acres is None and subj["acres"]:
+        acres, acres_source = subj["acres"], "landos.parcel_sale (assessor acreage)"
 
-    comps = lda.comps_for(cur, lead.get("parcel_apn"), acres)   # banded to subject acreage
+    # Comps: prefer the subject-attached store (landos.comps); when it doesn't ground a value
+    # (the common case — that store is subject-keyed and mostly empty), fall back to the county
+    # SALES POOL banded to the subject's acreage + class family (landos.parcel_sale).
+    comps = lda.comps_for(cur, lead.get("parcel_apn"), acres)
+    if not comps.get("grounded"):
+        pool = comps_by_county_acreage(cur, lead.get("county_fips"), acres,
+                                       subject_class=subj["class_code"],
+                                       exclude_apn=lead.get("parcel_apn"))
+        if pool.get("grounded") or pool.get("n", 0) > comps.get("n", 0):
+            comps = pool
     in_sfha = _in_sfha(cur, lead.get("county_fips"), lead.get("parcel_apn"))
     dw = _dist_to_water(lead)
 
@@ -351,13 +514,15 @@ def value_land_for_lead(cur, lead: Dict[str, Any], federal: bool = False) -> Dic
             bf, b_input = fed["buildable_fraction"], fed["buildable_input"]
 
     v = land_value(comps.get("comp_median"), acres, buildable_fraction=bf, buildable_input=b_input,
-                   in_sfha=in_sfha, dist_to_water_m=dw)
+                   in_sfha=in_sfha, dist_to_water_m=dw,
+                   ppa_p25=comps.get("ppa_p25"), ppa_p75=comps.get("ppa_p75"))
 
     inputs_used = [
         {"field": "acquisition_leads.parcel_apn", "value": lead.get("parcel_apn")},
         {"field": "acquisition_leads.county_fips", "value": lead.get("county_fips")},
         {"field": "acreage", "value": acres, "source": acres_source},
-        {"field": "landos.comps", "value": f"{comps.get('n')} comps ({comps.get('method')})"},
+        {"field": comps.get("source", "comps"),
+         "value": f"{comps.get('n')} comps ({comps.get('method')})"},
         {"field": "landos.parcel_flood.in_sfha", "value": in_sfha},
         {"field": "score_signals.dist_to_lake_m", "value": dw},
     ]
@@ -370,6 +535,7 @@ def value_land_for_lead(cur, lead: Dict[str, Any], federal: bool = False) -> Dic
         "inputs_used": inputs_used,
         "reason": v.get("reason"),
         "base_ppa": v.get("base_ppa"), "net_factor": v.get("net_factor"),
+        "comp_dispersion": v.get("comp_dispersion"),
     }
 
 

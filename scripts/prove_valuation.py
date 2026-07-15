@@ -78,6 +78,56 @@ def render(out):
     print(f"  method_version: {out['method_version']}   generated_at: {out['generated_at']}")
 
 
+# Diverse subjects straight from the county SALES FABRIC (for counties with leads that carry
+# no acreage, e.g. Cass tax-sale govt parcels). width_bucket spreads the picks across acreage
+# ranges; each carries its OWN recent sale so the model value can be checked against reality.
+PICK_POOL = """
+    select distinct on (bucket) parcel_apn, acreage, class_code, sale_price, sale_date
+      from (
+        select parcel_apn, acreage, class_code, sale_price, sale_date,
+               width_bucket(acreage, array[0.5, 2, 5, 20, 60]) as bucket
+          from landos.parcel_sale
+         where county_fips = %s and class_code = any(%s)
+           and acreage is not null and acreage > 0 and sale_price > 0
+           and sale_date >= date '2010-01-01'
+      ) s
+     order by bucket, sale_date desc
+"""
+
+
+def prove_pool(county_fips, n=5):
+    """Value n real vacant parcels from the county SALE FABRIC through the SAME land engine the
+    endpoint uses (value_land_for_lead), and print the model value beside each parcel's ACTUAL
+    sale — the 'would you stake money' check."""
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+        cur.execute("set statement_timeout = '120s'")
+        cur.execute(PICK_POOL, (county_fips, sorted(V.VACANT_LAND_CLASSES)))
+        picks = cur.fetchall()[:n]
+        print(f"{'='*78}\nVALUATION LAB — LAND PROOF ON {len(picks)} REAL {county_fips} PARCELS "
+              f"(sale fabric)\n{'='*78}")
+        grounded = 0
+        for p in picks:
+            # synthetic subject = exactly what resolve_lead returns for a bare parcel; the engine
+            # resolves acreage + class from landos.parcel_sale itself.
+            lead = {"lead_id": f"pool:{p['parcel_apn']}", "county_fips": county_fips,
+                    "parcel_apn": p["parcel_apn"], "parcel_meta": None, "score_signals": None,
+                    "situs_lat": None, "situs_lng": None, "assessed_total": None, "roll_acres": None}
+            out = V.value_land_for_lead(cur, lead)
+            out["lead_id"], out["county_fips"], out["parcel_apn"] = lead["lead_id"], county_fips, p["parcel_apn"]
+            out["generated_at"] = V.datetime.now(V.timezone.utc).isoformat()
+            render(out)
+            actual_ppa = float(p["sale_price"]) / float(p["acreage"]) if p["acreage"] else None
+            print(f"  ► ACTUAL SALE (this parcel): {_money(float(p['sale_price']))} on {p['sale_date']} "
+                  f"· {p['acreage']}ac · class {p['class_code']} · {_money(actual_ppa)}/ac")
+            if out["value"] is not None and actual_ppa:
+                print(f"    model base $/ac {_money(out.get('base_ppa'))} vs this sale {_money(actual_ppa)}/ac "
+                      f"(model is a BAND median; a single sale varies around it)")
+            if out["value"] is not None:
+                grounded += 1
+        print(f"\n{'='*78}\nSUMMARY: {grounded}/{len(picks)} grounded a land value from real comps; "
+              f"{len(picks)-grounded} honest-null.\n{'='*78}")
+
+
 def main(mode="land", federal=False, n=10):
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute("set statement_timeout = '120s'")
@@ -102,5 +152,10 @@ if __name__ == "__main__":
     ap.add_argument("--mode", default="land", choices=["land", "house"])
     ap.add_argument("--federal", action="store_true", help="live NWI/3DEP buildable overlay")
     ap.add_argument("--n", type=int, default=10)
+    ap.add_argument("--pool-county", help="prove land value on real parcels from a county's "
+                    "sale fabric (e.g. 26027 = Cass) — for counties whose leads carry no acreage")
     a = ap.parse_args()
-    main(mode=a.mode, federal=a.federal, n=a.n)
+    if a.pool_county:
+        prove_pool(a.pool_county, n=a.n if a.n != 10 else 5)
+    else:
+        main(mode=a.mode, federal=a.federal, n=a.n)
