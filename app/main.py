@@ -8,22 +8,22 @@ It does four jobs:
   3. /feedback  — record a deal outcome (fuel for retraining the model)
   4. /leads/top — return the highest-scored UNCLAIMED leads (the team's queue)
 
-Every endpoint except /health requires the X-LANDOS-SECRET header. That secret
-is the trust boundary: only callers who hold it (your APG deployment) get in.
+Every endpoint except /health requires a service credential. Bearer auth is the
+canonical transport; X-LANDOS-SECRET remains as a compatibility header.
 
 Run it with:  uvicorn app.main:app --host 0.0.0.0 --port 8400
 """
 import json
-import os
 from datetime import date
 from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import PlainTextResponse, HTMLResponse
 from psycopg.types.json import Jsonb
 
-from .config import LANDOS_SECRET
+from .http_config import COMPOSER_TOKEN, LANDOS_SECRET, NVE_LAND_TOKEN
 from .db import pool
+from .http_auth import service_auth_dependency
 from .models import (
     EvaluateRequest,
     ClaimRequest,
@@ -46,33 +46,23 @@ from .insight import service as insight_service
 from . import valuation as valuation_mod
 from .fips import resolve_county
 
-app = FastAPI(title="LandOS Engine", version="1.0.0")
+app = FastAPI(
+    title="LandOS Engine",
+    version="1.0.0",
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
+)
 
 
 # ---------------------------------------------------------------------------
-# Auth: every protected route depends on this. It checks the header against
-# the secret loaded from .env. Wrong/missing secret -> 401, request stops here.
+# Auth: LANDOS_SECRET is the canonical service credential. Scoped bearer aliases
+# preserve existing CRM integrations without ever making their routes public.
 # ---------------------------------------------------------------------------
-def auth(x_landos_secret: str = Header(default="")):
-    if not x_landos_secret or x_landos_secret != LANDOS_SECRET:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-LANDOS-SECRET")
-    return True
-
-
-# The CRM's land-dd proxy authenticates with `Authorization: Bearer <token>`, not the
-# X-LANDOS-SECRET header the rest of the engine uses. /land-dd is read-only (county-public
-# valuation data, no DB writes), so it takes a lenient guard: if NVE_LAND_TOKEN is set the
-# Bearer token (or the X-LANDOS-SECRET) must match; if it is NOT set, the endpoint is open
-# (matches the CRM's "coming soon" default where LAND_PORTAL_JWT may be any placeholder).
-def auth_land_dd(authorization: str = Header(default=""),
-                 x_landos_secret: str = Header(default="")):
-    required = os.environ.get("NVE_LAND_TOKEN")
-    if not required:
-        return True
-    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if bearer == required or (x_landos_secret and x_landos_secret == LANDOS_SECRET):
-        return True
-    raise HTTPException(status_code=401, detail="Invalid or missing land-dd credential")
+auth = service_auth_dependency(LANDOS_SECRET)
+auth_land_dd = service_auth_dependency(LANDOS_SECRET, NVE_LAND_TOKEN)
+auth_hunt = service_auth_dependency(LANDOS_SECRET, NVE_LAND_TOKEN)
+auth_composer = service_auth_dependency(LANDOS_SECRET, COMPOSER_TOKEN)
 
 
 def _active_weights(cur, tenant_id: str, profile: str = "default"):
@@ -93,16 +83,8 @@ def _active_weights(cur, tenant_id: str, profile: str = "default"):
 
 @app.get("/health")
 def health():
-    """Liveness + database reachability. No auth — safe to hit from anywhere."""
-    try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("select 1 as ok")
-                cur.fetchone()
-        db = "up"
-    except Exception as e:  # noqa: BLE001 - report any DB failure plainly
-        db = f"down: {e.__class__.__name__}"
-    return {"status": "ok", "service": "landos-engine", "db": db}
+    """Minimal public process liveness; dependency health stays private."""
+    return {"status": "ok"}
 
 
 @app.post("/land-dd")
@@ -339,20 +321,6 @@ def compliance_cert_batch(req: ComplianceCertBatchRequest, _=Depends(auth_land_d
     return {**batch, "unresolved_lead_ids": unresolved}
 
 
-# /hunt writes job records, so unlike the read-only /land-dd + /lead-receipt guard
-# it NEVER ships open: Bearer NVE_LAND_TOKEN when set, X-LANDOS-SECRET always accepted,
-# and with NO token configured the secret is REQUIRED outright.
-def auth_hunt(authorization: str = Header(default=""),
-              x_landos_secret: str = Header(default="")):
-    required = os.environ.get("NVE_LAND_TOKEN")
-    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if required and bearer == required:
-        return True
-    if x_landos_secret and x_landos_secret == LANDOS_SECRET:
-        return True
-    raise HTTPException(status_code=401, detail="Invalid or missing hunt credential")
-
-
 @app.post("/hunt", status_code=202)
 def hunt_create(req: HuntRequest, _=Depends(auth_hunt)):
     """HUNT-V2: create a net-new territory hunt job. Validates every territory entry
@@ -397,22 +365,6 @@ def hunt_status(job_id: str, _=Depends(auth_hunt)):
         "error": job["error"],
         "created_at": job["created_at"], "updated_at": job["updated_at"],
     }
-
-
-# RECIPE-2 composer guard. The CRM's compose/decide proxies send
-# `Authorization: Bearer {COMPOSER_TOKEN}` when that env is set. Like /hunt this
-# is a WRITE path (it syncs proposals/runs), so it never ships open: Bearer
-# COMPOSER_TOKEN when configured, X-LANDOS-SECRET always accepted, and with no
-# COMPOSER_TOKEN set the secret is required outright.
-def auth_composer(authorization: str = Header(default=""),
-                  x_landos_secret: str = Header(default="")):
-    required = os.environ.get("COMPOSER_TOKEN")
-    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if required and bearer == required:
-        return True
-    if x_landos_secret and x_landos_secret == LANDOS_SECRET:
-        return True
-    raise HTTPException(status_code=401, detail="Invalid or missing composer credential")
 
 
 @app.post("/compose")

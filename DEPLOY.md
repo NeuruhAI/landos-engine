@@ -26,9 +26,13 @@ fly launch --no-deploy --copy-config --name landos-engine --region iad
 set -a; . ./.env; set +a
 fly secrets set \
   DATABASE_URL="$DATABASE_URL" \
-  LANDOS_SECRET="$LANDOS_SECRET" \
-  NVE_LAND_TOKEN="$LANDOS_SECRET"     # lock /land-dd to a Bearer token (reuse LANDOS_SECRET or pick a new one)
+  LANDOS_SECRET="$LANDOS_SECRET"
 ```
+
+`LANDOS_SECRET` authenticates every capability route. A separately generated
+`NVE_LAND_TOKEN` may be set as a scoped compatibility alias for `/land-dd`,
+receipt/insight/valuation/certificate routes, and `/hunt`; its absence never
+makes those routes public.
 
 ## Deploy + verify
 
@@ -36,8 +40,8 @@ fly secrets set \
 fly deploy
 fly status                       # confirm 1 machine, health check passing on /health
 APPURL="https://$(fly info --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["Hostname"])')"
-curl -s "$APPURL/health"         # -> {"status":"ok","db":"up"}
-curl -s -X POST "$APPURL/land-dd" -H "Authorization: Bearer <NVE_LAND_TOKEN>" \
+curl -s "$APPURL/health"         # -> {"status":"ok"}
+curl -s -X POST "$APPURL/land-dd" -H "Authorization: Bearer <LANDOS_SECRET>" \
   -H 'Content-Type: application/json' \
   -d '{"county_fips":"26021","lat":42.0144742,"lng":-86.3592138}'   # Belinda -> land_score + anomaly
 ```
@@ -49,7 +53,7 @@ Set two prod env vars, then redeploy the CRM:
 ```bash
 # in the CRM repo (~/neuruh-repos/AnchorPG/apg-land-crm):
 vercel env add VALUATION_ENGINE_URL production   # value: the $APPURL above
-vercel env add LAND_PORTAL_JWT production         # value: the NVE_LAND_TOKEN you set on Fly
+vercel env add LAND_PORTAL_JWT production         # value: LANDOS_SECRET (or scoped NVE_LAND_TOKEN)
 vercel --prod                                     # redeploy so the vars take effect
 ```
 

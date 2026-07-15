@@ -29,7 +29,8 @@ def _require(name: str) -> str:
 # The full Postgres connection string for your Supabase database.
 DATABASE_URL = _require("DATABASE_URL")
 
-# The shared secret APG must send in the X-LANDOS-SECRET header to call us.
+# The canonical HTTP service token. Bearer is primary; X-LANDOS-SECRET remains
+# a compatibility transport. HTTP-specific validation lives in http_config.py.
 LANDOS_SECRET = _require("LANDOS_SECRET")
 
 # The local port the service listens on. Defaults to 8400.

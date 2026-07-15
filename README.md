@@ -70,9 +70,15 @@ cp .env.example .env     # then fill in real values — NEVER commit .env
 Environment variables (names only — see `.env.example`; do not commit real values):
 
 - `DATABASE_URL` — Postgres connection (Neuruh Supabase, `landos` schema)
+- `LANDOS_SECRET` — required HTTP service token; send it as a Bearer token
+- `NVE_LAND_TOKEN` *(optional)* — scoped Bearer alias for land-dd/hunt clients
+- `COMPOSER_TOKEN` *(optional)* — scoped Bearer alias for composer clients
 - `REPORTALL_CLIENT_KEY` — ReportAll Parcel Data API client key
 - `APG_DATABASE_URL` *(optional)* — only needed if/when the gated APG push is enabled
 - `TRACERFY_API_KEY` *(optional)* — only needed if/when the gated skip-trace is enabled
+
+The HTTP trust boundary and safe request examples are documented in
+[`docs/security/authentication.md`](docs/security/authentication.md).
 
 ## Usage
 
