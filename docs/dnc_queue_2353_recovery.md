@@ -4,6 +4,11 @@ Queue 2353 is an already-paid Tracerfy DNC scrub. It must never be submitted
 again. Recovery is a queue GET plus download of the existing result, followed by
 an immutable local receipt. It does not write either database.
 
+Recovery and the authorized intake/sync are complete. See
+[`DNC-LANE-STATE.md`](DNC-LANE-STATE.md) for the final receipt, exact census,
+and remote-backed handoff. The commands below preserve the original recovery
+gates for audit and reproduction.
+
 ## Proven state
 
 - Queue envelope: `id=2353`, `pending=false`, `rows_uploaded=48`,
@@ -83,7 +88,7 @@ git commit -m 'fix(dnc): reconcile paid queues and fail closed on unknown'
 git push -u origin fix/dnc-queue-2353-recovery
 ```
 
-Targeted verification currently passes 59 tests. The full suite has one known,
+Targeted verification currently passes 60 tests. The full suite has one known,
 unrelated baseline failure in `test_load_parcel_geom.py` because Berrien's
 mineral-scout source does not start with `arcgis:`.
 
