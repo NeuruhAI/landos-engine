@@ -18,6 +18,12 @@ is the ONLY score they get, written next by score_emergence.py.
 Idempotent: ON CONFLICT (tenant_id, county_fips, parcel_apn) DO NOTHING — re-run mints 0 dups;
 only signals still status='new' are (re)matched, so re-run re-matches 0. The whole batch is one
 DELETE (provenance='discovered_taxsale', source='county_taxsale_<county_fips>') if it must be removed.
+
+🔴 PROMOTE GATE (mig 036 / tax_sale_promote_contract): the mint fires ONLY for signals a HUMAN
+has promoted (promoted=true). tax-sale.info's ToU forbids AUTOMATED aggregation for outreach +
+contacting former owners — the ToU line runs through a human keystroke, so an un-promoted
+taxsale signal NEVER mints and NEVER enters any queue. Gate-in-DATA (the WHERE below), not app
+logic that a caller could skip. The freshness gate stays as defense-in-depth on top.
 """
 import argparse
 from datetime import date
@@ -36,9 +42,10 @@ PROVENANCE = "discovered_taxsale"
 
 SIGNALS = """
     select signal_id, parcel_apn, owner_name, confidence, county_fips,
-           raw_payload, status, matched_lead_id, signal_date
+           raw_payload, status, matched_lead_id, signal_date, promoted
     from landos.discovery_signals
     where source_type = 'taxsale' and signal_class = 'temporal'
+      and promoted = true                       -- 🔴 THE GATE (mig 036): human-promoted only
       and (%(only_fips)s::text[] is null or county_fips = any(%(only_fips)s))
     order by parcel_apn
 """
