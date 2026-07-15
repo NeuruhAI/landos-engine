@@ -12,20 +12,21 @@ mirrors that write verbatim (same table, same columns, same phones[] shape,
 same import_provenance block); it just adapts the Tracerfy batch-async staged
 CSV into it. It writes landos.* ONLY. It NEVER touches public.acquisition_leads
 — sync_to_crm remains the sole CRM writer, and it re-derives phone_1/phone_2
-from this meta under its own DNC + callable gate (not is_dnc AND
+from this meta under its own DNC + callable gate (dnc_status='clear' AND
 skip_trace_status in (traced_web,traced_paid) AND confidence_score >= 0.6).
 Writing phones to the CRM directly would be a parallel writer AND would be
 NULLed on the next sync — so we don't.
 
 FIREWALL / RAILS (JOB 5 directive):
-  * scrub-PASS ONLY — the staged CSV carries the ccT3 DNC scrub columns
-    (scrub_status/scrub_flags/scrubbed_at). We consume scrub_status='clean'
-    rows and DROP every 'dnc' row. Phones are not callable until scrubbed, and
-    a national/state-DNC number never enters the spine.
+  * scrub-PASS phones ONLY — the staged CSV carries the ccT3 DNC scrub columns
+    (scrub_status/scrub_flags/scrubbed_at). Only scrub_status='clean' digits
+    enter phones[]. DNC digits never enter the spine, but their target-level
+    verdict + count receipt is retained so the CRM can fail closed.
   * consent surface — a lead whose CRM row is dnc=true is excluded even if its
     numbers scrubbed clean (belt and suspenders over the scrub).
-  * never overwrite — a lead that already carries skip_trace_meta.phones is
-    left untouched; we only fill phoneless leads.
+  * never bless unrelated phones — a lead that already carries phones may have
+    its receipt refreshed only when that canonical phone set exactly equals the
+    clean set in this receipt. A mismatch aborts before any write.
   * source-stamped — every landed number and the meta provenance carry
     source='tracerfy_20260713'.
   * tenant-qualified + idempotent — keyed on owner_leads.lead_id; a re-run fills
@@ -99,6 +100,8 @@ def build_phones(rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     seen: set = set()
     phones: List[Dict[str, Any]] = []
     for r in rows:
+        if not is_scrub_pass(r):
+            continue
         num = norm_phone(r.get("phone"))
         if not num or num in seen:
             continue
@@ -110,27 +113,107 @@ def build_phones(rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
             "confidence": confidence_for(ptype),
             "source": SOURCE_STAMP,
             "verified_2x": False,          # single source (Tracerfy) — not cross-verified
+            "dnc_status": "clear",
+            "dnc_scrubbed_at": (r.get("scrubbed_at") or "").strip() or None,
         })
     phones.sort(key=lambda p: -(p["confidence"] or 0))
     return phones
 
 
+def target_verdict(rows: List[Dict[str, str]]) -> str | None:
+    """Collapse phone-level evidence to the lead-level projection contract.
+
+    A target with any clean number may project only its clean numbers. A target
+    whose observed numbers are all DNC is suppressed without storing the DNC
+    digits. Unknown/blank statuses never become a verdict.
+    """
+    statuses = {(r.get("scrub_status") or "").strip().lower() for r in rows}
+    if "clean" in statuses:
+        return "clear"
+    if statuses == {"dnc"}:
+        return "do_not_call"
+    return None
+
+
+def canonical_phone_set(phones: List[Dict[str, Any]]) -> set[str]:
+    """Normalize a meta/receipt phones list and reject malformed duplicates."""
+    normalized = []
+    for phone in phones:
+        if not isinstance(phone, dict):
+            raise RuntimeError("phone metadata contains a non-object entry")
+        number = norm_phone(phone.get("number"))
+        if not number:
+            raise RuntimeError("phone metadata contains an invalid number")
+        normalized.append(number)
+    if len(normalized) != len(set(normalized)):
+        raise RuntimeError("phone metadata contains duplicate canonical numbers")
+    return set(normalized)
+
+
+def merge_clean_phone_evidence(
+    target_key: str,
+    existing_phones: List[Dict[str, Any]],
+    receipt_phones: List[Dict[str, Any]],
+    scrubbed_at: str | None,
+) -> List[Dict[str, Any]]:
+    """Mark only receipt-matched phones clean; preserve extras as unchecked.
+
+    A nonempty existing list must already contain every receipt-clean number.
+    Additional existing phones are retained byte-for-byte but receive no clean
+    evidence, so the CRM projection cannot dial them. Nothing is deleted.
+    """
+    existing = canonical_phone_set(existing_phones)
+    receipt = canonical_phone_set(receipt_phones)
+    if not receipt:
+        raise RuntimeError(
+            f"STOP — target {target_key} has a clear verdict with no clean phone")
+    if not existing:
+        return [dict(phone) for phone in receipt_phones]
+    missing = receipt - existing
+    if missing:
+        raise RuntimeError(
+            f"STOP — target {target_key} is missing receipt-clean phones from existing meta: "
+            f"missing_from_existing={sorted(missing)}; no verdict written")
+
+    merged = []
+    for phone in existing_phones:
+        item = dict(phone)
+        if norm_phone(item.get("number")) in receipt:
+            item["dnc_status"] = "clear"
+            item["dnc_scrubbed_at"] = scrubbed_at
+            item["dnc_verified_via"] = "tracerfy"
+        merged.append(item)
+    return merged
+
+
 def load_staged(csv_path: str):
-    """Read the staged CSV; return (clean_by_target, stats). scrub-PASS filter
-    is applied here and counted so the dry-run proves it."""
+    """Read the staged CSV; return (all_rows_by_target, stats).
+
+    Rows stay grouped long enough to retain DNC-only target verdicts. build_phones
+    remains the hard boundary that prevents a DNC digit entering the spine.
+    """
     with open(csv_path, newline="") as f:
         all_rows = list(csv.DictReader(f))
     clean = [r for r in all_rows if is_scrub_pass(r)]
     dropped = [r for r in all_rows if not is_scrub_pass(r)]
     by_target: Dict[str, List[Dict[str, str]]] = defaultdict(list)
-    for r in clean:
+    for r in all_rows:
         by_target[(r.get("target_key") or "").strip()].append(r)
+    verdicts = {k: target_verdict(v) for k, v in by_target.items()}
     stats = {
         "csv_rows": len(all_rows),
         "scrub_pass_rows": len(clean),
         "scrub_dropped_rows": len(dropped),
         "dropped_flags": _count(dropped, "scrub_flags"),
-        "clean_targets": len(by_target),
+        "targets": len(by_target),
+        "clean_targets": sum(v == "clear" for v in verdicts.values()),
+        "dnc_only_targets": sum(v == "do_not_call" for v in verdicts.values()),
+        "mixed_targets": sum(
+            {"clean", "dnc"}.issubset(
+                {(r.get("scrub_status") or "").strip().lower() for r in rows}
+            )
+            for rows in by_target.values()
+        ),
     }
     return by_target, stats
 
@@ -151,6 +234,7 @@ BRIDGE_SQL = """
            a.dnc                     as acq_dnc,
            ol.lead_id is not null    as has_spine_row,
            coalesce(jsonb_array_length(ol.skip_trace_meta->'phones'), 0) as existing_phones,
+           ol.skip_trace_meta->>'dnc_status' as existing_dnc_status,
            ol.skip_trace_meta        as meta
     from public.acquisition_leads a
     left join landos.owner_leads ol
@@ -161,12 +245,12 @@ BRIDGE_SQL = """
 WRITE_SQL = """
     update landos.owner_leads
        set skip_trace_meta = %(meta)s,
-           confidence_score = %(conf)s,
+           confidence_score = coalesce(%(conf)s, confidence_score),
            skip_trace_status = 'traced_paid',
            updated_at = now()
      where tenant_id = %(tenant)s
        and lead_id = %(owner_lead_id)s
-       and coalesce(jsonb_array_length(skip_trace_meta->'phones'), 0) = 0
+       and skip_trace_meta is not distinct from %(prior_meta)s
 """
 
 
@@ -180,8 +264,10 @@ def run(csv_path: str, dry_run: bool = True, limit: int | None = None) -> Dict[s
     if limit:
         targets = targets[:limit]
 
-    outcome = {"landed": 0, "skip_unmapped": 0, "skip_no_spine": 0,
-               "skip_dnc": 0, "skip_has_phones": 0, "phones_written": 0}
+    outcome = {"updated": 0, "landed": 0, "marked_dnc": 0,
+               "receipt_refreshed": 0, "skip_unmapped": 0, "skip_no_spine": 0,
+               "skip_dnc": 0, "skip_has_phones": 0, "skip_unverified": 0,
+               "phones_written": 0}
     rows_out = []
 
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
@@ -190,7 +276,9 @@ def run(csv_path: str, dry_run: bool = True, limit: int | None = None) -> Dict[s
 
         for tk in targets:
             b = bridge.get(tk)
-            phones = build_phones(by_target[tk])
+            staged_rows = by_target[tk]
+            phones = build_phones(staged_rows)
+            incoming_verdict = target_verdict(staged_rows)
             if b is None:
                 outcome["skip_unmapped"] += 1
                 rows_out.append((tk, "UNMAPPED", None, len(phones)))
@@ -203,23 +291,64 @@ def run(csv_path: str, dry_run: bool = True, limit: int | None = None) -> Dict[s
                 outcome["skip_dnc"] += 1
                 rows_out.append((tk, "DNC_CONSENT", b["owner_lead_id"], len(phones)))
                 continue
-            if b["existing_phones"] > 0:
-                outcome["skip_has_phones"] += 1
-                rows_out.append((tk, "HAS_PHONES", b["owner_lead_id"], len(phones)))
-                continue
-            if not phones:
-                outcome["skip_unmapped"] += 1
-                rows_out.append((tk, "NO_CLEAN_PHONE", b["owner_lead_id"], 0))
+            if incoming_verdict is None:
+                outcome["skip_unverified"] += 1
+                rows_out.append((tk, "UNVERIFIED", b["owner_lead_id"], 0))
                 continue
 
-            top_conf = max(p["confidence"] for p in phones)
-            # MERGE: preserve any prior meta keys (registry pierce etc.); only add ours.
-            meta = dict(b["meta"] or {})
+            # A prior hard DNC is sticky. Otherwise this exact scrub receipt is
+            # authoritative for the staged numbers.
+            verdict = ("do_not_call"
+                       if (b["existing_dnc_status"] or "").strip().lower() == "do_not_call"
+                       else incoming_verdict)
+            prior_meta_raw = b["meta"]
+            prior_meta = dict(prior_meta_raw or {})
+            meta = dict(prior_meta)
+            clean_rows = [r for r in staged_rows if is_scrub_pass(r)]
+            dnc_rows = [
+                r for r in staged_rows
+                if (r.get("scrub_status") or "").strip().lower() == "dnc"
+            ]
+            scrubbed_at = max(
+                ((r.get("scrubbed_at") or "").strip() for r in staged_rows),
+                default="",
+            ) or None
+            if verdict == "clear":
+                if not phones:
+                    raise RuntimeError(
+                        f"target {tk} resolved clear but produced no normalized clean phone")
+                meta["phones"] = merge_clean_phone_evidence(
+                    tk,
+                    list(prior_meta.get("phones") or []),
+                    phones,
+                    scrubbed_at,
+                )
+                if b["existing_phones"] == 0:
+                    outcome["landed"] += 1
+                    outcome["phones_written"] += len(phones)
+                    row_verdict = "LAND"
+                else:
+                    outcome["skip_has_phones"] += 1
+                    outcome["receipt_refreshed"] += 1
+                    row_verdict = "RECEIPT"
+                top_conf = max(p["confidence"] for p in phones)
+            elif verdict == "do_not_call":
+                outcome["marked_dnc"] += 1
+                row_verdict = "DNC_ONLY"
+                top_conf = None
+
             meta.update({
-                "phones": phones,
-                "dnc_status": "clear",             # scrub-PASS clears national/state DNC
+                "dnc_status": verdict,
                 "verified_via": ["tracerfy"],
                 "resolved_at": started.date().isoformat(),
+                "scrub_receipt": {
+                    "source": "ccT3",
+                    "scrubbed_at": scrubbed_at,
+                    "clean_phone_hits": len(clean_rows),
+                    "dnc_phone_hits": len(dnc_rows),
+                    "dnc_flags": _count(dnc_rows, "scrub_flags"),
+                    "csv_sha256": csv_sha,
+                },
                 "import_provenance": {
                     "run_id": run_id,
                     "imported_at": started.isoformat().replace("+00:00", "Z"),
@@ -231,19 +360,21 @@ def run(csv_path: str, dry_run: bool = True, limit: int | None = None) -> Dict[s
                     "status_set": "traced_paid",
                 },
             })
-            outcome["landed"] += 1
-            outcome["phones_written"] += len(phones)
-            rows_out.append((tk, "LAND", b["owner_lead_id"], len(phones)))
+            outcome["updated"] += 1
+            rows_out.append((tk, row_verdict, b["owner_lead_id"],
+                             len(meta.get("phones") or [])))
             if not dry_run:
                 cur.execute(WRITE_SQL, {"meta": Jsonb(meta), "conf": top_conf,
-                                        "tenant": TENANT, "owner_lead_id": b["owner_lead_id"]})
+                                        "tenant": TENANT, "owner_lead_id": b["owner_lead_id"],
+                                        "prior_meta": (Jsonb(prior_meta_raw)
+                                                       if prior_meta_raw is not None else None)})
                 if cur.rowcount != 1:
                     raise RuntimeError(
                         f"expected to write 1 owner_lead for target {tk} "
-                        f"(->{b['owner_lead_id']}), got {cur.rowcount} — a phone may "
-                        f"have appeared since bridge read; aborting for safety")
+                        f"(->{b['owner_lead_id']}), got {cur.rowcount} — its metadata "
+                        f"changed since bridge read; aborting rather than overwriting")
 
-        if not dry_run and outcome["landed"]:
+        if not dry_run and outcome["updated"]:
             manifest = {
                 "run_id": run_id,
                 "generated_at_utc": started.isoformat().replace("+00:00", "Z"),
@@ -256,7 +387,7 @@ def run(csv_path: str, dry_run: bool = True, limit: int | None = None) -> Dict[s
                 "source": SOURCE_STAMP,
                 "csv_file": os.path.basename(csv_path),
                 "csv_sha256": csv_sha,
-                "row_count": outcome["landed"],
+                "row_count": outcome["updated"],
                 "outcome": outcome,
                 "stats": stats,
             }
@@ -286,13 +417,17 @@ def _print_receipt(csv_path, csv_sha, stats, outcome, rows_out, dry_run, limit):
     print(f"  csv_rows={stats['csv_rows']}  scrub_PASS(clean)={stats['scrub_pass_rows']}  "
           f"DROPPED(dnc/other)={stats['scrub_dropped_rows']}")
     print(f"  dropped by flag: {stats['dropped_flags']}")
-    print(f"  clean targets: {stats['clean_targets']}")
+    print(f"  targets={stats['targets']}  clean={stats['clean_targets']}  "
+          f"mixed={stats['mixed_targets']}  DNC-only={stats['dnc_only_targets']}")
     print("\nINTAKE OUTCOME:")
     print(f"  LAND (phoneless spine leads filled): {outcome['landed']}  "
           f"(+{outcome['phones_written']} numbers)")
+    print(f"  DNC-only targets marked (no DNC digits stored): {outcome['marked_dnc']}  "
+          f"receipts refreshed: {outcome['receipt_refreshed']}")
     print(f"  skip unmapped/no-clean-phone: {outcome['skip_unmapped']}  "
           f"no-spine-row: {outcome['skip_no_spine']}  "
-          f"DNC-consent: {outcome['skip_dnc']}  already-has-phones: {outcome['skip_has_phones']}")
+          f"DNC-consent: {outcome['skip_dnc']}  already-has-phones: {outcome['skip_has_phones']}  "
+          f"unverified: {outcome['skip_unverified']}")
     print("\n  target_key  verdict        owner_lead   #phones")
     for tk, verdict, ol, n in rows_out[:25]:
         print(f"  {tk[:8]}…  {verdict:<13}  {(ol[:8]+'…') if ol else '-':<11}  {n}")
@@ -308,8 +443,9 @@ def _print_receipt(csv_path, csv_sha, stats, outcome, rows_out, dry_run, limit):
         print("  │   # then project to the CRM board (sole CRM writer, DNC+callable gated):")
         print("  │ .venv/bin/python -m scripts.sync_to_crm")
         print("  └───────────────────────────────────────────────────────────────────────")
-        print(f"  Effect: {outcome['landed']} leads -> skip_trace_status=traced_paid, "
-              f"phones callable (conf ≥ {SYNC_THRESHOLD}).")
+        print(f"  Effect: {outcome['updated']} spine verdict receipts; "
+              f"{outcome['landed']} leads gain scrub-clean phones and "
+              f"{outcome['marked_dnc']} DNC-only targets become suppressed.")
 
 
 def main() -> None:
