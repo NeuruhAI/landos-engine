@@ -99,7 +99,7 @@ COUNTIES = {
         "geojson_file": "../mineral-scout/data/berrien/berrien_parcel_geom.geojson",
         "apn_field": "PIN",               # == owner CSV PIN
         "oid_field": "PIN",               # no OBJECTID in the pull; PIN is the stable ref
-        "source": "mineral-scout:berrien_gis_parcels ($0 ccT7 pull)",
+        "source": "arcgis:berrien_gis_parcels ($0 ccT7 AGOL public pull)",
     },
 }
 
