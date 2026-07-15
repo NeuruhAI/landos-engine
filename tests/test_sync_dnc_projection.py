@@ -23,6 +23,8 @@ def test_main_requires_explicit_clear_and_writes_sticky_dnc():
     assert "projected_dnc is False" in src
     assert "when dnc is true then true" in src
     assert "p1, p1t, p2, conf, projected_dnc" in src
+    assert 'phone.get("dnc_status")' in src
+    assert "contains no per-phone clean evidence" in src
 
 
 def test_contact_bridge_never_coalesces_unknown_to_false():

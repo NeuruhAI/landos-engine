@@ -31,8 +31,9 @@ ordering, pagination, or an incomplete result.
 - `--resume-dnc-queue` is mutually exclusive with `--apply` and
   `--confirm-spend`; its code path cannot call the paid submission function.
 - Intake retains DNC-only target evidence without storing DNC phone digits.
-- Existing spine phones may receive a `clear` verdict only when their canonical
-  set exactly equals the clean receipt set.
+- Existing spine phones receive clean evidence only for canonical numbers in the
+  receipt. Additional stored phones are preserved but remain unchecked and are
+  excluded from CRM projection; a missing receipt-clean number still aborts.
 - CRM projection requires `dnc_status='clear'`; unknown remains NULL and
   non-callable. Existing TRUE is sticky, and the operator smoke fixture can
   never be automated to FALSE.

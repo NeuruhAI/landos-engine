@@ -10,10 +10,10 @@ import re
 import pytest
 
 from scripts.intake_tracerfy_phones import (BRIDGE_SQL, WRITE_SQL, SOURCE_STAMP,
-                                             assert_clean_phone_set_match,
                                              SYNC_THRESHOLD, build_phones,
                                              confidence_for, is_scrub_pass,
                                              load_staged, norm_type,
+                                             merge_clean_phone_evidence,
                                              target_verdict)
 
 
@@ -85,18 +85,32 @@ def test_existing_phone_set_must_exactly_match_clean_receipt():
         {"number": "+15171112222", "source": SOURCE_STAMP},
         {"number": "+15173334444", "source": SOURCE_STAMP},
     ]
-    assert_clean_phone_set_match("T1", existing, same_receipt)
+    merged = merge_clean_phone_evidence(
+        "T1", existing, same_receipt, "2026-07-15T00:00:00Z")
+    assert all(phone["dnc_status"] == "clear" for phone in merged)
 
 
-def test_existing_unreturned_phone_cannot_be_blessed_clear():
+def test_existing_unreturned_phone_is_preserved_but_not_blessed_clear():
     existing = [
         {"number": "+15171112222"},
         {"number": "+15179990000"},
     ]
     receipt = [{"number": "+15171112222"}]
-    with pytest.raises(RuntimeError, match="no verdict written") as caught:
-        assert_clean_phone_set_match("T1", existing, receipt)
-    assert "+15179990000" in str(caught.value)
+    merged = merge_clean_phone_evidence(
+        "T1", existing, receipt, "2026-07-15T00:00:00Z")
+    assert len(merged) == 2
+    clean = [phone for phone in merged if phone.get("dnc_status") == "clear"]
+    unknown = [phone for phone in merged if phone.get("dnc_status") != "clear"]
+    assert [phone["number"] for phone in clean] == ["+15171112222"]
+    assert [phone["number"] for phone in unknown] == ["+15179990000"]
+
+
+def test_receipt_phone_missing_from_existing_meta_stops():
+    existing = [{"number": "+15171112222"}]
+    receipt = [{"number": "+15173334444", "dnc_status": "clear"}]
+    with pytest.raises(RuntimeError, match="missing_from_existing"):
+        merge_clean_phone_evidence(
+            "T1", existing, receipt, "2026-07-15T00:00:00Z")
 
 
 def test_confidence_clears_the_sync_threshold_and_mobile_outranks_landline():

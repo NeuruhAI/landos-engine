@@ -113,6 +113,8 @@ def build_phones(rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
             "confidence": confidence_for(ptype),
             "source": SOURCE_STAMP,
             "verified_2x": False,          # single source (Tracerfy) — not cross-verified
+            "dnc_status": "clear",
+            "dnc_scrubbed_at": (r.get("scrubbed_at") or "").strip() or None,
         })
     phones.sort(key=lambda p: -(p["confidence"] or 0))
     return phones
@@ -148,19 +150,40 @@ def canonical_phone_set(phones: List[Dict[str, Any]]) -> set[str]:
     return set(normalized)
 
 
-def assert_clean_phone_set_match(
+def merge_clean_phone_evidence(
     target_key: str,
     existing_phones: List[Dict[str, Any]],
     receipt_phones: List[Dict[str, Any]],
-) -> None:
-    """Never let one scrub receipt confer `clear` on unreturned phone digits."""
+    scrubbed_at: str | None,
+) -> List[Dict[str, Any]]:
+    """Mark only receipt-matched phones clean; preserve extras as unchecked.
+
+    A nonempty existing list must already contain every receipt-clean number.
+    Additional existing phones are retained byte-for-byte but receive no clean
+    evidence, so the CRM projection cannot dial them. Nothing is deleted.
+    """
     existing = canonical_phone_set(existing_phones)
     receipt = canonical_phone_set(receipt_phones)
-    if existing != receipt:
+    if not receipt:
         raise RuntimeError(
-            f"STOP — target {target_key} existing phones differ from the clean receipt: "
-            f"missing_from_receipt={sorted(existing - receipt)} "
-            f"missing_from_existing={sorted(receipt - existing)}; no verdict written")
+            f"STOP — target {target_key} has a clear verdict with no clean phone")
+    if not existing:
+        return [dict(phone) for phone in receipt_phones]
+    missing = receipt - existing
+    if missing:
+        raise RuntimeError(
+            f"STOP — target {target_key} is missing receipt-clean phones from existing meta: "
+            f"missing_from_existing={sorted(missing)}; no verdict written")
+
+    merged = []
+    for phone in existing_phones:
+        item = dict(phone)
+        if norm_phone(item.get("number")) in receipt:
+            item["dnc_status"] = "clear"
+            item["dnc_scrubbed_at"] = scrubbed_at
+            item["dnc_verified_via"] = "tracerfy"
+        merged.append(item)
+    return merged
 
 
 def load_staged(csv_path: str):
@@ -290,31 +313,28 @@ def run(csv_path: str, dry_run: bool = True, limit: int | None = None) -> Dict[s
                 ((r.get("scrubbed_at") or "").strip() for r in staged_rows),
                 default="",
             ) or None
-            if verdict == "clear" and b["existing_phones"] == 0:
+            if verdict == "clear":
                 if not phones:
                     raise RuntimeError(
                         f"target {tk} resolved clear but produced no normalized clean phone")
-                meta["phones"] = phones
-                outcome["landed"] += 1
-                outcome["phones_written"] += len(phones)
-                row_verdict = "LAND"
+                meta["phones"] = merge_clean_phone_evidence(
+                    tk,
+                    list(prior_meta.get("phones") or []),
+                    phones,
+                    scrubbed_at,
+                )
+                if b["existing_phones"] == 0:
+                    outcome["landed"] += 1
+                    outcome["phones_written"] += len(phones)
+                    row_verdict = "LAND"
+                else:
+                    outcome["skip_has_phones"] += 1
+                    outcome["receipt_refreshed"] += 1
+                    row_verdict = "RECEIPT"
                 top_conf = max(p["confidence"] for p in phones)
             elif verdict == "do_not_call":
                 outcome["marked_dnc"] += 1
                 row_verdict = "DNC_ONLY"
-                top_conf = None
-            else:
-                # Existing phones are preserved byte-for-byte only when this
-                # exact receipt proves every one clean. Never let one clean
-                # number confer `clear` on unrelated stored numbers.
-                assert_clean_phone_set_match(
-                    tk,
-                    list(prior_meta.get("phones") or []),
-                    phones,
-                )
-                outcome["skip_has_phones"] += 1
-                outcome["receipt_refreshed"] += 1
-                row_verdict = "RECEIPT"
                 top_conf = None
 
             meta.update({

@@ -341,6 +341,7 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                       (skip_trace_meta->>'commercial_agent_flag')::boolean as caf,
                       skip_trace_meta->>'dnc_status'                       as dnc_status,
                       skip_trace_meta->'phones'                            as phones,
+                      skip_trace_meta->'scrub_receipt'                     as scrub_receipt,
                       signal_overlap, owner_type, emerging_score, emerging_signals,
                       provenance, parcel_apn, county_fips, raw_meta, situs_address,
                       owner_mailing_address, owner_mailing_city, owner_mailing_state, owner_mailing_zip
@@ -431,7 +432,20 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                 dnc_suppressed += 1
             p1 = p1t = p2 = conf = None
             if callable_:
-                ph = sorted(r["phones"] or [],
+                phone_pool = list(r["phones"] or [])
+                if r["scrub_receipt"] is not None:
+                    # A receipt may cover only one of several stored numbers.
+                    # Preserve unchecked extras in the spine, but never project
+                    # them to CRM contact columns.
+                    phone_pool = [
+                        phone for phone in phone_pool
+                        if (phone.get("dnc_status") or "").strip().lower() == "clear"
+                    ]
+                    if not phone_pool:
+                        raise RuntimeError(
+                            f"lead {r['lead_id']} is marked clear but its scrub receipt "
+                            "contains no per-phone clean evidence")
+                ph = sorted(phone_pool,
                             key=lambda p: -(p.get("confidence") or 0))
                 if ph:
                     p1, p1t = ph[0].get("number"), ph[0].get("type")
