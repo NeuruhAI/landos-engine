@@ -4,7 +4,8 @@ test_absentee.py — unit tests for the Owner-Outreach Engine (Engine 1).
 Covers (all pure, no DB / no network):
   - absentee_tier logic (all four tiers + unknown + vacant-lot guard)
   - owner_type classification (individual / entity / govt)
-  - absentee_score (tier weighting, entity premium, govt disposition floor)
+  - absentee_score (tier weighting, NO entity premium v1.2.0, govt disposition floor)
+  - cold-call lens gate (institutions/govt diverted; only humans are cold-call sellers)
   - signal_overlap join structure
   - final_lead_score multiplicative fusion (bumps, cap, clamp)
   - score_lead end-to-end
@@ -18,6 +19,7 @@ from app.score_absentee import (
     COUNTY_GEO, classify_owner_type, classify_absentee_tier, absentee_score,
     absentee_flag, build_signal_overlap, overlap_multiplier, final_lead_score,
     raw_fused_score, tiebreak_key, score_lead, TIER_BASE, GOVT_DISPOSITION_FLOOR, OVERLAP_CAP,
+    is_institution, cold_call_lens, cold_call_eligible,
 )
 from app.normalizers.reportall_owner import reportall_parcel_id, ReportAllOwnerNormalizer
 from app.push.apg_adapter import ApgPushAdapter, FORBIDDEN_TABLES
@@ -110,9 +112,11 @@ def test_score_orders_by_tier():
             absentee_score("owner_occupied", "individual"))
 
 
-def test_score_entity_premium():
-    assert absentee_score("out_of_state", "entity") > absentee_score("out_of_state", "individual")
-    assert absentee_score("out_of_state", "entity") == round(TIER_BASE["out_of_state"] * 1.10, 2)
+def test_no_entity_premium_v1_2_0():
+    # DOCTRINE (v1.2.0): the old 1.10 entity premium is GONE. An absentee institution
+    # is not "more motivated" than an absentee human — it's a different LENS entirely.
+    assert absentee_score("out_of_state", "entity") == absentee_score("out_of_state", "individual")
+    assert absentee_score("out_of_state", "entity") == round(TIER_BASE["out_of_state"], 2)
 
 
 def test_score_govt_floor():
@@ -177,8 +181,8 @@ def test_final_score_fusion_lifts_absentee():
 
 
 def test_final_score_clamped_100():
-    base = absentee_score("out_of_state", "entity")  # 99
-    ov = build_signal_overlap(["tax_delinquent"], {"name": "x"})  # 1.35 -> 133.65
+    base = absentee_score("out_of_state", "entity")  # 90 (no premium, v1.2.0)
+    ov = build_signal_overlap(["tax_delinquent"], {"name": "x"})  # 1.35 -> 121.5
     assert final_lead_score(base, ov) == 100.0
 
 
@@ -188,7 +192,9 @@ def test_final_score_no_overlap_equals_absentee():
 
 
 # ---- score_lead end-to-end -------------------------------------------------
-def test_score_lead_top_decile_absentee_entity_distressed_oz():
+def test_score_lead_absentee_institution_leaves_cold_call_queue():
+    # An absentee, tax-delinquent, in-OZ LLC still SCORES (it's a real entity/
+    # commercial lead) but it is NOT a cold-call seller — the lens gate diverts it.
     lead = dict(owner_name="ARP GLOBAL HOLDINGS LLC", situs_address="73 W MAIN St",
                 situs_city="BENTON HARBOR", situs_county="Berrien", situs_state="MI",
                 situs_zip="49022", owner_mailing_address="100 STATE ST",
@@ -196,9 +202,53 @@ def test_score_lead_top_decile_absentee_entity_distressed_oz():
     res = score_lead(lead, ["tax_delinquent"],
                      {"name": "QOZ Tract X", "provenance_status": "authoritative"}, BERRIEN)
     assert res["owner_type"] == "entity"
+    assert res["lens"] == "institution"
+    assert res["cold_call_eligible"] is False      # doctrine: not a cold dial
     assert res["absentee_tier"] == "out_of_state"
     assert res["absentee_flag"] is True
-    assert res["final_lead_score"] == 100.0  # 99 * 1.35 clamped
+    assert res["final_lead_score"] == 100.0  # 90 * 1.35 clamped — score intact, lens diverted
+
+
+def test_score_lead_human_absentee_is_a_cold_call_seller():
+    # The mirror case: a human out-of-state owner IS a cold-call seller (absentee
+    # elevates a human even un-crossed — that's the allowed branch of the doctrine).
+    lead = dict(owner_name="RACALLA JOSHUA MICHAEL", situs_address="73 W MAIN St",
+                situs_city="BENTON HARBOR", situs_county="Berrien", situs_state="MI",
+                situs_zip="49022", owner_mailing_address="100 STATE ST",
+                owner_mailing_city="CHICAGO", owner_mailing_state="IL", owner_mailing_zip="60601")
+    res = score_lead(lead, [], None, BERRIEN)
+    assert res["lens"] == "seller"
+    assert res["cold_call_eligible"] is True
+    assert res["absentee_tier"] == "out_of_state"
+
+
+# ---- cold-call lens gate (v1.2.0 doctrine) ---------------------------------
+def test_is_institution_covers_operator_list():
+    for name in ["CHEMICAL BANK FACILITIES", "SQUIRE EMPIRE LLC", "GLOMAX INC",
+                 "ACME PROPERTIES CORP", "JOHNSON SHIRLEY L REVOCABLE TRUST",
+                 "BERRIEN COUNTY ROAD COMMISSION", "BLUE WAVE INVESTMENTS LLC"]:
+        assert is_institution(name) is True, name
+
+
+def test_is_institution_excludes_humans_including_joint_owners():
+    # joint HUMAN ownership ("&") is a legitimate cold-call seller, NOT an institution
+    for name in ["SMITH JOHN A", "RACALLA JOSHUA MICHAEL",
+                 "SMITH JOHN & JANE W", "PERSON CANTRICE T"]:
+        assert is_institution(name) is False, name
+
+
+def test_cold_call_lens_routes_three_ways():
+    assert cold_call_lens("SMITH JOHN & JANE W") == "seller"
+    assert cold_call_lens("SQUIRE EMPIRE LLC") == "institution"
+    assert cold_call_lens("CITY OF BENTON HARBOR") == "govt"
+    # govt wins even with an entity suffix
+    assert cold_call_lens("BERRIEN COUNTY LAND BANK") == "govt"
+
+
+def test_cold_call_eligible_is_seller_only():
+    assert cold_call_eligible("SMITH JOHN A") is True
+    assert cold_call_eligible("CHEMICAL BANK FACILITIES") is False
+    assert cold_call_eligible("STATE OF MICHIGAN") is False
 
 
 def test_score_lead_owner_occupied_low():
