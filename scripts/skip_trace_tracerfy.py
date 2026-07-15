@@ -289,7 +289,89 @@ def submit_dnc(numbers, key):
     return qid, d
 
 
-def _poll(url, key, cap=POLL_CAP_SECONDS, settle=2, min_wait=15):
+def _queue_response_identity(payload):
+    """Return one unambiguous top-level queue identity, or fail closed.
+
+    Queue GET responses are evidence.  Do not reuse the permissive submit-time
+    extractor here: if multiple identity fields disagree, accepting either one
+    could attach results from the wrong paid batch.
+    """
+    if not isinstance(payload, dict):
+        raise TracerfyContractError(
+            "queue identity is not provable from a non-object response")
+    identities = {
+        str(payload[name]).strip()
+        for name in ("id", "dnc_queue_id", "queue_id", "queueId")
+        if isinstance(payload.get(name), (str, int))
+        and str(payload[name]).strip()
+    }
+    if not identities:
+        raise TracerfyContractError(
+            f"queue response has no identity; top-level keys={list(payload)[:12]}")
+    if len(identities) != 1:
+        raise TracerfyContractError(
+            f"queue response has conflicting identities={sorted(identities)}")
+    return identities.pop()
+
+
+def _dnc_phone_key(value):
+    """Strict NANP comparison key used only for DNC queue reconciliation."""
+    number = re.sub(r"\D", "", value or "")
+    if len(number) == 10:
+        return number
+    if len(number) == 11 and number.startswith("1"):
+        return number[1:]
+    raise TracerfyContractError(
+        f"DNC phone has unsupported digit length={len(number)}")
+
+
+def _assert_dnc_phone_membership(queue_id, rows, expected_phones):
+    """Prove the completed DNC result is exactly the submitted phone cohort.
+
+    On failure the local operator gets the exact canonical missing/extra sets.
+    This intentionally happens before a caller can accept or persist results.
+    """
+    expected = [_dnc_phone_key(value) for value in expected_phones]
+    expected_set = set(expected)
+    if len(expected_set) != len(expected):
+        duplicates = sorted(
+            key for key in expected_set if expected.count(key) > 1)
+        raise TracerfyContractError(
+            f"DNC expected-phone alias collision: queue_id={queue_id} "
+            f"duplicate_keys={duplicates}")
+
+    returned = []
+    for index, row in enumerate(rows or []):
+        if not isinstance(row, dict):
+            raise TracerfyContractError(
+                f"DNC queue result is not an object: queue_id={queue_id} row={index}")
+        number = next(
+            (str(row[name]).strip()
+             for name in ("phone", "phone_number", "number")
+             if row.get(name) is not None and str(row[name]).strip()),
+            None,
+        )
+        if number is None:
+            raise TracerfyContractError(
+                f"DNC queue result has no phone: queue_id={queue_id} row={index}")
+        returned.append(_dnc_phone_key(number))
+
+    returned_set = set(returned)
+    missing = sorted(expected_set - returned_set)
+    extra = sorted(returned_set - expected_set)
+    duplicate_keys = sorted(
+        key for key in returned_set if returned.count(key) > 1)
+    if (missing or extra or duplicate_keys
+            or len(returned) != len(expected)
+            or len(returned_set) != len(expected_set)):
+        raise TracerfyContractError(
+            f"DNC queue result mismatch: queue_id={queue_id} "
+            f"missing={missing} extra={extra} duplicate_keys={duplicate_keys} "
+            f"returned_rows={len(returned)} unique_returned={len(returned_set)}")
+
+
+def _poll(url, key, cap=POLL_CAP_SECONDS, settle=2, min_wait=15,
+          expected_queue_id=None):
     """Poll a queue with backoff (2,4,8,16…) up to `cap`s.
       - object with pending=false  -> results inline or from download_url (a CSV; fetched WITHOUT auth).
       - bare list (trace results carry NO completion flag and GROW as hits land) -> wait until the row
@@ -300,6 +382,12 @@ def _poll(url, key, cap=POLL_CAP_SECONDS, settle=2, min_wait=15):
     last_len, stable = None, 0
     while True:
         d = _json(_request("GET", url, key))
+        if expected_queue_id is not None:
+            actual_queue_id = _queue_response_identity(d)
+            if actual_queue_id != str(expected_queue_id):
+                raise TracerfyContractError(
+                    f"queue identity mismatch: requested={expected_queue_id} "
+                    f"returned={actual_queue_id}")
         if isinstance(d, list):
             if d:
                 stable = stable + 1 if len(d) == last_len else 0
@@ -333,8 +421,16 @@ def poll_queue(queue_id, key, cap=POLL_CAP_SECONDS):
     return _poll(f"{TRACERFY_BASE}/queue/{queue_id}", key, cap)
 
 
-def poll_dnc(queue_id, key, cap=POLL_CAP_SECONDS):
-    return _poll(f"{TRACERFY_BASE}/dnc/queue/{queue_id}", key, cap)
+def poll_dnc(queue_id, key, cap=POLL_CAP_SECONDS, expected_phones=None):
+    rows = _poll(
+        f"{TRACERFY_BASE}/dnc/queue/{queue_id}",
+        key,
+        cap,
+        expected_queue_id=str(queue_id),
+    )
+    if expected_phones is not None:
+        _assert_dnc_phone_membership(str(queue_id), rows, expected_phones)
+    return rows
 
 
 def _val(rec, *keys):

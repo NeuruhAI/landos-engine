@@ -7,10 +7,14 @@ import csv
 import io
 import re
 
+import pytest
+
 from scripts.intake_tracerfy_phones import (BRIDGE_SQL, WRITE_SQL, SOURCE_STAMP,
+                                             assert_clean_phone_set_match,
                                              SYNC_THRESHOLD, build_phones,
                                              confidence_for, is_scrub_pass,
-                                             load_staged, norm_type)
+                                             load_staged, norm_type,
+                                             target_verdict)
 
 
 # ---- scrub-PASS filter (fail-closed) -----------------------------------------------
@@ -31,29 +35,68 @@ T3,CARLA,5177778888,Landline,,tracerfy,2026-07-13T00:00:00Z,dnc,national_dnc;sta
 """
 
 
-def test_load_staged_drops_dnc_and_dedupes(tmp_path):
+def test_load_staged_retains_target_verdict_but_not_dnc_digits(tmp_path):
     p = tmp_path / "phones.csv"
     p.write_text(SYNTH_CSV)
     by_target, stats = load_staged(str(p))
-    # 5 rows in: 3 clean (T1 x3), 2 dnc (T2, T3) dropped
+    # 5 rows in: all targets retained for the verdict receipt; only T1 can
+    # produce phone digits.
     assert stats["csv_rows"] == 5
     assert stats["scrub_pass_rows"] == 3
     assert stats["scrub_dropped_rows"] == 2
-    assert set(by_target) == {"T1"}          # T2/T3 were dnc -> never present
+    assert set(by_target) == {"T1", "T2", "T3"}
+    assert target_verdict(by_target["T1"]) == "clear"
+    assert target_verdict(by_target["T2"]) == "do_not_call"
+    assert target_verdict(by_target["T3"]) == "do_not_call"
+    assert build_phones(by_target["T2"]) == []  # DNC digits never enter phones[]
     assert "national_dnc" in stats["dropped_flags"]
+    assert stats["clean_targets"] == 1
+    assert stats["dnc_only_targets"] == 2
 
 
 def test_build_phones_dedupes_number_and_sorts_mobile_first():
     rows = [
-        {"phone": "517-333-4444", "phone_type": "Landline"},
-        {"phone": "(517) 111-2222", "phone_type": "Mobile"},
-        {"phone": "5171112222", "phone_type": "mobile"},   # dup of the mobile
+        {"phone": "517-333-4444", "phone_type": "Landline", "scrub_status": "clean"},
+        {"phone": "(517) 111-2222", "phone_type": "Mobile", "scrub_status": "clean"},
+        {"phone": "5171112222", "phone_type": "mobile", "scrub_status": "clean"},  # dup
     ]
     ph = build_phones(rows)
     assert [p["number"] for p in ph] == ["+15171112222", "+15173334444"]  # mobile first, deduped
     assert ph[0]["type"] == "mobile" and ph[0]["confidence"] >= SYNC_THRESHOLD
     assert all(p["source"] == SOURCE_STAMP for p in ph)
     assert all(p["verified_2x"] is False for p in ph)      # single source
+
+
+def test_mixed_target_projects_only_clean_phone_and_stays_clear():
+    rows = [
+        {"phone": "517-111-2222", "phone_type": "Mobile", "scrub_status": "dnc"},
+        {"phone": "517-333-4444", "phone_type": "Landline", "scrub_status": "clean"},
+    ]
+    assert target_verdict(rows) == "clear"
+    assert [p["number"] for p in build_phones(rows)] == ["+15173334444"]
+
+
+def test_existing_phone_set_must_exactly_match_clean_receipt():
+    existing = [
+        {"number": "+1 (517) 333-4444", "source": "prior"},
+        {"number": "5171112222", "source": "prior"},
+    ]
+    same_receipt = [
+        {"number": "+15171112222", "source": SOURCE_STAMP},
+        {"number": "+15173334444", "source": SOURCE_STAMP},
+    ]
+    assert_clean_phone_set_match("T1", existing, same_receipt)
+
+
+def test_existing_unreturned_phone_cannot_be_blessed_clear():
+    existing = [
+        {"number": "+15171112222"},
+        {"number": "+15179990000"},
+    ]
+    receipt = [{"number": "+15171112222"}]
+    with pytest.raises(RuntimeError, match="no verdict written") as caught:
+        assert_clean_phone_set_match("T1", existing, receipt)
+    assert "+15179990000" in str(caught.value)
 
 
 def test_confidence_clears_the_sync_threshold_and_mobile_outranks_landline():
@@ -73,12 +116,12 @@ def _flat(s):
     return re.sub(r"\s+", " ", s.lower())
 
 
-def test_write_targets_owner_leads_only_and_guards_phoneless():
+def test_write_targets_owner_leads_only_and_guards_concurrent_meta():
     s = _flat(WRITE_SQL)
     assert "update landos.owner_leads" in s
     assert "public.acquisition_leads" not in s            # sync_to_crm is the sole CRM writer
     assert "skip_trace_status = 'traced_paid'" in s
-    assert "coalesce(jsonb_array_length(skip_trace_meta->'phones'), 0) = 0" in s  # never overwrite
+    assert "skip_trace_meta is not distinct from %(prior_meta)s" in s
     assert "tenant_id = %(tenant)s" in s                  # tenant-qualified
     assert "delete" not in s
 
