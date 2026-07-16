@@ -23,6 +23,7 @@ from fastapi.responses import PlainTextResponse, HTMLResponse
 from psycopg.types.json import Jsonb
 
 from .config import LANDOS_SECRET
+from .auth import bearer_of, token_guard_ok
 from .db import pool
 from .models import (
     EvaluateRequest,
@@ -60,17 +61,16 @@ def auth(x_landos_secret: str = Header(default="")):
 
 
 # The CRM's land-dd proxy authenticates with `Authorization: Bearer <token>`, not the
-# X-LANDOS-SECRET header the rest of the engine uses. /land-dd is read-only (county-public
-# valuation data, no DB writes), so it takes a lenient guard: if NVE_LAND_TOKEN is set the
-# Bearer token (or the X-LANDOS-SECRET) must match; if it is NOT set, the endpoint is open
-# (matches the CRM's "coming soon" default where LAND_PORTAL_JWT may be any placeholder).
+# X-LANDOS-SECRET header the rest of the engine uses. FAIL-CLOSED, identical in shape to
+# auth_hunt/auth_composer: Bearer NVE_LAND_TOKEN when configured, X-LANDOS-SECRET always
+# accepted, and with NO token configured a valid secret is REQUIRED outright. Absence of a
+# credential is a LOCKED door, never open — same doctrine as DNC-unknown = blocked. These
+# routes read county-public valuation data, but "read-only" is not "unauthenticated": an
+# unset token must 401, not serve the world.
 def auth_land_dd(authorization: str = Header(default=""),
                  x_landos_secret: str = Header(default="")):
-    required = os.environ.get("NVE_LAND_TOKEN")
-    if not required:
-        return True
-    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if bearer == required or (x_landos_secret and x_landos_secret == LANDOS_SECRET):
+    if token_guard_ok(bearer_of(authorization), x_landos_secret,
+                      os.environ.get("NVE_LAND_TOKEN") or "", LANDOS_SECRET):
         return True
     raise HTTPException(status_code=401, detail="Invalid or missing land-dd credential")
 
@@ -344,11 +344,8 @@ def compliance_cert_batch(req: ComplianceCertBatchRequest, _=Depends(auth_land_d
 # and with NO token configured the secret is REQUIRED outright.
 def auth_hunt(authorization: str = Header(default=""),
               x_landos_secret: str = Header(default="")):
-    required = os.environ.get("NVE_LAND_TOKEN")
-    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if required and bearer == required:
-        return True
-    if x_landos_secret and x_landos_secret == LANDOS_SECRET:
+    if token_guard_ok(bearer_of(authorization), x_landos_secret,
+                      os.environ.get("NVE_LAND_TOKEN") or "", LANDOS_SECRET):
         return True
     raise HTTPException(status_code=401, detail="Invalid or missing hunt credential")
 
@@ -406,11 +403,8 @@ def hunt_status(job_id: str, _=Depends(auth_hunt)):
 # COMPOSER_TOKEN set the secret is required outright.
 def auth_composer(authorization: str = Header(default=""),
                   x_landos_secret: str = Header(default="")):
-    required = os.environ.get("COMPOSER_TOKEN")
-    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if required and bearer == required:
-        return True
-    if x_landos_secret and x_landos_secret == LANDOS_SECRET:
+    if token_guard_ok(bearer_of(authorization), x_landos_secret,
+                      os.environ.get("COMPOSER_TOKEN") or "", LANDOS_SECRET):
         return True
     raise HTTPException(status_code=401, detail="Invalid or missing composer credential")
 
