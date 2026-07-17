@@ -60,11 +60,20 @@ create index if not exists field_observation_evidence_observed_idx
   on landos.field_observation_evidence (observed_at);
 
 alter table landos.field_observation_evidence enable row level security;
--- RLS deny-all: no policy (same posture as field_pins / parcel_geom /
--- parcel_owner / lead_outcomes). service_role carries bypassrls; the aegis
--- FIELD_PINS_DATABASE_URL role holds its privileges at the schema level from
--- engine bootstrap — 024 field_pins ships zero table grants and its INSERTs
--- work live, so this table ships zero table grants too.
+-- RLS deny-all: no policy — mig-019 canon, the EXACT live posture of
+-- landos.field_pins (RLS on, 0 policies), which the aegis
+-- FIELD_PINS_DATABASE_URL role INSERTs live today. Under deny-all only
+-- bypassrls roles (postgres/service_role) pass RLS, so the working aegis
+-- writer is necessarily one of those and this table is writable by it on
+-- creation. No new policy is added.
+
+-- Explicit writer/reader grants — mirrors landos.field_pins' LIVE grants
+-- (stamped there by the landos default ACLs: contabo_engine=arw,
+-- contabo_engine_ro=r). Stated explicitly so the contract does not depend on
+-- ambient pg_default_acl or on which admin role applies this file.
+-- (contabo_engine remains RLS-gated: grants without a policy do not open rows.)
+grant select, insert, update on landos.field_observation_evidence to contabo_engine;
+grant select on landos.field_observation_evidence to contabo_engine_ro;
 
 comment on table landos.field_observation_evidence is
   'P6 field-observation evidence: one row per field pin that validated a scored '
