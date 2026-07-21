@@ -1,0 +1,6 @@
+source_ref,obituary_url,decedent_name,age,city,state,published_date,death_date,surviving_family,funeral_home,county_fips,notes
+OB-2026-0001,https://www.legacy.com/us/obituaries/southbendtribune/name/harold-vandermeer,Harold J. Vandermeer,84,South Bend,IN,2026-06-28,2026-06-25,Ruth Vandermeer|Daniel Vandermeer|Carol Simmons,Palmer Funeral Home,18141,survived by wife and two children
+OB-2026-0002,https://www.legacy.com/us/obituaries/southbendtribune/name/mary-johnson,Mary Johnson,79,Mishawaka,IN,2026-07-02,2026-06-30,Robert Johnson,Chapel Hill,18141,common name — expect ambiguity
+OB-2026-0003,https://www.legacy.com/us/obituaries/southbendtribune/name/theodore-kowalczyk,Theodore S. Kowalczyk Sr.,91,Granger,IN,2026-07-05,2026-07-01,,St. Adalbert,18141,no surviving family listed
+OB-2026-0004,,,,South Bend,IN,2026-07-06,,,,18141,malformed — no name and no ref value is unusable
+OB-2026-0005,https://www.legacy.com/us/obituaries/southbendtribune/name/riverbend-holdings,Riverbend Holdings LLC,,South Bend,IN,2026-07-08,,,,18141,adversarial — an entity cannot die
