@@ -1,4 +1,4 @@
--- 040_obituary_signal_registry.sql — P-23: register the obituary signal (additive).
+-- 041_obituary_signal_registry.sql — P-23: register the obituary signal (additive).
 --
 -- Gate-in-data (lens doctrine, mig 027): obituary is ENRICHMENT, mints=false — an
 -- obituary is name-only (no property link, docs/probate_feasibility.md), so it can

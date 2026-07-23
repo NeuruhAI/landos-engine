@@ -29,7 +29,7 @@ def test_promote_sql_scopes_to_taxsale_and_unpromoted():
     assert "promoted_by" in sql and "promoted_at" in sql
 
 
-# ---- G1 (mig 039): the complete diligence predicate, gate-in-DATA ----------
+# ---- G1 (mig 040): the complete diligence predicate, gate-in-DATA ----------
 
 def test_mint_query_has_the_full_diligence_predicate():
     # a taxsale signal mints ONLY when reviewed (needs_diligence=false) and un-flagged.

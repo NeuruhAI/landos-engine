@@ -13,7 +13,7 @@ update." So this tool REFUSES to run without explicit --ref/--csv targets — th
 promote-all. Only taxsale rows are eligible; a ref that isn't a needs-diligence taxsale signal
 is reported and skipped, never guessed.
 
-G1 (mig 039): the promote keystroke IS the completed diligence review — it sets
+G1 (mig 040): the promote keystroke IS the completed diligence review — it sets
 needs_diligence=false in the same statement. A FLAGGED row (diligence_flag set) cannot be
 promoted: the WHERE refuses it and it reports as not-eligible. Flagging (--flag, the safe
 direction: can only prevent a mint) and clearing a flag (--clear-flag) are ALSO human

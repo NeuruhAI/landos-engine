@@ -228,5 +228,5 @@ def test_receipt_chain_is_stable_and_tamper_evident():
 
 def test_registry_migration_pins_obituary_as_non_minting():
     mig = open(os.path.join(os.path.dirname(__file__), "..",
-                            "migrations", "040_obituary_signal_registry.sql")).read()
+                            "migrations", "041_obituary_signal_registry.sql")).read()
     assert "'obituary', 'enrichment'" in mig and "false" in mig

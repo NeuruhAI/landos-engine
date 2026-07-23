@@ -1,4 +1,4 @@
--- 039_taxsale_diligence_predicate.sql — G1: the FULL tax-sale mint predicate (additive).
+-- 040_taxsale_diligence_predicate.sql — G1: the FULL tax-sale mint predicate (additive).
 --
 -- Mig 036 made "promoted" (the human keystroke) gate-in-data. This completes the predicate:
 -- a taxsale signal mints ONLY when ALL of:
@@ -35,8 +35,8 @@ create index if not exists discovery_signals_taxsale_mintable_idx
   where source_type = 'taxsale' and diligence_flag is null;
 
 comment on column landos.discovery_signals.needs_diligence is
-  'G1 diligence predicate (mig 039). Fail-closed: true until a human diligence review clears it '
+  'G1 diligence predicate (mig 040). Fail-closed: true until a human diligence review clears it '
   '(promote_taxsale.py keystroke). A taxsale signal with needs_diligence=true NEVER mints.';
 comment on column landos.discovery_signals.diligence_flag is
-  'G1 flag (mig 039). Non-null = a diligence problem was found (reason text) — the record NEVER '
+  'G1 flag (mig 040). Non-null = a diligence problem was found (reason text) — the record NEVER '
   'mints and cannot be promoted while flagged. Clearing a flag is a human keystroke only.';

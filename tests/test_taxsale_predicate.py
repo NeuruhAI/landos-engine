@@ -77,7 +77,7 @@ def test_reporting_precedence_stale_beats_review_state():
 # ---- fail-closed defaults --------------------------------------------------
 
 def test_partial_row_fails_closed():
-    # a row missing the mig-039 columns entirely reads as needs-diligence (never mints)
+    # a row missing the mig-040 columns entirely reads as needs-diligence (never mints)
     row = {"source_ref": "TS-X", "county_fips": "18141",
            "signal_date": "2026-09-01", "raw_payload": {}}
     ok, code, _ = evaluate_mint_predicate(row, TODAY)

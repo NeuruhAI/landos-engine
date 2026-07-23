@@ -25,7 +25,7 @@ contacting former owners — the ToU line runs through a human keystroke, so an 
 taxsale signal NEVER mints and NEVER enters any queue. Gate-in-DATA (the WHERE below), not app
 logic that a caller could skip. The freshness gate stays as defense-in-depth on top.
 
-🔴 DILIGENCE PREDICATE (G1 / mig 039): the full mint predicate is fresh + promoted +
+🔴 DILIGENCE PREDICATE (G1 / mig 040): the full mint predicate is fresh + promoted +
 needs_diligence=false + diligence_flag is null. A flagged record NEVER mints. Gate-in-DATA in
 the WHERE below, re-checked row-by-row in Python (app/taxsale_predicate.py) as defense-in-depth.
 The dry-run reconciles EVERY taxsale signal against the predicate — county-by-county eligible +
@@ -54,8 +54,8 @@ SIGNALS = """
     from landos.discovery_signals
     where source_type = 'taxsale' and signal_class = 'temporal'
       and promoted = true                       -- 🔴 THE GATE (mig 036): human-promoted only
-      and needs_diligence = false               -- 🔴 G1 (mig 039): diligence review complete
-      and diligence_flag is null                -- 🔴 G1 (mig 039): flagged records NEVER mint
+      and needs_diligence = false               -- 🔴 G1 (mig 040): diligence review complete
+      and diligence_flag is null                -- 🔴 G1 (mig 040): flagged records NEVER mint
       and (%(only_fips)s::text[] is null or county_fips = any(%(only_fips)s))
     order by parcel_apn
 """
