@@ -36,6 +36,8 @@ from .models import (
     LandDDRequest,
 )
 from .models import HuntRequest, ComposeRequest, DecideRequest, ComplianceCertBatchRequest
+from .models import FieldPinCaptureRequest
+from . import field_pins as field_pins_mod
 from .scoring import score_parcel, DEFAULT_WEIGHTS, EDGE_PROFILE
 from . import nve_land
 from . import land_dd_adapters as lda
@@ -832,6 +834,52 @@ def emerging_heat_map(
         count=len(opps),
         opportunities=opps,
     )
+
+
+# ---------------------------------------------------------------------------
+# FIELD PIN V1 — windshield-sensor capture + ray->parcel intelligence.
+# The bounded surface is exactly three routes; all the contract lives in
+# app/field_pins.py (validation fail-closed, ray built server-side, reviewed
+# resolver ladder, idempotent replay, duplicate linkage, honest lake status).
+# A field pin is a SIGNAL: nothing here mints leads or contacts owners.
+# ---------------------------------------------------------------------------
+@app.post("/field-pins")
+def field_pin_capture(req: FieldPinCaptureRequest, _=Depends(auth)):
+    """Capture one field observation, build + preserve its ray, resolve it, and
+    return receipt + resolution + plat GeoJSON + Lake Michigan status. An
+    unresolved pin is a stored, valid outcome — never dropped."""
+    try:
+        with pool.connection() as conn:
+            return field_pins_mod.capture_pin(conn, req.model_dump())
+    except field_pins_mod.FieldPinValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/field-pins/{pin_id}/resolve")
+def field_pin_reresolve(pin_id: str, _=Depends(auth)):
+    """Re-run the reviewed resolution ladder for one pin — the retroactive path
+    for pins captured before their county's parcel geometry landed."""
+    try:
+        with pool.connection() as conn:
+            out = field_pins_mod.reresolve_pin(conn, pin_id)
+    except field_pins_mod.FieldPinValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if not out.get("ok") and out.get("error") == "pin_not_found":
+        raise HTTPException(status_code=404, detail="pin_not_found")
+    return out
+
+
+@app.get("/field-pins/{pin_id}")
+def field_pin_get(pin_id: str, _=Depends(auth)):
+    """Read one pin: stored observation receipt, stamped resolution, plat, lake."""
+    try:
+        with pool.connection() as conn:
+            out = field_pins_mod.get_pin(conn, pin_id)
+    except field_pins_mod.FieldPinValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if not out.get("ok") and out.get("error") == "pin_not_found":
+        raise HTTPException(status_code=404, detail="pin_not_found")
+    return out
 
 
 if __name__ == "__main__":

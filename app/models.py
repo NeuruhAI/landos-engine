@@ -154,3 +154,25 @@ class ComplianceCertBatchRequest(BaseModel):
     # A data buyer / tenant pulls a batch of Compliance Certificates for leads they hold.
     lead_ids: List[str]                  # engine owner_leads.lead_id OR board acquisition_leads.lead_id
     format: Optional[str] = "json"       # "json" (programmatic) | "html" (rendered document)
+
+
+class FieldPinCaptureRequest(BaseModel):
+    """FIELD PIN V1 capture (windshield sensor). The GPS observation as the phone
+    saw it; the engine builds the ray, resolves it, and receipts the capture.
+    Deep validation (ranges, vocabularies, timestamps) is fail-closed in
+    app/field_pins.validate_capture — this model only carries the shape."""
+    tenant_id: str
+    device_id: str
+    lat: float
+    lon: float
+    observed_at: str                     # ISO-8601 WITH timezone; the sighting moment
+    heading_source: str                  # gps_course | fix_delta | compass | unknown
+    side: str                            # left | right | ahead | at | unknown
+    category: str
+    accuracy_m: Optional[float] = None
+    heading_deg: Optional[float] = None  # required unless heading_source='unknown'
+    speed_mps: Optional[float] = None
+    assumed_offset_m: Optional[float] = None
+    spoken_text: Optional[str] = None
+    operator_label: Optional[str] = None
+    idempotency_key: Optional[str] = None  # replay-safe capture; same key -> same pin
