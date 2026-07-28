@@ -17,3 +17,6 @@ data/incoming/
 reports/**
 exports/
 .playwright-mcp/
+
+# orchestrator run logs (runtime artifacts, receipts live in the run JSON)
+data/run-logs/

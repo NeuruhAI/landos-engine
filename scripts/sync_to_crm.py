@@ -419,6 +419,7 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
         enriched = phones_set = phones_cleared = hubs_stamped = unmatched = 0
         dnc_suppressed = bea_flagged = score_projected = jarvis_composed = 0
         discovered_inserted = recipe_stamped = 0
+        projected_lead_ids = []   # every owner_lead actually projected (UPDATE or discovered INSERT)
         for r in leads:
             # DNC GATE (compliance, hard): only explicit `clear` can project a
             # phone. Unknown/unchecked/NULL are not permission.
@@ -640,6 +641,7 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                     assert_insert_row_valid(insert_values)   # NOT NULL + CHECK guard, pre-DB
                     cur.execute(DISCOVERED_INSERT_SQL, insert_values)
                     discovered_inserted += 1
+                    projected_lead_ids.append(r["lead_id"])
                     jarvis_composed += 1
                     if recipe_rm:
                         recipe_stamped += 1
@@ -649,6 +651,7 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                       f"({r['lead_id']}) — not inserted (CRM owns its row set)")
                 continue
             enriched += 1
+            projected_lead_ids.append(r["lead_id"])
             jarvis_composed += 1
             if recipe_rm:
                 recipe_stamped += 1
@@ -688,10 +691,28 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
         # leak assertion fails LOUDLY if any callable lead is still contactless. ===
         contact_stats = sync_seller_contacts(cur)
         assert_no_orphan_callable_leads(cur)
+
+        # ---- push_status RECEIPT (ORANGE JOB 4) — same transaction as the projection.
+        # A RECEIPT, not a resumability mechanism (T7): the sync SELECTOR does not read
+        # push_status (producers never dirty it), and updated_at is NOT touched — that
+        # column is ingest freshness, and stamping it here would fabricate it.
+        if projected_lead_ids:
+            cur.execute(
+                """update landos.owner_leads
+                      set push_status = 'pushed', pushed_at = now(),
+                          push_target = 'public.acquisition_leads'
+                    where tenant_id = %s and lead_id = any(%s::uuid[])""",
+                (TENANT, projected_lead_ids))
+            assert cur.rowcount == len(projected_lead_ids), (
+                f"push_status marker wrote {cur.rowcount} rows but "
+                f"{len(projected_lead_ids)} leads were projected — refusing to commit "
+                f"a projection whose receipt does not reconcile")
         conn.commit()
         print(f"\ncontact bridge: {dict(contact_stats)} "
               f"(seller send-target rows; source='spine_sync', single writer)")
 
+    print(f"push receipt: {len(projected_lead_ids)} owner_leads marked pushed "
+          f"(push_target=public.acquisition_leads, same transaction)")
     print(f"\nsync summary: enriched={enriched} discovered_inserted={discovered_inserted} "
           f"recipe_stamped={recipe_stamped} "
           f"phones_projected={phones_set} "

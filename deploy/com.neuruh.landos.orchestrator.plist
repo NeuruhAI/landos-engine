@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- PROPOSAL — NOT INSTALLED. Operator reviews, then (their keystroke, not ours):
+       cp deploy/com.neuruh.landos.orchestrator.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.neuruh.landos.orchestrator.plist
+     As written this runs the producing-chain orchestrator in DRY-RUN (report-only,
+     zero writes) daily at 06:15 from the CANONICAL repo. To arm the write steps
+     (loaders/resolver/score/sync — mint_discovery stays human-gated either way),
+     change the last ProgramArguments string from - -dry-run to - -live. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.neuruh.landos.orchestrator</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/jeramiehicks/neuruh-repos/NeuruhAI/landos-engine/.venv/bin/python</string>
+        <string>-m</string>
+        <string>scripts.orchestrate_pipeline</string>
+        <string>--dry-run</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/jeramiehicks/neuruh-repos/NeuruhAI/landos-engine</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/jeramiehicks/neuruh-repos/NeuruhAI/landos-engine/data/run-logs/orchestrator.launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/jeramiehicks/neuruh-repos/NeuruhAI/landos-engine/data/run-logs/orchestrator.launchd.err.log</string>
+</dict>
+</plist>
