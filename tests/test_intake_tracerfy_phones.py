@@ -4,16 +4,22 @@ No DB, no network: the scrub-PASS filter, phone shaping, and SQL invariants that
 keep the intake mirroring the spine writer (never a parallel CRM writer).
 """
 import csv
+import inspect
 import io
 import re
+import sys
 
 import pytest
 
-from scripts.intake_tracerfy_phones import (BRIDGE_SQL, WRITE_SQL, SOURCE_STAMP,
+import scripts.intake_tracerfy_phones as intake
+from scripts.intake_tracerfy_phones import (BRIDGE_SQL, KEY_CENSUS_SQL, WRITE_SQL,
+                                             SOURCE_STAMP,
                                              SYNC_THRESHOLD, build_phones,
+                                             census_target_keys,
                                              confidence_for, is_scrub_pass,
                                              load_staged, norm_type,
                                              merge_clean_phone_evidence,
+                                             select_key_convention,
                                              target_verdict)
 
 
@@ -145,4 +151,132 @@ def test_bridge_maps_target_key_through_source_lead_id():
     assert "a.lead_id::text" in s and "a.source_lead_id::text" in s
     assert "left join landos.owner_leads ol" in s
     assert "on ol.lead_id = a.source_lead_id" in s
+    assert "a.tenant_id = %(tenant)s" in s
     assert "a.dnc" in s                                    # consent surface read
+
+
+# ---- target-key namespace census ---------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("winner", "census"),
+    [
+        ("crm_lead_id", {
+            "target_keys": 2, "crm_lead_id": 2,
+            "crm_source_lead_id": 0, "landos_owner_lead_id": 0,
+        }),
+        ("crm_source_lead_id", {
+            "target_keys": 2, "crm_lead_id": 0,
+            "crm_source_lead_id": 2, "landos_owner_lead_id": 0,
+        }),
+        ("landos_owner_lead_id", {
+            "target_keys": 2, "crm_lead_id": 0,
+            "crm_source_lead_id": 0, "landos_owner_lead_id": 2,
+        }),
+    ],
+)
+def test_key_census_fixture_picks_each_unambiguous_convention(winner, census):
+    assert select_key_convention(census) == winner
+
+
+@pytest.mark.parametrize(
+    "census",
+    [
+        {
+            "target_keys": 2, "crm_lead_id": 2,
+            "crm_source_lead_id": 2, "landos_owner_lead_id": 0,
+        },
+        {
+            "target_keys": 2, "crm_lead_id": 1,
+            "crm_source_lead_id": 1, "landos_owner_lead_id": 1,
+        },
+        {
+            "target_keys": 2, "crm_lead_id": 1,
+            "crm_source_lead_id": 0, "landos_owner_lead_id": 0,
+        },
+    ],
+)
+def test_key_census_refuses_ambiguous_mixed_or_incomplete_input(census):
+    with pytest.raises(RuntimeError, match="ambiguous, mixed, or incomplete"):
+        select_key_convention(census)
+
+
+def test_key_census_counts_all_three_candidates_before_bridge(capsys):
+    class FakeCursor:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params):
+            self.calls.append((sql, params))
+
+        def fetchone(self):
+            return {
+                "target_keys": 2,
+                "crm_lead_id": 2,
+                "crm_source_lead_id": 0,
+                "landos_owner_lead_id": 0,
+            }
+
+    cur = FakeCursor()
+    census, convention = census_target_keys(cur, ["crm-1", "crm-2"])
+    assert convention == "crm_lead_id"
+    assert census["target_keys"] == 2
+    assert len(cur.calls) == 1
+    assert cur.calls[0][0] == KEY_CENSUS_SQL
+    assert cur.calls[0][1]["keys"] == ["crm-1", "crm-2"]
+    receipt = capsys.readouterr().out
+    assert "public.acquisition_leads.lead_id" in receipt
+    assert "acquisition_leads.source_lead_id" in receipt
+    assert "landos.owner_leads.lead_id" in receipt
+
+
+def test_key_census_sql_and_bridge_preserve_canonical_hop():
+    census_sql = _flat(KEY_CENSUS_SQL)
+    bridge_sql = _flat(BRIDGE_SQL)
+    assert "a.lead_id::text = k.target_key" in census_sql
+    assert "a.source_lead_id::text = k.target_key" in census_sql
+    assert "ol.lead_id::text = k.target_key" in census_sql
+    assert "a.lead_id::text = any(%(keys)s)" in bridge_sql
+    assert "on ol.lead_id = a.source_lead_id" in bridge_sql
+
+
+# ---- CLI and transaction gates -----------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_dry_run"),
+    [
+        ([], True),
+        (["--apply"], False),
+    ],
+)
+def test_apply_is_the_only_cli_write_gate(
+    monkeypatch, tmp_path, extra_args, expected_dry_run,
+):
+    staged = tmp_path / "phones.csv"
+    staged.write_text(SYNTH_CSV)
+    observed = {}
+
+    def fake_run(csv_path, dry_run=True, limit=None):
+        observed.update(csv_path=csv_path, dry_run=dry_run, limit=limit)
+
+    monkeypatch.setattr(intake, "run", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["intake_tracerfy_phones", "--csv", str(staged), *extra_args],
+    )
+    intake.main()
+    assert observed == {
+        "csv_path": str(staged),
+        "dry_run": expected_dry_run,
+        "limit": None,
+    }
+
+
+def test_default_dry_run_rolls_back_and_write_sql_is_apply_guarded():
+    source = inspect.getsource(intake.run)
+    write_guard = source.index("if not dry_run:")
+    write_execute = source.index("cur.execute(WRITE_SQL")
+    rollback = source.index("conn.rollback()")
+    commit = source.index("conn.commit()")
+    assert write_guard < write_execute
+    assert rollback < commit

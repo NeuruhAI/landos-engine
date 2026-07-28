@@ -228,6 +228,85 @@ def _count(rows, col):
 
 # ---- the intake -------------------------------------------------------------
 
+KEY_CENSUS_SQL = """
+    with input_keys as (
+      select distinct unnest(%(keys)s::text[]) as target_key
+    )
+    select count(*)::int as target_keys,
+           count(*) filter (
+             where exists (
+               select 1
+                 from public.acquisition_leads a
+                where a.tenant_id = %(tenant)s
+                  and a.lead_id::text = k.target_key
+             )
+           )::int as crm_lead_id,
+           count(*) filter (
+             where exists (
+               select 1
+                 from public.acquisition_leads a
+                where a.tenant_id = %(tenant)s
+                  and a.source_lead_id::text = k.target_key
+             )
+           )::int as crm_source_lead_id,
+           count(*) filter (
+             where exists (
+               select 1
+                 from landos.owner_leads ol
+                where ol.tenant_id = %(tenant)s
+                  and ol.lead_id::text = k.target_key
+             )
+           )::int as landos_owner_lead_id
+      from input_keys k
+"""
+
+KEY_CONVENTIONS = (
+    "crm_lead_id",
+    "crm_source_lead_id",
+    "landos_owner_lead_id",
+)
+
+
+def select_key_convention(census: Dict[str, int]) -> str:
+    """Require one complete, non-overlapping target-key namespace.
+
+    CRM source_lead_id and LandOS owner_leads.lead_id deliberately share values
+    for linked leads. A file matching both is therefore ambiguous from its data
+    alone and must be routed by an explicit importer rather than guessed here.
+    """
+    total = int(census.get("target_keys") or 0)
+    hits = {name: int(census.get(name) or 0) for name in KEY_CONVENTIONS}
+    if total <= 0:
+        raise RuntimeError("STOP — key-convention census received no target keys")
+
+    complete = [name for name, count in hits.items() if count == total]
+    overlaps = [name for name, count in hits.items() if count > 0]
+    if len(complete) != 1 or len(overlaps) != 1:
+        detail = ", ".join(f"{name}={hits[name]}" for name in KEY_CONVENTIONS)
+        raise RuntimeError(
+            "STOP — ambiguous, mixed, or incomplete target_key convention: "
+            f"target_keys={total}, {detail}; no rows processed")
+    return complete[0]
+
+
+def census_target_keys(cur, targets: List[str]) -> tuple[Dict[str, int], str]:
+    """Print and validate the input namespace before any intake row is handled."""
+    cur.execute(KEY_CENSUS_SQL, {"tenant": TENANT, "keys": targets})
+    raw = cur.fetchone()
+    census = {
+        "target_keys": int(raw["target_keys"]),
+        **{name: int(raw[name]) for name in KEY_CONVENTIONS},
+    }
+    print("\nKEY-CONVENTION CENSUS (distinct target_key values):")
+    print("  candidate                         matches")
+    print(f"  public.acquisition_leads.lead_id  {census['crm_lead_id']}")
+    print(f"  acquisition_leads.source_lead_id  {census['crm_source_lead_id']}")
+    print(f"  landos.owner_leads.lead_id         {census['landos_owner_lead_id']}")
+    convention = select_key_convention(census)
+    print(f"  selected                           {convention}")
+    return census, convention
+
+
 BRIDGE_SQL = """
     select a.lead_id::text          as target_key,
            a.source_lead_id::text   as owner_lead_id,
@@ -240,6 +319,7 @@ BRIDGE_SQL = """
     left join landos.owner_leads ol
       on ol.lead_id = a.source_lead_id and ol.tenant_id = %(tenant)s
     where a.lead_id::text = any(%(keys)s)
+      and a.tenant_id = %(tenant)s
 """
 
 WRITE_SQL = """
@@ -271,6 +351,12 @@ def run(csv_path: str, dry_run: bool = True, limit: int | None = None) -> Dict[s
     rows_out = []
 
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+        _census, convention = census_target_keys(cur, targets)
+        if convention != "crm_lead_id":
+            raise RuntimeError(
+                "STOP — this staged intake requires target_key=CRM lead_id so it can "
+                "perform the canonical lead_id -> source_lead_id -> owner_leads.lead_id "
+                f"hop; detected {convention}; no rows processed")
         cur.execute(BRIDGE_SQL, {"tenant": TENANT, "keys": targets})
         bridge = {r["target_key"]: r for r in cur.fetchall()}
 
