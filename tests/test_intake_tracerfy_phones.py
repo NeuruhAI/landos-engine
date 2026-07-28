@@ -146,3 +146,65 @@ def test_bridge_maps_target_key_through_source_lead_id():
     assert "left join landos.owner_leads ol" in s
     assert "on ol.lead_id = a.source_lead_id" in s
     assert "a.dnc" in s                                    # consent surface read
+
+
+# ---- key-convention census: the STOP-gate against the wrong-join class -------------
+
+def _census_imports():
+    from scripts.intake_tracerfy_phones import (
+        CENSUS_SQL, CENSUS_EXPECTED_KEY, assert_census_unambiguous)
+    return CENSUS_SQL, CENSUS_EXPECTED_KEY, assert_census_unambiguous
+
+
+def test_census_sql_is_read_only_and_covers_all_three_keys():
+    CENSUS_SQL, _, _ = _census_imports()
+    s = _flat(CENSUS_SQL)
+    assert "a.lead_id::text = k.key" in s                  # CRM PK
+    assert "a.source_lead_id::text = k.key" in s           # LandOS id on the CRM row
+    assert "ol.lead_id::text = k.key" in s                 # LandOS spine PK
+    assert "ol.tenant_id = %(tenant)s" in s                # tenant-qualified
+    for verb in ("update", "insert", "delete"):
+        assert verb not in s
+
+
+def test_census_accepts_file_keyed_by_crm_lead_id():
+    _, expected, decide = _census_imports()
+    # 161-row staged file shape: keys resolve as CRM lead_ids, nothing else.
+    assert decide({"crm_lead_id": 43, "crm_source_lead_id": 0,
+                   "landos_lead_id": 0}, 161) == expected
+
+
+def test_census_refuses_file_keyed_by_landos_lead_id():
+    import pytest
+    _, _, decide = _census_imports()
+    # tracerfy_resolved_*.csv shape: LandOS lead_ids resolve on BOTH the spine PK
+    # and acquisition_leads.source_lead_id (the 2,831/2,831 bridge) — never on the
+    # CRM PK. The census must refuse, not re-key.
+    with pytest.raises(RuntimeError, match="not keyed by CRM lead_id"):
+        decide({"crm_lead_id": 0, "crm_source_lead_id": 150,
+                "landos_lead_id": 150}, 150)
+
+
+def test_census_refuses_ambiguous_tie():
+    import pytest
+    _, _, decide = _census_imports()
+    with pytest.raises(RuntimeError, match="ambiguous"):
+        decide({"crm_lead_id": 40, "crm_source_lead_id": 40,
+                "landos_lead_id": 0}, 80)
+
+
+def test_census_refuses_zero_matches():
+    import pytest
+    _, _, decide = _census_imports()
+    with pytest.raises(RuntimeError, match="0/10"):
+        decide({"crm_lead_id": 0, "crm_source_lead_id": 0,
+                "landos_lead_id": 0}, 10)
+
+
+def test_run_gates_on_census_before_bridge():
+    import inspect
+    import scripts.intake_tracerfy_phones as m
+    src = inspect.getsource(m.run)
+    census_at = src.index("assert_census_unambiguous(")
+    bridge_at = src.index("cur.execute(BRIDGE_SQL")
+    assert census_at < bridge_at                           # STOP-gate runs first

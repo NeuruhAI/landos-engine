@@ -226,6 +226,67 @@ def _count(rows, col):
     return out
 
 
+# ---- key-convention census (STOP-gate) --------------------------------------
+# Two Tracerfy CSV key conventions exist in the wild: tracerfy_resolved_*.csv is
+# keyed by the LandOS lead_id (== acquisition_leads.source_lead_id) while the
+# staged skiptrace CSV is keyed by the CRM lead_id (acquisition_leads.lead_id).
+# This intake's BRIDGE_SQL is only correct for the CRM-lead_id convention, so
+# before touching any row we count the file's keys against all three candidate
+# columns and REFUSE to run unless CRM lead_id is the strict winner. A file keyed
+# the other way must be fed to its own loader — never re-keyed to fit this one.
+
+CENSUS_SQL = """
+    select
+      count(*) filter (where exists (
+        select 1 from public.acquisition_leads a
+         where a.lead_id::text = k.key))            as crm_lead_id,
+      count(*) filter (where exists (
+        select 1 from public.acquisition_leads a
+         where a.source_lead_id::text = k.key))     as crm_source_lead_id,
+      count(*) filter (where exists (
+        select 1 from landos.owner_leads ol
+         where ol.lead_id::text = k.key
+           and ol.tenant_id = %(tenant)s))          as landos_lead_id
+    from unnest(%(keys)s::text[]) as k(key)
+"""
+
+CENSUS_EXPECTED_KEY = "crm_lead_id"
+
+
+def key_census(cur, keys: List[str]) -> Dict[str, int]:
+    """Count how many of the file's target keys resolve against each candidate
+    key column. Read-only; runs before any bridge read or write."""
+    cur.execute(CENSUS_SQL, {"tenant": TENANT, "keys": list(keys)})
+    return dict(cur.fetchone())
+
+
+def assert_census_unambiguous(census: Dict[str, int], total: int) -> str:
+    """The STOP-gate: proceed only when the expected convention (CRM lead_id)
+    is the STRICT winner. A tie, a zero, or a different winner all abort —
+    this is the guard against the wrong-join incident class."""
+    expected = census.get(CENSUS_EXPECTED_KEY, 0)
+    rivals = {k: v for k, v in census.items() if k != CENSUS_EXPECTED_KEY}
+    if expected <= 0:
+        raise RuntimeError(
+            f"STOP — key census: 0/{total} keys match {CENSUS_EXPECTED_KEY}; "
+            f"census={census}. This file is not keyed by CRM lead_id; "
+            f"do not re-key it — use the loader that matches its convention.")
+    offenders = {k: v for k, v in rivals.items() if v >= expected}
+    if offenders:
+        raise RuntimeError(
+            f"STOP — key census ambiguous: {CENSUS_EXPECTED_KEY}={expected}/{total} "
+            f"does not strictly beat {offenders}; census={census}. "
+            f"Refusing to guess the key convention.")
+    return CENSUS_EXPECTED_KEY
+
+
+def _print_census(census: Dict[str, int], total: int) -> None:
+    print(f"\nKEY-CONVENTION CENSUS ({total} distinct target keys):")
+    for k in ("crm_lead_id", "crm_source_lead_id", "landos_lead_id"):
+        marker = "  <- required winner" if k == CENSUS_EXPECTED_KEY else ""
+        print(f"  {k:<20} {census.get(k, 0):>6}{marker}")
+
+
 # ---- the intake -------------------------------------------------------------
 
 BRIDGE_SQL = """
@@ -271,6 +332,9 @@ def run(csv_path: str, dry_run: bool = True, limit: int | None = None) -> Dict[s
     rows_out = []
 
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+        census = key_census(cur, targets)
+        _print_census(census, len(targets))
+        assert_census_unambiguous(census, len(targets))
         cur.execute(BRIDGE_SQL, {"tenant": TENANT, "keys": targets})
         bridge = {r["target_key"]: r for r in cur.fetchall()}
 
