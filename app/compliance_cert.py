@@ -175,7 +175,7 @@ def _attest_tcpa(receipt: Dict[str, Any]) -> Dict[str, Any]:
         state, verdict = "na", "UNVERIFIED — not projected to the callable board"
     stmt = (f"TCPA gate {verdict} (callable_leads_member="
             f"{'true' if callable_member else 'false' if callable_member is False else 'unknown'}). "
-            f"The callable list is defined as dnc=false, so membership IS the gate.")
+            f"The callable list requires a nonblank phone and dnc=false, so membership IS the gate.")
     return {"gate": "TCPA gate passage", "statement": stmt, "state": state,
             "receipt_section": "COMPLIANCE", "receipt_hash": _hash(receipt, "COMPLIANCE"),
             "evidence": {"callable_leads_member": callable_member, "dnc": dnc}}
@@ -232,7 +232,9 @@ def _summarize(attestations: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"gates_total": len(attestations), "gates_applicable": applicable,
             "gates_passed": len(passed), "gates_flagged": len(flagged),
             "gates_not_applicable": len(na),
-            "all_clear": len(flagged) == 0 and len(passed) > 0,
+            # Unknown/not-applicable is not a pass. In particular, an unknown
+            # DNC verdict must never produce an all-clear certificate.
+            "all_clear": len(flagged) == 0 and len(na) == 0 and len(passed) > 0,
             "all_verifiable": all(a.get("receipt_hash") for a in attestations)}
 
 

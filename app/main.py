@@ -42,6 +42,8 @@ from . import receipt as receipt_mod
 from . import compliance_cert as cert_mod
 from . import hunt_core
 from . import recipe_core
+from .insight import service as insight_service
+from . import valuation as valuation_mod
 from .fips import resolve_county
 
 app = FastAPI(title="LandOS Engine", version="1.0.0")
@@ -241,6 +243,46 @@ def lead_receipt(lead_id: str, format: str = "json", _=Depends(auth_land_dd)):
     if format == "md":
         return PlainTextResponse(receipt_mod.render_markdown(receipt))
     return receipt
+
+
+@app.get("/v1/insight/{lead_id}")
+def insight(lead_id: str, force: bool = False, _=Depends(auth_land_dd)):
+    """DS-07 AI INSIGHTS: a grounded call brief for one lead. NEURUH IP — the CRM consumes
+    this over REST and only DISPLAYS it; the prompt, grounding rules, and model routing stay
+    engine-side. Returns {brief, angle, do_not_say, grounding, model, generated_at, cached}.
+    Every claim in `grounding` carries the field it came from; a thin record yields a short or
+    empty brief (an empty brief is correct). Honest-offline (503) when the spend cap is
+    reached, the kill switch is on, or the model is unreachable — never a fabricated brief.
+    `?force=true` bypasses the cache. Same Bearer-tolerant guard as /lead-receipt."""
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                out = insight_service.generate_insight(cur, lead_id, force=force)
+    except insight_service.InsightUnavailable as e:
+        raise HTTPException(status_code=e.status, detail=e.reason)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No lead resolves for {lead_id}")
+    return out
+
+
+@app.get("/v1/valuation/{lead_id}")
+def valuation(lead_id: str, mode: str = "land", federal: bool = False,
+              _=Depends(auth_land_dd)):
+    """VALUATION LAB: an auditable value for one lead. NEURUH IP — the CRM consumes this over
+    REST and DISPLAYS it; the comp selection, adjustment weights, acreage curve, and MAO
+    formula stay engine-side. `mode=land` returns a comp-grounded land value with every
+    overlay itemized (flood/wetlands/slope/acreage-curve/water/road-frontage); `mode=house`
+    returns MAO = (ARV × pct) − repairs − fee with the tenant's pct/repairs/fee carried.
+    Honest-null everywhere: no comps -> value null + reason; a number is NEVER interpolated
+    from an assessed value. `?federal=true` adds the live NWI/3DEP buildable pull (slower)."""
+    if mode not in ("land", "house"):
+        raise HTTPException(status_code=422, detail="mode must be 'land' or 'house'")
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            out = valuation_mod.value_for_lead(cur, lead_id, mode=mode, federal=federal)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No lead resolves for {lead_id}")
+    return out
 
 
 @app.get("/compliance-cert/{lead_id}")

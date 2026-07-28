@@ -121,8 +121,16 @@ def test_compliance_no_phone_digits():
     secs = _sections()
     blob = canonical_json(secs["COMPLIANCE"])
     assert "5125551234" not in blob
-    assert secs["COMPLIANCE"]["callable_leads_member"] is True  # dnc=False -> callable
+    assert secs["COMPLIANCE"]["callable_leads_member"] is True  # phone + dnc=False
     assert secs["COMPLIANCE"]["phone_1_present"] is True
+
+
+def test_compliance_unknown_or_phoneless_is_not_callable():
+    lead = {"skip_trace_status": "traced_paid"}
+    unknown = {"dnc": None, "phone_1": "5125551234"}
+    phoneless = {"dnc": False, "phone_1": None}
+    assert build_compliance_section(unknown, lead)["callable_leads_member"] is False
+    assert build_compliance_section(phoneless, lead)["callable_leads_member"] is False
 
 
 def test_scoring_marks_missing_composite():

@@ -35,10 +35,10 @@ UA = "landos-engine/1.0 (+parcel-geom-load; contact jeramieshicks@gmail.com)"
 PAGE_SIZE = 2000          # Parcel25 maxRecordCount
 SPACING_S = 1.2
 
-# County registry — one entry per free parcel FeatureServer. Berrien MI stays a
-# named gap (BS&A bans automation; no free polygon layer) per the spec.
-# A county may instead carry `geojson_file`: a manifest-sealed LOCAL pull (already
-# fetched $0 by another lane) loaded through the same upsert path — no network.
+# County registry — one entry per free parcel FeatureServer. A county may instead
+# carry `geojson_file`: a manifest-sealed LOCAL pull (already fetched $0 by another
+# lane) loaded through the same upsert path — no network. Berrien MI was a named gap
+# (BS&A bans automation) until ccT7's $0 GIS pull landed its polygons locally.
 COUNTIES = {
     "stjoseph": {
         "county_fips": "18141",
@@ -91,6 +91,15 @@ COUNTIES = {
         "apn_field": "state_parcel_id",   # geometry-only (owner-dark)
         "oid_field": "OBJECTID",
         "source": "arcgis:hendricks_parcels",
+    },
+    # Berrien MI — the JV's home county, the ground the vintage doctrine was learned on.
+    # ccT7's $0 GIS pull: 86,327 WGS84 polygons; PIN == the owner CSV's PIN (zero-fuzz join).
+    "berrien": {
+        "county_fips": "26021",
+        "geojson_file": "../mineral-scout/data/berrien/berrien_parcel_geom.geojson",
+        "apn_field": "PIN",               # == owner CSV PIN
+        "oid_field": "PIN",               # no OBJECTID in the pull; PIN is the stable ref
+        "source": "mineral-scout:berrien_gis_parcels ($0 ccT7 pull)",
     },
 }
 

@@ -27,6 +27,7 @@ Two layers, different gates:
 
   CONTACT (callable rows ONLY — the Q2/compliance gate):
     phone_1/phone_1_type/phone_2/contact_confidence, written only when
+    dnc_status is exactly clear AND
     skip_trace_status in (traced_web, traced_paid) AND
     confidence_score >= THRESHOLD. All other rows have their contact columns
     actively NULLed, so a row that falls below callable loses its projected
@@ -47,10 +48,25 @@ from app.jarvis_brief import compose_brief
 from scripts.seller_contact import upsert_seller_contact_phone
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
+OPERATOR_SMOKE_TEST_LEAD_ID = "90391cd1-e792-4fa1-bc18-78818d55cde2"
 THRESHOLD = 0.6  # {{CONFIDENCE_THRESHOLD}} — same cutoff the importer validates
 # Phase B b1: assessed/SEV -> market ratio by state FIPS. MI SEV is ~50% of true
 # cash value (statute) -> x2. Unmapped state -> equity stays NULL (pending), never guessed.
 MARKET_MULT = {"26": 2.0}
+
+
+def dnc_verdict(raw):
+    """Project the scrub verdict without inventing one.
+
+    FALSE means an explicit fresh scrub passed. TRUE means an explicit DNC hit.
+    Anything else is unknown and must stay NULL/fail-closed in the CRM.
+    """
+    status = str(raw or "").strip().lower()
+    if status == "clear":
+        return False
+    if status == "do_not_call":
+        return True
+    return None
 
 # ENRICH-1 P1 (2026-07-05): owner_name projection uses the asset_class idiom —
 # EXISTING-FIRST coalesce. Enrichment fills blanks (NULL or '') and NEVER overwrites
@@ -268,15 +284,18 @@ def assert_source_allowed(source):
 # acquisition_leads row). Named once so the --check-constraints probe (JOB 3) exercises
 # the EXACT SQL the sync runs — a dry-run that never touches the DB cannot validate DB
 # acceptance, so the probe must round-trip THIS statement. status='discovered' is a
-# literal; 21 placeholders follow.
+# literal; 26 placeholders follow. Contact fields + dnc are included so a newly
+# discovered row cannot transiently claim dnc=false without the clean phone that
+# earned that verdict.
 DISCOVERED_INSERT_SQL = """
     insert into public.acquisition_leads
       (source_lead_id, tenant_id, status, owner_name, parcel_apn, county_fips,
        situs_lat, situs_lng, situs_address, emerging_score, emerging_signals,
        parcel_meta, amount_owed, assessed_total, jarvis_brief, asset_class,
        market_value_est, equity_pct, taxes_annual,
-       score_signals, signal_tags, source)
-    values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+       score_signals, signal_tags, source,
+       phone_1, phone_1_type, phone_2, contact_confidence, dnc)
+    values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 # The columns DISCOVERED_INSERT_SQL binds, in VALUES order ('status' is a literal, so it
@@ -286,14 +305,16 @@ DISCOVERED_INSERT_COLS = (
     "situs_lat", "situs_lng", "situs_address", "emerging_score", "emerging_signals",
     "parcel_meta", "amount_owed", "assessed_total", "jarvis_brief", "asset_class",
     "market_value_est", "equity_pct", "taxes_annual",
-    "score_signals", "signal_tags", "source")
+    "score_signals", "signal_tags", "source",
+    "phone_1", "phone_1_type", "phone_2", "contact_confidence", "dnc")
 
 # The live NOT NULL set on public.acquisition_leads (verified 2026-07-14). Of these, only
 # the columns this INSERT actually binds (signal_tags, source) can trip a 23502 — the rest
-# (lead_id/dnc/requires_bea/stage/funded/card_state) are omitted from the INSERT so their
-# DEFAULT applies. Named here so the guard validates the bind against the live schema.
+# (lead_id/requires_bea/stage/funded/card_state) are omitted from the INSERT so their
+# DEFAULT applies. dnc is deliberately nullable with no default after migration 080.
+# Named here so the guard validates the bind against the live schema.
 ACQ_NOT_NULL_COLS = frozenset({
-    "lead_id", "dnc", "requires_bea", "signal_tags", "stage", "source", "funded", "card_state"})
+    "lead_id", "requires_bea", "signal_tags", "stage", "source", "funded", "card_state"})
 
 
 def assert_insert_row_valid(values):
@@ -403,12 +424,12 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
         dnc_suppressed = bea_flagged = score_projected = jarvis_composed = 0
         discovered_inserted = recipe_stamped = 0
         for r in leads:
-            # DNC GATE (compliance, hard): a lead scrubbed 'do_not_call' NEVER
-            # becomes callable — phones are not projected regardless of trace
-            # status or confidence. 'unchecked'/'clear'/None pass (the dialer
-            # does the fresh pre-dial scrub; this only blocks known-DNC).
-            is_dnc = (r["dnc_status"] or "").strip().lower() == "do_not_call"
-            callable_ = (not is_dnc
+            # DNC GATE (compliance, hard): only an explicit `clear` verdict can
+            # become callable. unchecked/unknown/NULL are not clean; do_not_call
+            # is suppressed. Zero information never becomes permission.
+            projected_dnc = dnc_verdict(r["dnc_status"])
+            is_dnc = projected_dnc is True
+            callable_ = (projected_dnc is False
                          and r["skip_trace_status"] in ("traced_web", "traced_paid")
                          and r["confidence_score"] is not None
                          and float(r["confidence_score"]) >= THRESHOLD)
@@ -557,6 +578,15 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                      situs_lat = %s, situs_lng = %s,
                      phone_1 = %s, phone_1_type = %s, phone_2 = %s,
                      contact_confidence = %s,
+                     dnc = case
+                       /* Operator-owned smoke-test cell, not a seller. Never let
+                          an automated registry receipt promote it to FALSE.
+                          Preserve TRUE if it is ever hard-suppressed. */
+                       when lead_id = '90391cd1-e792-4fa1-bc18-78818d55cde2'::uuid
+                         then case when dnc is true then true else null end
+                       when dnc is true then true
+                       else %s
+                     end,
                      requires_bea = %s, contamination_kind = %s,
                      score_owner = %s, score_distress = %s,
                      score_arbitrage = %s, score_signals = %s,
@@ -575,7 +605,7 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                      jarvis_brief = %s
                    where source_lead_id = %s""",
                 (r["recipe"], r["ch_name"], r["caf"], hub,
-                 r["situs_lat"], r["situs_lng"], p1, p1t, p2, conf,
+                 r["situs_lat"], r["situs_lng"], p1, p1t, p2, conf, projected_dnc,
                  requires_bea, contamination_kind,
                  s_owner, s_distress, s_arb, s_signals,
                  r["emerging_score"],
@@ -598,7 +628,8 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                         Jsonb(r["emerging_signals"]) if r["emerging_signals"] is not None else None,
                         pm, owed, assessed, Jsonb(brief), disc_asset_class,
                         market_value_est, equity_pct, taxes_annual,
-                        s_signals if recipe_rm else None, insert_sig_tags, insert_source)
+                        s_signals if recipe_rm else None, insert_sig_tags, insert_source,
+                        p1, p1t, p2, conf, projected_dnc)
                     assert_insert_row_valid(insert_values)   # NOT NULL + CHECK guard, pre-DB
                     cur.execute(DISCOVERED_INSERT_SQL, insert_values)
                     discovered_inserted += 1
@@ -629,12 +660,17 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
         # contacts. Every callable lead gets its seller send-target row; a
         # suppressed lead's spine-owned phone is retracted (consent rail). Then the
         # leak assertion fails LOUDLY if any callable lead is still contactless. ===
-        contact_stats = sync_seller_contacts(cur)
-        assert_no_orphan_callable_leads(cur)
-
         if dry_run:
+            # A dry-run is read-only in fact, not merely a transaction that writes
+            # and later rolls back. Report the current bridge surface without
+            # calling either writer.
+            cur.execute(CALLABLE_OR_SUPPRESSED, (TENANT,))
+            contact_candidates = len(cur.fetchall())
+            cur.execute(ORPHAN_CALLABLE, (TENANT,))
+            contact_orphans = len(cur.fetchall())
             conn.rollback()
-            print(f"\n=== CONTACT BRIDGE DRY-RUN — {dict(contact_stats)} (rolled back) ===")
+            print(f"\n=== CONTACT BRIDGE DRY-RUN — candidates={contact_candidates} "
+                  f"orphans={contact_orphans}, NO writes ===")
             print(f"\n=== JARVIS BRIEF DRY-RUN — {len(jarvis_briefs)} composed, NO writes ===")
             for r, brief in jarvis_briefs[:5]:
                 print(f"\nlead {r['lead_id']}  ({r['owner_name']})")
@@ -643,9 +679,17 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                 print(f"  contamination: {brief['contamination']}   kin: {len(brief['kin'])}")
             print("\nHARD STOP — dry-run only (nothing written). Re-run without --dry-run to project.")
             return
+
+        contact_stats = sync_seller_contacts(cur)
+        # VISIBILITY: heal pipeline_slug + map coordinates for the whole book, then assert
+        # every projected lead is visible before commit (fail loud, like the orphan check).
+        pipe_n, coord_n = backfill_pipeline_and_coords(cur)
+        assert_no_orphan_callable_leads(cur)
+        assert_leads_visible(cur)
         conn.commit()
         print(f"\ncontact bridge: {dict(contact_stats)} "
               f"(seller send-target rows; source='spine_sync', single writer)")
+        print(f"visibility: pipeline_slug='land' set on {pipe_n}, coords backfilled on {coord_n}")
 
     print(f"\nsync summary: enriched={enriched} discovered_inserted={discovered_inserted} "
           f"recipe_stamped={recipe_stamped} "
@@ -659,24 +703,36 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
 
 
 CALLABLE_OR_SUPPRESSED = """
-    select lead_id, owner_name, phone_1, coalesce(dnc, false) as dnc
-    from public.acquisition_leads
-    where tenant_id = %s
-      and ( (phone_1 is not null and phone_1 <> '') or coalesce(dnc, false) )
+    select a.lead_id, a.owner_name, a.phone_1, a.dnc,
+           exists (
+             select 1
+               from public.callable_leads cl
+              where cl.lead_id = a.lead_id
+           ) as callable
+    from public.acquisition_leads a
+    where a.tenant_id = %s
+      and (
+        (a.phone_1 is not null and a.phone_1 <> '')
+        or a.dnc is true
+        or exists (
+          select 1 from public.contacts c
+          where c.related_lead_id = a.lead_id
+            and c.contact_type = 'seller'
+            and c.source = 'spine_sync'
+        )
+      )
 """
 
 # JOB 4 — the leak assertion. A callable lead (phone on the board, not DNC) with
 # no seller contact carrying a phone is UNTEXTABLE — the exact class of leak the
 # ruling closes. It must never be silent again.
 ORPHAN_CALLABLE = """
-    select a.lead_id, a.owner_name
-    from public.acquisition_leads a
-    where a.tenant_id = %s
-      and a.phone_1 is not null and a.phone_1 <> ''
-      and not coalesce(a.dnc, false)
+    select cl.lead_id, cl.owner_name
+    from public.callable_leads cl
+    where cl.tenant_id = %s
       and not exists (
         select 1 from public.contacts c
-        where c.related_lead_id = a.lead_id
+        where c.related_lead_id = cl.lead_id
           and c.contact_type = 'seller'
           and coalesce(c.phone, '') <> '')
 """
@@ -690,7 +746,9 @@ def sync_seller_contacts(cur):
     leads = cur.fetchall()
     stats = Counter()
     for L in leads:
-        callable_ = bool((L["phone_1"] or "").strip()) and not L["dnc"]
+        # The strict view owns the complete decision: explicit scrub-clean,
+        # nonblank phone, no call/all opt-out, and manual-lead consent.
+        callable_ = bool(L["callable"])
         outcome = upsert_seller_contact_phone(
             cur, lead_id=L["lead_id"], tenant_id=TENANT,
             owner_name=L["owner_name"], phone=L["phone_1"], callable=callable_)
@@ -709,6 +767,111 @@ def assert_no_orphan_callable_leads(cur):
             f"CONTACT LEAK — {len(orphans)} callable lead(s) have NO seller contact "
             f"row (untextable): {sample}{' …' if len(orphans) > 5 else ''}. "
             f"The A8.2 bridge failed to close; aborting sync.")
+
+
+# === VISIBILITY (MAKE THE LEADS VISIBLE) — a lead the operator cannot SEE is not a
+# lead. Two failure modes, both fixed here (the sole writer), never a parallel update:
+#   pipeline_slug NULL -> the CRM queue filters by pipeline, so the lead is an orphan;
+#   situs_lat/lng NULL -> it cannot render on the map.
+# Every engine-minted lead (source='engine_sync') is an APG LAND play (lakefront
+# parcels, churches on acreage, dirt under towers) -> pipeline_slug='land' (an EXISTING
+# slug; the lens stays distinguishable via signal_tags, which the queue filters on).
+# Coordinates come from landos.parcel_geom.centroid (ST_PointOnSurface, guaranteed inside)
+# joined on (county_fips, parcel_apn) — the same zero-fuzz key the geometry load uses.
+PIPELINE_BACKFILL_SQL = """
+    update public.acquisition_leads
+       set pipeline_slug = 'land'
+     where tenant_id = %s and pipeline_slug is null and source = 'engine_sync'
+"""
+
+COORDS_BACKFILL_SQL = """
+    update public.acquisition_leads a
+       set situs_lat = ST_Y(g.centroid), situs_lng = ST_X(g.centroid)
+      from landos.parcel_geom g
+     where a.tenant_id = %s
+       and a.county_fips = g.county_fips
+       and a.parcel_apn = g.parcel_apn
+       and (a.situs_lat is null or a.situs_lng is null)
+       and g.centroid is not null
+"""
+
+# The invariant's negative: an engine lead with no pipeline_slug, OR any lead missing
+# coordinates WHILE a centroid exists for its parcel (an honest geometry-dark county is
+# excluded — no centroid, nothing to backfill, not a bug).
+LEADS_INVISIBLE = """
+    select a.lead_id, a.owner_name,
+           (a.pipeline_slug is null and a.source = 'engine_sync') as no_pipeline,
+           ((a.situs_lat is null or a.situs_lng is null)
+            and exists (select 1 from landos.parcel_geom g
+                         where g.county_fips = a.county_fips and g.parcel_apn = a.parcel_apn
+                           and g.centroid is not null)) as no_coords_but_geom
+      from public.acquisition_leads a
+     where a.tenant_id = %s
+       and (
+         (a.pipeline_slug is null and a.source = 'engine_sync')
+         or ((a.situs_lat is null or a.situs_lng is null)
+             and exists (select 1 from landos.parcel_geom g
+                          where g.county_fips = a.county_fips and g.parcel_apn = a.parcel_apn
+                            and g.centroid is not null))
+       )
+"""
+
+
+def backfill_pipeline_and_coords(cur):
+    """Set pipeline_slug='land' on the engine's slug-less leads and backfill coordinates
+    from the parcel centroid. Set-based (all tenant leads, not just this run's) — the
+    map/queue heal for the whole book. Returns (pipeline_set, coords_set)."""
+    cur.execute(PIPELINE_BACKFILL_SQL, (TENANT,))
+    pipe = cur.rowcount
+    cur.execute(COORDS_BACKFILL_SQL, (TENANT,))
+    coords = cur.rowcount
+    return pipe, coords
+
+
+def assert_leads_visible(cur):
+    """Errors-visible doctrine (JOB 3): raise LOUDLY before commit if any lead is invisible
+    — an engine lead with no pipeline_slug, or a lead lacking coordinates though its parcel
+    HAS a centroid. Runs inside the sync txn, so a violation aborts (rolls back) the run.
+    Honest geometry-dark counties (no centroid) are not violations — nothing to render from."""
+    cur.execute(LEADS_INVISIBLE, (TENANT,))
+    bad = cur.fetchall()
+    if bad:
+        sample = ", ".join(f"{b['lead_id']} ({b['owner_name']!r})" for b in bad[:5])
+        raise AssertionError(
+            f"INVISIBLE LEADS — {len(bad)} lead(s) the operator cannot see "
+            f"(no pipeline_slug and/or no map coordinates where geometry exists): "
+            f"{sample}{' …' if len(bad) > 5 else ''}. The backfill failed to heal them; "
+            f"aborting sync.")
+
+
+def backfill_visibility(dry_run: bool = False):
+    """Standalone one-shot (mirrors --backfill-contacts): make the existing book visible
+    without re-running the full projection. Same writer, same invariant gate."""
+    import psycopg
+    from psycopg.rows import dict_row
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+        def census():
+            cur.execute("""select
+                count(*) filter (where pipeline_slug is null) no_pipeline,
+                count(*) filter (where situs_lat is null or situs_lng is null) no_coords,
+                count(*) filter (where situs_lat is not null and situs_lng is not null
+                                   and pipeline_slug is not null) renderable
+                from public.acquisition_leads where tenant_id=%s""", (TENANT,))
+            return dict(cur.fetchone())
+        before = census()
+        print(f"[census] before: {before}")
+        pipe_n, coord_n = backfill_pipeline_and_coords(cur)
+        assert_leads_visible(cur)
+        after = census()
+        if dry_run:
+            conn.rollback()
+            print(f"[dry-run] would set pipeline_slug='land' on {pipe_n}, backfill coords on "
+                  f"{coord_n} -> {after} (rolled back)")
+            return
+        conn.commit()
+        print(f"visibility backfill: pipeline_slug='land' set on {pipe_n}, coords backfilled "
+              f"on {coord_n} (single writer)")
+        print(f"[census] after:  {after}")
 
 
 def backfill_contacts(dry_run: bool = False):
@@ -755,12 +918,13 @@ def check_constraints():
     PROBE_ID = "0eadbeef-0000-4000-8000-000000000001"  # a source_lead_id no real row uses
 
     def _params(source, signal_tags):
-        # synthetic, type-valid values for every column of DISCOVERED_INSERT_SQL (21).
+        # synthetic, type-valid values for every bound column (26).
         return (PROBE_ID, TENANT, "PROBE — rolled back", "PROBE-APN", "18091",
                 None, None, None, None, None,
                 Jsonb({"recipe": {"recipe_id": "probe"}}), None, None, Jsonb({"probe": True}), "unknown",
                 None, None, None,
-                Jsonb({"recipe_id": "probe"}), signal_tags, source)
+                Jsonb({"recipe_id": "probe"}), signal_tags, source,
+                None, None, None, None, None)
 
     def probe(conn, cur, source, signal_tags):
         try:
@@ -910,6 +1074,8 @@ if __name__ == "__main__":
                     help="project only this landos.owner_leads lead_id; repeatable")
     ap.add_argument("--backfill-contacts", action="store_true",
                     help="run ONLY the A8.2 seller-contact bridge pass (census + gated)")
+    ap.add_argument("--backfill-visibility", action="store_true",
+                    help="run ONLY the pipeline_slug + map-coordinate backfill (census + invariant)")
     ap.add_argument("--check-constraints", action="store_true",
                     help="round-trip a synthetic row through a REAL txn + ROLLBACK; prove the "
                          "projection is DB-legal and the source CHECK is real (writes nothing)")
@@ -918,5 +1084,7 @@ if __name__ == "__main__":
         check_constraints()
     elif args.backfill_contacts:
         backfill_contacts(dry_run=args.dry_run)
+    elif args.backfill_visibility:
+        backfill_visibility(dry_run=args.dry_run)
     else:
         main(dry_run=args.dry_run, lead_ids=args.lead_id)

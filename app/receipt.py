@@ -213,19 +213,20 @@ def build_pierce_section(relations: List[dict]) -> Dict[str, Any]:
 
 
 def build_compliance_section(acq: Optional[dict], lead: dict) -> Dict[str, Any]:
-    """DNC state, callable_leads membership (view = dnc=false), call + skip-trace
+    """DNC state, callable membership (nonblank phone + dnc=false), call + skip-trace
     status. Phone PRESENCE + type only — never the digits."""
     on_board = acq is not None
     dnc = acq.get("dnc") if on_board else None
+    phone_1_present = _has((acq or {}).get("phone_1"))
     return {
         "on_board": on_board,  # projected to public.acquisition_leads by sync_to_crm
         "board_status": (acq or {}).get("status"),
         "dnc": dnc,
-        # callable_leads is literally `... WHERE dnc = false` — membership == not DNC-blocked
-        "callable_leads_member": (on_board and dnc is False),
+        # Both facts are required by public.callable_leads; NULL never passes.
+        "callable_leads_member": (on_board and phone_1_present and dnc is False),
         "call_status": (acq or {}).get("call_status"),
         "last_call_at": (acq or {}).get("last_call_at"),
-        "phone_1_present": _has((acq or {}).get("phone_1")),
+        "phone_1_present": phone_1_present,
         "phone_1_type": (acq or {}).get("phone_1_type"),
         "phone_2_present": _has((acq or {}).get("phone_2")),
         "skip_trace_status": lead.get("skip_trace_status"),

@@ -178,6 +178,15 @@ def test_dnc_and_tcpa_attestations_reflect_the_receipt():
     assert dncd["summary"]["all_clear"] is False and dncd["summary"]["gates_flagged"] >= 2
 
 
+def test_unknown_dnc_is_never_attested_clear():
+    unknown = build_certificate(_make_receipt(dnc=None), ORG_A, KEY, issued_at="2026-07-06")
+    dnc_gate = next(a for a in unknown["attestations"] if a["gate"] == "DNC scrub status")
+    tcpa_gate = next(a for a in unknown["attestations"] if a["gate"] == "TCPA gate passage")
+    assert dnc_gate["state"] == "na"
+    assert tcpa_gate["state"] == "na"
+    assert unknown["summary"]["all_clear"] is False
+
+
 def test_no_third_party_pii_in_certificate():
     r = _make_receipt()
     cert = build_certificate(r, ORG_A, KEY, issued_at="2026-07-06")
