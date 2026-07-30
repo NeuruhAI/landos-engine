@@ -189,6 +189,7 @@ def load_file(cur, path, dry_run):
 
 def main(sources, dry_run):
     tot_read = tot_ins = tot_skip = tot_rej = 0
+    loaded_files = missing_files = 0
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         for key in sources:
             spec = SOURCES[key]
@@ -197,8 +198,10 @@ def main(sources, dry_run):
                     # A disarmed/not-yet-staged source (or reorganized upstream tree) is
                     # an honest skip, never a crash — the loader must survive `--source all`.
                     print(f"  [{key}] SKIP — no staged file at {path}")
+                    missing_files += 1
                     continue
                 r, i, s, rej = load_file(cur, path, dry_run)
+                loaded_files += 1
                 verb = "would_insert" if dry_run else "inserted"
                 print(f"  [{key}] {os.path.basename(path)}: read={r} {verb}={i} "
                       f"skipped_dup={s} rejected_stale={rej}")
@@ -207,11 +210,21 @@ def main(sources, dry_run):
             conn.rollback()
             print(f"\n=== LOAD DRY-RUN — read {tot_read}, would_insert {tot_ins}, "
                   f"skipped_dup {tot_skip}, rejected_stale {tot_rej}. NO writes. ===")
-            return
+            return {
+                "read": tot_read, "would_insert": tot_ins,
+                "inserted": 0, "skipped_dup": tot_skip,
+                "rejected_stale": tot_rej, "loaded_files": loaded_files,
+                "missing_files": missing_files,
+            }
         conn.commit()
     print(f"\nload summary: read={tot_read} inserted={tot_ins} skipped_dup={tot_skip} "
           f"rejected_stale={tot_rej} (taxsale freshness gate: only upcoming/unresolved pass; "
           f"signal_class=temporal, status=new, tenant_id=NULL).")
+    return {
+        "read": tot_read, "would_insert": 0, "inserted": tot_ins,
+        "skipped_dup": tot_skip, "rejected_stale": tot_rej,
+        "loaded_files": loaded_files, "missing_files": missing_files,
+    }
 
 
 if __name__ == "__main__":

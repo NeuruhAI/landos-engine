@@ -1,0 +1,206 @@
+{
+  "schema_version": "underwriting-case-v1",
+  "run_id": "orange-fixture-run-0001",
+  "fixture_mode": true,
+  "lead_id": null,
+  "synthetic_case_id": "synthetic-berrien-land-0001",
+  "property_identity": {
+    "parcel_apn": "11-00-0000-0001-00-0",
+    "address": "100 Fixture Road, Berrien County, MI",
+    "county_fips": "26021",
+    "latitude": 41.95,
+    "longitude": -86.48,
+    "acreage": 5.2,
+    "property_type": "vacant_land",
+    "identity_unknown_reason": null
+  },
+  "source_evidence": [
+    {
+      "evidence_id": "ev-property",
+      "evidence_type": "property_identity",
+      "value": {
+        "parcel_apn": "11-00-0000-0001-00-0",
+        "acreage": 5.2
+      },
+      "provenance": {
+        "system": "synthetic_fixture",
+        "field": "property_record",
+        "record_id": "synthetic-berrien-land-0001",
+        "observed_at": "2026-07-30T12:00:00Z",
+        "method": "fixture_only"
+      },
+      "verified": false,
+      "limitation": "Synthetic fixture; not a production parcel record."
+    },
+    {
+      "evidence_id": "ev-comps",
+      "evidence_type": "comparable_sales",
+      "value": [
+        "COMP-001",
+        "COMP-002",
+        "COMP-003",
+        "COMP-004"
+      ],
+      "provenance": {
+        "system": "synthetic_fixture",
+        "field": "comparable_sales",
+        "record_id": "synthetic-comp-set-0001",
+        "observed_at": "2026-07-30T12:00:00Z",
+        "method": "fixture_only"
+      },
+      "verified": false,
+      "limitation": "Synthetic prices exercise the existing valuation engine only."
+    },
+    {
+      "evidence_id": "ev-environment",
+      "evidence_type": "contamination_kind",
+      "value": "adjacent historical dry cleaner; parcel status unverified",
+      "provenance": {
+        "system": "synthetic_fixture",
+        "field": "environmental_screen",
+        "record_id": "synthetic-screen-0001",
+        "observed_at": "2026-07-30T12:00:00Z",
+        "method": "fixture_only"
+      },
+      "verified": false,
+      "limitation": "Desktop-screening scenario; no Phase I/BEA evidence."
+    }
+  ],
+  "condition_assumptions": [
+    {
+      "name": "site_condition",
+      "value": "vacant, uncleared",
+      "basis": "Synthetic scenario assumption; field inspection missing.",
+      "confirmed": false
+    },
+    {
+      "name": "buildable_fraction",
+      "value": 0.8,
+      "basis": "Synthetic modeling assumption; wetlands and slope verification missing.",
+      "confirmed": false
+    }
+  ],
+  "comparable_sales": [
+    {
+      "comp_id": "COMP-001",
+      "sale_price": 78000,
+      "acreage": 5.0,
+      "sale_date": "2026-02-01T00:00:00Z",
+      "source_evidence_id": "ev-comps",
+      "property_type": "vacant_land"
+    },
+    {
+      "comp_id": "COMP-002",
+      "sale_price": 92000,
+      "acreage": 5.5,
+      "sale_date": "2026-03-15T00:00:00Z",
+      "source_evidence_id": "ev-comps",
+      "property_type": "vacant_land"
+    },
+    {
+      "comp_id": "COMP-003",
+      "sale_price": 85000,
+      "acreage": 4.8,
+      "sale_date": "2026-04-20T00:00:00Z",
+      "source_evidence_id": "ev-comps",
+      "property_type": "vacant_land"
+    },
+    {
+      "comp_id": "COMP-004",
+      "sale_price": 99000,
+      "acreage": 6.0,
+      "sale_date": "2026-05-10T00:00:00Z",
+      "source_evidence_id": "ev-comps",
+      "property_type": "vacant_land"
+    }
+  ],
+  "buildable_fraction": 0.8,
+  "in_sfha": false,
+  "distance_to_water_m": 620,
+  "road_frontage_ft": null,
+  "arv": {
+    "value": null,
+    "currency": "USD",
+    "unknown_reason": "Vacant-land fixture has no residential ARV."
+  },
+  "rent_range": {
+    "low": null,
+    "high": null,
+    "currency": "USD",
+    "unknown_reason": "No supported land-lease or residential rent evidence."
+  },
+  "repair_range": {
+    "low": 8000,
+    "high": 18000,
+    "currency": "USD",
+    "unknown_reason": null
+  },
+  "cash_finance_assumptions": {
+    "offer_pct": 0.65,
+    "fee_pct": 0.03,
+    "fee_flat": 1500,
+    "repair_basis": "high",
+    "financing": "cash",
+    "down_payment_pct": 1.0,
+    "interest_rate_pct": null,
+    "term_months": null,
+    "unknowns": [
+      "closing timeline",
+      "title-curative cost"
+    ]
+  },
+  "zoning_land_constraints": [
+    {
+      "constraint_type": "zoning",
+      "status": "unknown",
+      "detail": "Zoning designation and permitted use were not evidenced.",
+      "source_evidence_id": null
+    },
+    {
+      "constraint_type": "wetlands_and_slope",
+      "status": "unknown",
+      "detail": "Buildable fraction is an assumption pending mapped and field evidence.",
+      "source_evidence_id": null
+    }
+  ],
+  "risk_register": [
+    {
+      "risk_id": "risk-environment-001",
+      "category": "environmental",
+      "severity": "high",
+      "statement": "Adjacent historical use may create environmental diligence exposure.",
+      "mitigation": "Require Phase I/BEA review before any approval or offer.",
+      "evidence_ids": [
+        "ev-environment"
+      ]
+    },
+    {
+      "risk_id": "risk-fixture-001",
+      "category": "evidence_quality",
+      "severity": "critical",
+      "statement": "Every source in this case is synthetic.",
+      "mitigation": "Never use this result for a real acquisition decision.",
+      "evidence_ids": [
+        "ev-property",
+        "ev-comps"
+      ]
+    }
+  ],
+  "strategy_names": [
+    "land_hold",
+    "builder_resale"
+  ],
+  "missing_evidence": [
+    "title commitment",
+    "boundary survey",
+    "zoning verification",
+    "wetlands and slope verification",
+    "rent evidence",
+    "Phase I/BEA determination"
+  ],
+  "recommended_decision": "proceed_to_human_review",
+  "decision_rationale": "Synthetic valuation is grounded only within fixture inputs; all real-world evidence gates remain open.",
+  "source_sha": "e231f00a9994a2c46afa72b5d6b59991bd89a7ad",
+  "source_worktree_dirty": true,
+  "generated_at": "2026-07-30T12:00:00Z"
+}

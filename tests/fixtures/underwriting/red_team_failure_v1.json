@@ -1,0 +1,87 @@
+{
+  "schema_version": "underwriting-case-v1",
+  "run_id": "orange-red-team-0001",
+  "fixture_mode": true,
+  "lead_id": null,
+  "synthetic_case_id": "synthetic-red-team-failure-0001",
+  "property_identity": {
+    "parcel_apn": null,
+    "address": null,
+    "county_fips": null,
+    "latitude": null,
+    "longitude": null,
+    "acreage": null,
+    "property_type": null,
+    "identity_unknown_reason": "No property identity evidence supplied."
+  },
+  "source_evidence": [
+    {
+      "evidence_id": "ev-rumor",
+      "evidence_type": "comparable_sales",
+      "value": "Someone said nearby land is worth $1 million.",
+      "provenance": {
+        "system": "synthetic_red_team",
+        "field": "unsupported_rumor",
+        "record_id": null,
+        "observed_at": "2026-07-30T12:00:00Z",
+        "method": "unverified_statement"
+      },
+      "verified": false,
+      "limitation": "Not admissible valuation evidence."
+    }
+  ],
+  "condition_assumptions": [],
+  "comparable_sales": [],
+  "buildable_fraction": null,
+  "in_sfha": null,
+  "distance_to_water_m": null,
+  "road_frontage_ft": null,
+  "arv": {
+    "value": null,
+    "currency": "USD",
+    "unknown_reason": "No ARV evidence."
+  },
+  "rent_range": {
+    "low": null,
+    "high": null,
+    "currency": "USD",
+    "unknown_reason": "No rent evidence."
+  },
+  "repair_range": {
+    "low": null,
+    "high": null,
+    "currency": "USD",
+    "unknown_reason": "No inspection or repair scope."
+  },
+  "cash_finance_assumptions": {
+    "offer_pct": 0.7,
+    "fee_pct": 0,
+    "fee_flat": 0,
+    "repair_basis": "high",
+    "financing": "unknown",
+    "down_payment_pct": null,
+    "interest_rate_pct": null,
+    "term_months": null,
+    "unknowns": [
+      "all finance terms"
+    ]
+  },
+  "zoning_land_constraints": [],
+  "risk_register": [],
+  "strategy_names": [
+    "unsupported_flip"
+  ],
+  "missing_evidence": [
+    "property identity",
+    "three grounded comparable sales",
+    "repair scope",
+    "zoning",
+    "title",
+    "survey"
+  ],
+  "recommended_decision": "proceed_to_human_review",
+  "decision_rationale": "Malicious fixture attempts to advance without any grounded comps.",
+  "source_sha": "e231f00a9994a2c46afa72b5d6b59991bd89a7ad",
+  "source_worktree_dirty": true,
+  "generated_at": "2026-07-30T12:00:00Z"
+}
