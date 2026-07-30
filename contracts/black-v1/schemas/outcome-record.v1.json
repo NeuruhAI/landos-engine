@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuruh.local/contracts/outcome-record.v1.json",
+  "title": "OutcomeRecordV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "outcome_id",
+    "entity",
+    "action_taken",
+    "timestamps",
+    "cost",
+    "cycle_time",
+    "deviations",
+    "external_factors",
+    "evidence_ids",
+    "human_grading",
+    "is_test",
+    "is_synthetic",
+    "content_sha256"
+  ],
+  "properties": {
+    "schema": { "const": "neuruh.outcome_record.v1" },
+    "outcome_id": { "type": "string", "format": "uuid" },
+    "proposal_id": { "type": ["string", "null"], "format": "uuid" },
+    "entity": { "type": "object" },
+    "action_taken": { "type": "string" },
+    "timestamps": {
+      "type": "object",
+      "properties": {
+        "proposed_at": { "type": ["string", "null"], "format": "date-time" },
+        "approved_at": { "type": ["string", "null"], "format": "date-time" },
+        "started_at": { "type": ["string", "null"], "format": "date-time" },
+        "completed_at": { "type": ["string", "null"], "format": "date-time" },
+        "observed_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "usd": { "type": ["number", "null"] },
+        "minutes": { "type": ["number", "null"] }
+      }
+    },
+    "contact_result": { "type": ["object", "null"] },
+    "contract_result": { "type": ["object", "null"] },
+    "financial_result": { "type": ["object", "null"] },
+    "cycle_time": {
+      "type": "object",
+      "properties": {
+        "hours_to_complete": { "type": ["number", "null"] },
+        "days_to_close": { "type": ["integer", "null"] }
+      }
+    },
+    "deviations": { "type": "array", "items": { "type": "string" } },
+    "external_factors": { "type": "array", "items": { "type": "string" } },
+    "evidence_ids": {
+      "type": "array",
+      "items": { "type": "string", "format": "uuid" }
+    },
+    "human_grading": {
+      "type": "object",
+      "required": ["grade", "calibration_eligible"],
+      "properties": {
+        "grade": {
+          "type": "string",
+          "enum": ["success", "partial", "failure", "invalid", "unknown"]
+        },
+        "quality": {
+          "type": ["string", "null"],
+          "enum": ["high", "medium", "low", null]
+        },
+        "notes": { "type": ["string", "null"] },
+        "grader_role": { "type": ["string", "null"] },
+        "graded_at": { "type": ["string", "null"], "format": "date-time" },
+        "calibration_eligible": { "type": "boolean" }
+      }
+    },
+    "is_test": { "type": "boolean" },
+    "is_synthetic": { "type": "boolean" },
+    "forecast_version": { "type": ["string", "null"] },
+    "content_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

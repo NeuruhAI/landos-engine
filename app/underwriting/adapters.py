@@ -1,4 +1,4 @@
-"""Read-only adapter contract for a future CRM-side persistence implementation."""
+"""Preparation-only adapter for the existing CRM underwriting_result.v2 column."""
 
 from __future__ import annotations
 
@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from .models import UnderwritingResultV1
+from .producer import verify_receipt
 
 
 @runtime_checkable
 class UnderwritingResultAdapter(Protocol):
-    """Transforms a result for a target; deliberately does not define write/execute."""
+    """Projection only. Deliberately no write, execute, connection, or credential API."""
 
     target_table: str
     target_field: str
@@ -21,21 +22,25 @@ class UnderwritingResultAdapter(Protocol):
 
 @dataclass(frozen=True)
 class AcquisitionLeadUnderwritingResultAdapter:
-    """Future payload mapping only. This class cannot perform a database write."""
+    """Prepare the exact v2 subset without touching CRM or any database."""
 
     target_table: str = "public.acquisition_leads"
     target_field: str = "underwriting_result"
 
     def prepare(self, result: UnderwritingResultV1) -> Mapping[str, Any]:
-        if result.production_write_performed:
-            raise ValueError("refusing result that claims a production write")
-        if not result.lead_id:
-            raise ValueError(
-                "synthetic fixture has no acquisition_leads target identifier"
-            )
+        if not verify_receipt(result):
+            raise ValueError("refusing artifact with invalid content_sha256")
+        acquisition_lead_id = result.entity.get("acquisition_lead_id")
+        if not acquisition_lead_id:
+            raise ValueError("artifact has no acquisition_lead_id target")
+        if result.v2_projection is None:
+            raise ValueError("artifact has no v2_projection")
         return {
-            "lead_id": result.lead_id,
-            self.target_field: result.model_dump(mode="json"),
+            "lead_id": acquisition_lead_id,
+            self.target_field: result.v2_projection.model_dump(
+                mode="json", by_alias=True
+            ),
             "expected_target": f"{self.target_table}.{self.target_field}",
+            "preparation_only": True,
             "write_performed": False,
         }

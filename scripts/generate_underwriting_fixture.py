@@ -18,6 +18,7 @@ from app.underwriting import (
     UnderwritingProductionError,
     UnderwritingResultV1,
     produce_underwriting_result,
+    underwriting_run_context,
     verify_receipt,
 )
 from app.underwriting.canonical import canonical_json
@@ -63,6 +64,11 @@ def parser() -> argparse.ArgumentParser:
     )
     out.add_argument("--input", type=Path, help="UnderwritingCaseV1 JSON")
     out.add_argument("--output", type=Path, help="artifact path; stdout if omitted")
+    out.add_argument(
+        "--context-output",
+        type=Path,
+        help="optional run-link JSON (run_id stays outside normative court V1)",
+    )
     out.add_argument("--overwrite", action="store_true")
     out.add_argument(
         "--expect-failure",
@@ -94,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         raw = _read_json(args.input)
         result = produce_underwriting_result(raw)
+        context = underwriting_run_context(raw, result)
     except (UnderwritingProductionError, ValueError) as exc:
         if args.expect_failure:
             print(f"EXPECTED_REJECTION: {exc}", file=sys.stderr)
@@ -111,8 +118,17 @@ def main(argv: list[str] | None = None) -> int:
         _atomic_write(args.output, output, overwrite=args.overwrite)
     else:
         print(output)
+    if args.context_output:
+        _atomic_write(
+            args.context_output,
+            canonical_json(context.model_dump(mode="json")),
+            overwrite=args.overwrite,
+        )
     print(
-        f"UNDERWRITING_FIXTURE_OK sha256={result.receipt.payload_sha256}",
+        (
+            f"UNDERWRITING_FIXTURE_OK run_id={context.run_id} "
+            f"content_sha256={result.content_sha256}"
+        ),
         file=sys.stderr,
     )
     return 0

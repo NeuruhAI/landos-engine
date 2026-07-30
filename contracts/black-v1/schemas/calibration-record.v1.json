@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuruh.local/contracts/calibration-record.v1.json",
+  "title": "CalibrationRecordV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "calibration_id",
+    "forecast_version",
+    "process_version",
+    "window",
+    "n_samples",
+    "predicted",
+    "actual",
+    "error_metrics",
+    "confidence_calibration",
+    "causal_caveats",
+    "model_or_process",
+    "recommended_adjustment",
+    "forbidden_overfitting_rule",
+    "next_sample_threshold",
+    "human_acceptance",
+    "content_sha256"
+  ],
+  "properties": {
+    "schema": { "const": "neuruh.calibration_record.v1" },
+    "calibration_id": { "type": "string", "format": "uuid" },
+    "forecast_version": { "type": "string", "minLength": 1 },
+    "process_version": { "type": "string", "minLength": 1 },
+    "window": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "string", "format": "date-time" },
+        "to": { "type": "string", "format": "date-time" }
+      }
+    },
+    "n_samples": { "type": "integer", "minimum": 0 },
+    "outcome_ids": {
+      "type": "array",
+      "items": { "type": "string", "format": "uuid" }
+    },
+    "predicted": { "type": "object" },
+    "actual": { "type": "object" },
+    "error_metrics": {
+      "type": "object",
+      "required": ["n"],
+      "properties": {
+        "n": { "type": "integer", "minimum": 0 },
+        "value_mae": { "type": ["number", "null"] },
+        "value_mape": { "type": ["number", "null"] },
+        "range_coverage": { "type": ["number", "null"] },
+        "disposition_accuracy": { "type": ["number", "null"] },
+        "close_rate_error": { "type": ["number", "null"] }
+      }
+    },
+    "confidence_calibration": { "type": "object" },
+    "causal_caveats": { "type": "array", "items": { "type": "string" } },
+    "model_or_process": { "type": "string" },
+    "recommended_adjustment": {
+      "type": "object",
+      "required": ["type", "status"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "none",
+            "monitor",
+            "human_review_weight",
+            "config_knob",
+            "data_quality"
+          ]
+        },
+        "detail": { "type": ["string", "null"] },
+        "applies_to": { "type": ["string", "null"] },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "accepted", "rejected", "deferred"]
+        }
+      }
+    },
+    "forbidden_overfitting_rule": {
+      "type": "object",
+      "required": [
+        "rule_id",
+        "text",
+        "min_samples_for_claim",
+        "min_samples_for_weight_change",
+        "holdout_required",
+        "auto_apply_forbidden"
+      ],
+      "properties": {
+        "rule_id": { "type": "string" },
+        "text": { "type": "string" },
+        "min_samples_for_claim": { "type": "integer", "const": 30 },
+        "min_samples_for_weight_change": { "type": "integer", "const": 100 },
+        "holdout_required": { "const": true },
+        "auto_apply_forbidden": { "const": true }
+      }
+    },
+    "next_sample_threshold": { "type": "integer", "minimum": 1 },
+    "human_acceptance": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["pending", "accepted", "rejected"]
+        },
+        "actor_role": { "type": ["string", "null"] },
+        "accepted_at": { "type": ["string", "null"], "format": "date-time" },
+        "notes": { "type": ["string", "null"] }
+      }
+    },
+    "content_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

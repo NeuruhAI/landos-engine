@@ -1,9 +1,4 @@
-"""Pure UnderwritingResultV1 producer.
-
-The producer intentionally accepts only a validated fixture/document input. It has no
-database connection, network client, model call, or write adapter. Valuation calculations
-delegate to app.valuation; deterministic objections delegate to app.insight.compose.
-"""
+"""Pure, deterministic producer for the normative BLACK UnderwritingResultV1."""
 
 from __future__ import annotations
 
@@ -15,47 +10,51 @@ from pydantic import ValidationError
 from app import valuation
 from app.insight import compose
 
-from .canonical import sha256_hex
+from .canonical import content_sha256, verify_content_hash
 from .models import (
-    ConfidenceV1,
-    MoneyRangeV1,
-    NullableMoneyV1,
-    OfferMaoLogicV1,
-    ReceiptV1,
-    StrategyScenarioV1,
+    CompsV1,
+    ScenarioV1,
     UnderwritingCaseV1,
     UnderwritingResultV1,
+    UnderwritingRunContext,
+    V2ProjectionV1,
 )
 
 
 class UnderwritingProductionError(ValueError):
-    """Fail-closed validation or receipt error."""
+    """Fail-closed input, production, or seal error."""
 
 
-def _known_range(value: Any) -> MoneyRangeV1:
-    if value is None:
-        return MoneyRangeV1(unknown_reason="valuation engine returned no grounded range")
-    return MoneyRangeV1(low=value[0], high=value[1])
-
-
-def _repair_basis(case: UnderwritingCaseV1) -> float | None:
-    if case.repair_range.low is None:
-        return None
-    if case.cash_finance_assumptions.repair_basis == "low":
-        return case.repair_range.low
-    return case.repair_range.high
-
-
-def _valuation(case: UnderwritingCaseV1) -> tuple[dict[str, Any], float | None]:
-    per_acre = sorted(
-        comp.sale_price / comp.acreage for comp in case.comparable_sales
+def _validated_case(raw_case: UnderwritingCaseV1 | dict[str, Any]) -> UnderwritingCaseV1:
+    return (
+        raw_case
+        if isinstance(raw_case, UnderwritingCaseV1)
+        else UnderwritingCaseV1.model_validate(raw_case)
     )
-    base_ppa = statistics.median(per_acre) if len(per_acre) >= 3 else None
-    p25 = valuation._percentile(per_acre, 0.25) if base_ppa is not None else None
-    p75 = valuation._percentile(per_acre, 0.75) if base_ppa is not None else None
-    result = valuation.land_value(
+
+
+def _land_result(case: UnderwritingCaseV1) -> dict[str, Any]:
+    per_acre = sorted(
+        float(comp.sale_price) / float(comp.acreage)
+        for comp in case.comparable_sales
+    )
+    grounded = len(per_acre) >= 3
+    base_ppa = statistics.median(per_acre) if grounded else None
+    p25 = valuation._percentile(per_acre, 0.25) if grounded else None
+    p75 = valuation._percentile(per_acre, 0.75) if grounded else None
+    acreage = next(
+        (
+            float(item.value)
+            for item in case.evidence_items
+            if item.key == "gross_acres"
+            and isinstance(item.value, (int, float))
+            and not isinstance(item.value, bool)
+        ),
+        None,
+    )
+    return valuation.land_value(
         base_ppa,
-        case.property_identity.acreage,
+        acreage,
         buildable_fraction=case.buildable_fraction,
         buildable_input=(
             "UnderwritingCaseV1.buildable_fraction"
@@ -68,270 +67,298 @@ def _valuation(case: UnderwritingCaseV1) -> tuple[dict[str, Any], float | None]:
         ppa_p25=p25,
         ppa_p75=p75,
     )
-    return result, base_ppa
 
 
-def _offer_logic(
-    case: UnderwritingCaseV1, land_result: dict[str, Any]
-) -> OfferMaoLogicV1:
-    basis_name = "ARV" if case.arv.value is not None else "land_value"
-    basis_value = (
-        case.arv.value if case.arv.value is not None else land_result.get("value")
-    )
-    repairs = _repair_basis(case)
-    cfg = {
-        "pct": case.cash_finance_assumptions.offer_pct,
-        "repairs": repairs or 0.0,
-        "fee_pct": case.cash_finance_assumptions.fee_pct,
-        "fee_flat": case.cash_finance_assumptions.fee_flat,
-        "source": "UnderwritingCaseV1.cash_finance_assumptions",
-    }
-    mao = valuation.compute_mao(basis_value, cfg)
-    basis = (
-        NullableMoneyV1(value=basis_value)
-        if basis_value is not None
-        else NullableMoneyV1(
-            unknown_reason="neither grounded ARV nor grounded land value is available"
-        )
-    )
-    repair_value = (
-        NullableMoneyV1(value=repairs)
-        if repairs is not None
-        else NullableMoneyV1(unknown_reason="repair range is unknown")
-    )
-    fee = (
-        NullableMoneyV1(value=mao.get("fee"))
-        if mao.get("fee") is not None
-        else NullableMoneyV1(unknown_reason="fee cannot be calculated without a basis")
-    )
-    mao_range = (
-        _known_range(mao.get("range"))
-        if repairs is not None
-        else MoneyRangeV1(
-            unknown_reason="MAO withheld until repair range is evidenced"
-        )
-    )
-    return OfferMaoLogicV1(
-        formula="MAO = (basis × offer_pct) − repairs − fee",
-        basis_name=basis_name,
-        basis=basis,
-        offer_pct=case.cash_finance_assumptions.offer_pct,
-        repairs=repair_value,
-        fee=fee,
-        mao=mao_range,
-        engine_method="app.valuation.compute_mao",
+def _evidence_ids(case: UnderwritingCaseV1) -> list[str]:
+    return [str(item.evidence_id) for item in case.evidence_items]
+
+
+def _comps(case: UnderwritingCaseV1, land: dict[str, Any]) -> CompsV1:
+    rng = land.get("range")
+    items = [
+        {
+            "comp_id": comp.comp_id,
+            "sale_price": float(comp.sale_price),
+            "acreage": float(comp.acreage),
+            "price_per_acre": round(
+                float(comp.sale_price) / float(comp.acreage), 2
+            ),
+            "sale_date": (
+                comp.sale_date.isoformat().replace("+00:00", "Z")
+                if comp.sale_date
+                else None
+            ),
+            "source": comp.source,
+            "evidence_id": str(comp.evidence_id),
+            "method": "comp_median",
+        }
+        for comp in case.comparable_sales
+    ]
+    return CompsV1(
+        fmv_low=rng[0] if rng else None,
+        fmv_estimate=land.get("value"),
+        fmv_high=rng[1] if rng else None,
+        comps_n=len(items),
+        confidence=land.get("confidence"),
+        items=items,
     )
 
 
 def _insight(case: UnderwritingCaseV1) -> dict[str, Any]:
     facts: dict[str, dict[str, Any]] = {}
-
-    def add(name: str, value: Any, field: str) -> None:
-        if value is not None and value != "":
-            facts[name] = {"value": value, "field": field}
-
-    add("parcel_apn", case.property_identity.parcel_apn, "property_identity.parcel_apn")
-    add("county_fips", case.property_identity.county_fips, "property_identity.county_fips")
-    add("situs_address", case.property_identity.address, "property_identity.address")
-    add("acreage", case.property_identity.acreage, "property_identity.acreage")
-    for evidence in case.source_evidence:
-        if evidence.evidence_type in {
+    for item in case.evidence_items:
+        key = item.key
+        if key in {
+            "gross_acres",
             "owner_name",
             "amount_owed",
             "contamination_kind",
             "requires_bea",
             "dnc",
-        }:
-            add(evidence.evidence_type, evidence.value, evidence.provenance.field)
+        } and item.value not in (None, "", [], {}):
+            insight_key = "acreage" if key == "gross_acres" else key
+            facts[insight_key] = {
+                "value": item.value,
+                "field": f"EvidenceItemV1:{item.evidence_id}",
+            }
     return compose.compose({"facts": facts})
 
 
-def _confidence(
-    case: UnderwritingCaseV1, land_result: dict[str, Any]
-) -> ConfidenceV1:
-    engine_level = land_result.get("confidence", "none")
-    cap = {"none": 0.0, "low": 0.35, "medium": 0.65, "high": 0.85}[engine_level]
-    penalty = min(0.45, 0.05 * len(case.missing_evidence))
-    score = round(max(0.0, cap - penalty), 2)
-    if score == 0:
-        level = "none"
-    elif score < 0.5:
-        level = "low"
-    elif score < 0.8:
-        level = "medium"
-    else:
-        level = "high"
-    return ConfidenceV1(
-        level=level,
-        score=score,
-        rationale=(
-            f"app.valuation confidence={engine_level}; "
-            f"{len(case.missing_evidence)} named evidence gap(s)"
+def _assumptions(case: UnderwritingCaseV1, evidence_ids: list[str]) -> list[str]:
+    evidence = ",".join(evidence_ids)
+    fixed = [
+        (
+            "acreage curve is heuristic; method=app.valuation.land_value;"
+            f" REF={valuation.CURVE_REF_AC},K={valuation.CURVE_K},"
+            f"FLOOR={valuation.CURVE_FLOOR}; evidence_ids={evidence}"
         ),
+        (
+            "unbuildable residual is 25% of buildable $/acre;"
+            f" method=app.valuation.land_value; evidence_ids={evidence}"
+        ),
+        (
+            "unverified overlays apply factor=1.0 and remain verified=false;"
+            f" method=app.valuation.land_value; evidence_ids={evidence}"
+        ),
+        (
+            f"MAO pct={float(case.mao_pct)} repairs={float(case.mao_repairs)} "
+            f"fee_pct={float(case.mao_fee_pct)} fee_flat={float(case.mao_fee_flat)};"
+            " method=app.valuation.compute_mao; config_source=file-only fixture;"
+            f" evidence_ids={evidence}"
+        ),
+        (
+            f"case_class={case.case_class}; fixture_mode=true; "
+            "production calibration eligibility=false"
+        ),
+    ]
+    return fixed + [item.render() for item in case.assumptions]
+
+
+def _mao(case: UnderwritingCaseV1, point_value: float | None) -> dict[str, Any]:
+    return valuation.compute_mao(
+        point_value,
+        {
+            "pct": float(case.mao_pct),
+            "repairs": float(case.mao_repairs),
+            "fee_pct": float(case.mao_fee_pct),
+            "fee_flat": float(case.mao_fee_flat),
+            "source": "file-only UnderwritingCaseV1; not tenant_settings",
+        },
     )
 
 
 def _scenarios(
-    case: UnderwritingCaseV1, valuation_range: MoneyRangeV1
-) -> list[StrategyScenarioV1]:
-    scenarios: list[StrategyScenarioV1] = []
-    for strategy in case.strategy_names:
-        if valuation_range.low is None:
-            status = "insufficient_evidence"
-            required = list(case.missing_evidence) or [
-                "three grounded comparable land sales",
-                "subject acreage",
-            ]
-        elif case.recommended_decision == "reject":
-            status = "blocked"
-            required = list(case.missing_evidence)
-        else:
-            status = "candidate"
-            required = list(case.missing_evidence)
-        scenarios.append(
-            StrategyScenarioV1(
-                strategy=strategy,
-                status=status,
-                projected_value=valuation_range,
-                rationale=(
-                    "Projected value delegates to app.valuation.land_value; "
-                    "scenario execution remains subject to human approval."
-                ),
-                required_evidence=required,
-            )
-        )
-    return scenarios
-
-
-def _red_team_objections(
     case: UnderwritingCaseV1,
-    land_result: dict[str, Any],
-    insight: dict[str, Any],
-) -> list[str]:
-    objections = list(insight.get("do_not_say") or [])
-    objections.extend(
-        f"Missing evidence: {item}" for item in case.missing_evidence
+    land: dict[str, Any],
+    mao: dict[str, Any],
+    evidence_ids: list[str],
+) -> list[ScenarioV1]:
+    rng = land.get("range")
+    note = (
+        "method=app.valuation.land_value+compute_mao; "
+        f"evidence_ids={','.join(evidence_ids)}; human offer approval required"
     )
-    objections.extend(
-        adjustment["rationale"]
-        for adjustment in land_result.get("adjustments", [])
-        if not adjustment.get("verified", False)
-    )
-    if not objections:
-        objections.append(
-            "No automated objection cleared the deal; independent human underwriting "
-            "and source-document review remain mandatory."
-        )
-    return list(dict.fromkeys(objections))
+    if not rng:
+        return [
+            ScenarioV1(
+                name=name,
+                notes=[note, "valuation withheld because grounded comps are insufficient"],
+            )
+            for name in ("base", "upside", "downside")
+        ]
+    pct = float(case.mao_pct)
+    return [
+        ScenarioV1(
+            name="base",
+            offer=mao.get("value"),
+            exit=land.get("value"),
+            notes=[note],
+        ),
+        ScenarioV1(
+            name="upside",
+            offer=round(float(rng[1]) * pct, 2),
+            exit=rng[1],
+            notes=[note],
+        ),
+        ScenarioV1(
+            name="downside",
+            offer=round(float(rng[0]) * pct, 2),
+            exit=rng[0],
+            notes=[note],
+        ),
+    ]
 
 
 def _payload(case: UnderwritingCaseV1) -> dict[str, Any]:
-    land_result, _ = _valuation(case)
-    valuation_range = _known_range(land_result.get("range"))
-    offer_logic = _offer_logic(case, land_result)
+    land = _land_result(case)
+    evidence_ids = _evidence_ids(case)
+    comps = _comps(case, land)
+    mao = _mao(case, land.get("value"))
     insight = _insight(case)
-    insight_summary = insight.get("brief") or (
-        "No narrative insight was emitted from the grounded fixture facts."
+
+    adjustments = []
+    for adjustment in land.get("adjustments", []):
+        adjustments.append(
+            {
+                **adjustment,
+                "method": "app.valuation.land_value",
+                "evidence_ids": evidence_ids,
+            }
+        )
+
+    risk = dict(case.risk)
+    risk.update(
+        {
+            "case_class": case.case_class,
+            "fixture_mode": True,
+            "calibration_eligible": False,
+            "production_write_performed": False,
+            "insight_summary": insight.get("brief") or None,
+            "insight_guardrails": insight.get("do_not_say") or [],
+        }
+    )
+
+    falsifiers = list(case.counter_analysis.falsifiers)
+    falsifiers.extend(
+        adjustment["rationale"]
+        for adjustment in adjustments
+        if not adjustment.get("verified", False)
+    )
+    falsifiers.extend(insight.get("do_not_say") or [])
+    counter_analysis = case.counter_analysis.model_copy(
+        update={"falsifiers": list(dict.fromkeys(falsifiers))}
+    )
+
+    valuation_payload = {
+        "mode": "land",
+        "point_value": land.get("value"),
+        "range": land.get("range"),
+        "base_ppa": land.get("base_ppa"),
+        "net_factor": land.get("net_factor"),
+        "comp_dispersion": land.get("comp_dispersion"),
+        "adjustments": adjustments,
+        "mao": mao,
+        "reason_if_null": land.get("reason"),
+    }
+    v2 = V2ProjectionV1(
+        schema="underwriting_result.v2",
+        generated_at=case.generated_at,
+        zoning=case.zoning,
+        constraints=case.constraints,
+        comps=comps,
     )
     return {
-        "schema_version": "underwriting-result-v1",
-        "run_id": case.run_id,
-        "fixture_mode": case.fixture_mode,
-        "production_write_performed": False,
-        "lead_id": case.lead_id,
-        "synthetic_case_id": case.synthetic_case_id,
-        "property_identity": case.property_identity.model_dump(mode="json"),
-        "source_evidence": [
-            item.model_dump(mode="json") for item in case.source_evidence
-        ],
-        "condition_assumptions": [
-            item.model_dump(mode="json") for item in case.condition_assumptions
-        ],
-        "market_comp_evidence": [
-            item.model_dump(mode="json") for item in case.comparable_sales
-        ],
-        "valuation_range": valuation_range.model_dump(mode="json"),
-        "arv": case.arv.model_dump(mode="json"),
-        "rent_range": case.rent_range.model_dump(mode="json"),
-        "repair_range": case.repair_range.model_dump(mode="json"),
-        "strategy_scenarios": [
+        "schema": "neuruh.underwriting_result.v1",
+        "underwriting_id": str(case.underwriting_id),
+        "generated_at": case.generated_at,
+        "method_version": case.method_version,
+        "entity": case.entity.model_dump(mode="json", exclude_none=True),
+        "evidence_ids": evidence_ids,
+        "zoning": case.zoning.model_dump(mode="json"),
+        "constraints": case.constraints.model_dump(mode="json"),
+        "comps": comps.model_dump(mode="json"),
+        "valuation": valuation_payload,
+        "assumptions": _assumptions(case, evidence_ids),
+        "ranges": {
+            "land_value": land.get("range"),
+            "method": "app.valuation.land_value",
+            "evidence_ids": evidence_ids,
+        },
+        "scenarios": [
             item.model_dump(mode="json")
-            for item in _scenarios(case, valuation_range)
+            for item in _scenarios(case, land, mao, evidence_ids)
         ],
-        "cash_finance_assumptions": (
-            case.cash_finance_assumptions.model_dump(mode="json")
+        "risk": risk,
+        "confidence": land.get("confidence", "none"),
+        "counter_analysis": counter_analysis.model_dump(mode="json"),
+        "human_approval": case.human_approval.model_dump(mode="json"),
+        "v2_projection": (
+            v2.model_dump(mode="json", by_alias=True)
+            if case.include_v2_projection
+            else None
         ),
-        "offer_mao_logic": offer_logic.model_dump(mode="json"),
-        "risk_register": [
-            item.model_dump(mode="json") for item in case.risk_register
-        ],
-        "zoning_land_constraints": [
-            item.model_dump(mode="json")
-            for item in case.zoning_land_constraints
-        ],
-        "confidence": _confidence(case, land_result).model_dump(mode="json"),
-        "missing_evidence": case.missing_evidence,
-        "red_team_objections": _red_team_objections(
-            case, land_result, insight
-        ),
-        "recommended_decision": case.recommended_decision,
-        "decision_rationale": case.decision_rationale,
-        "human_approval_required": True,
-        "insight_summary": insight_summary,
-        "source_sha": case.source_sha,
-        "source_worktree_dirty": case.source_worktree_dirty,
-        "generated_at": case.generated_at.isoformat(),
     }
 
 
 def produce_underwriting_result(
     raw_case: UnderwritingCaseV1 | dict[str, Any],
 ) -> UnderwritingResultV1:
-    """Validate, produce, validate again, and seal an underwriting artifact."""
+    """Validate input, run existing valuation/insight brains, validate, and seal."""
 
     try:
-        case = (
-            raw_case
-            if isinstance(raw_case, UnderwritingCaseV1)
-            else UnderwritingCaseV1.model_validate(raw_case)
-        )
+        case = _validated_case(raw_case)
         payload = _payload(case)
         draft = UnderwritingResultV1.model_validate(
-            {
-                **payload,
-                "receipt": {
-                    "algorithm": "sha256",
-                    "scope": "underwriting_result_without_receipt",
-                    "payload_sha256": "0" * 64,
-                },
-            }
+            {**payload, "content_sha256": "0" * 64}
         )
-        normalized_payload = draft.model_dump(mode="json")
-        normalized_payload.pop("receipt")
-        receipt = ReceiptV1(
-            algorithm="sha256",
-            scope="underwriting_result_without_receipt",
-            payload_sha256=sha256_hex(normalized_payload),
-        )
-        result = UnderwritingResultV1.model_validate(
-            {**normalized_payload, "receipt": receipt.model_dump(mode="json")}
-        )
+        normalized = draft.model_dump(mode="json", by_alias=True)
+        normalized["content_sha256"] = content_sha256(normalized)
+        result = UnderwritingResultV1.model_validate(normalized)
     except (ValidationError, ValueError, TypeError) as exc:
         raise UnderwritingProductionError(str(exc)) from exc
     if not verify_receipt(result):
-        raise UnderwritingProductionError("internal receipt verification failed")
+        raise UnderwritingProductionError("internal content_sha256 verification failed")
     return result
 
 
 def verify_receipt(result: UnderwritingResultV1 | dict[str, Any]) -> bool:
+    """Compatibility name: the BLACK receipt is ``content_sha256``."""
+
     try:
-        model = (
-            result
+        payload = (
+            result.model_dump(mode="json", by_alias=True)
             if isinstance(result, UnderwritingResultV1)
-            else UnderwritingResultV1.model_validate(result)
+            else UnderwritingResultV1.model_validate(result).model_dump(
+                mode="json", by_alias=True
+            )
         )
     except ValidationError:
         return False
-    payload = model.model_dump(mode="json")
-    receipt = payload.pop("receipt")
-    return receipt["payload_sha256"] == sha256_hex(payload)
+    return verify_content_hash(payload)
+
+
+def underwriting_run_context(
+    raw_case: UnderwritingCaseV1 | dict[str, Any],
+    result: UnderwritingResultV1 | None = None,
+) -> UnderwritingRunContext:
+    """Expose the run/case link without adding non-normative fields to court V1."""
+
+    try:
+        case = _validated_case(raw_case)
+        artifact = result or produce_underwriting_result(case)
+        if artifact.underwriting_id != case.underwriting_id:
+            raise ValueError("result underwriting_id does not match input")
+        if not verify_receipt(artifact):
+            raise ValueError("result content_sha256 is invalid")
+        return UnderwritingRunContext(
+            run_id=case.run_id,
+            case_id=case.case_id,
+            case_class=case.case_class,
+            fixture_mode=True,
+            calibration_eligible=False,
+            source_sha=case.source_sha,
+            underwriting_id=artifact.underwriting_id,
+            underwriting_sha256=artifact.content_sha256,
+        )
+    except (ValidationError, ValueError, TypeError) as exc:
+        raise UnderwritingProductionError(str(exc)) from exc

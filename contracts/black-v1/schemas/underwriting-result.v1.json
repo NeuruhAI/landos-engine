@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuruh.local/contracts/underwriting-result.v1.json",
+  "title": "UnderwritingResultV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "underwriting_id",
+    "generated_at",
+    "method_version",
+    "entity",
+    "evidence_ids",
+    "zoning",
+    "constraints",
+    "comps",
+    "valuation",
+    "assumptions",
+    "ranges",
+    "scenarios",
+    "risk",
+    "confidence",
+    "counter_analysis",
+    "human_approval",
+    "content_sha256"
+  ],
+  "properties": {
+    "schema": { "const": "neuruh.underwriting_result.v1" },
+    "underwriting_id": { "type": "string", "format": "uuid" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "method_version": { "type": "string", "minLength": 1 },
+    "entity": { "type": "object" },
+    "evidence_ids": {
+      "type": "array",
+      "items": { "type": "string", "format": "uuid" }
+    },
+    "zoning": {
+      "type": "object",
+      "required": ["code", "description", "confirmed", "source"],
+      "properties": {
+        "code": { "type": ["string", "null"] },
+        "description": { "type": ["string", "null"] },
+        "confirmed": { "type": "boolean" },
+        "source": { "type": ["string", "null"] }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "required": [
+        "landlocked",
+        "road_frontage_ft",
+        "road_type",
+        "wetlands_pct",
+        "fema_flood_pct",
+        "fema_zone",
+        "slope_avg_pct",
+        "buildable_pct",
+        "easements",
+        "notes"
+      ],
+      "properties": {
+        "landlocked": { "type": ["boolean", "null"] },
+        "road_frontage_ft": { "type": ["number", "null"], "minimum": 0 },
+        "road_type": { "type": ["string", "null"] },
+        "wetlands_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "fema_flood_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "fema_zone": { "type": ["string", "null"] },
+        "slope_avg_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "buildable_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "easements": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "comps": {
+      "type": "object",
+      "required": [
+        "fmv_low",
+        "fmv_estimate",
+        "fmv_high",
+        "comps_n",
+        "confidence",
+        "items"
+      ],
+      "properties": {
+        "fmv_low": { "type": ["number", "null"], "minimum": 0 },
+        "fmv_estimate": { "type": ["number", "null"], "minimum": 0 },
+        "fmv_high": { "type": ["number", "null"], "minimum": 0 },
+        "comps_n": { "type": ["integer", "null"], "minimum": 0 },
+        "confidence": { "type": ["string", "null"] },
+        "items": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "valuation": {
+      "type": "object",
+      "required": ["mode", "point_value", "range", "adjustments"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["land", "house"] },
+        "point_value": { "type": ["number", "null"] },
+        "range": {
+          "type": ["array", "null"],
+          "items": { "type": ["number", "null"] },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "base_ppa": { "type": ["number", "null"] },
+        "net_factor": { "type": ["number", "null"] },
+        "comp_dispersion": { "type": ["number", "null"] },
+        "adjustments": { "type": "array" },
+        "mao": { "type": ["object", "null"] },
+        "reason_if_null": { "type": ["string", "null"] }
+      }
+    },
+    "assumptions": { "type": "array", "items": { "type": "string" } },
+    "ranges": { "type": "object" },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "enum": ["base", "upside", "downside"] },
+          "offer": { "type": ["number", "null"] },
+          "exit": { "type": ["number", "null"] },
+          "assignment_fee": { "type": ["number", "null"] },
+          "probability": { "type": ["number", "null"] },
+          "notes": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "risk": { "type": "object" },
+    "confidence": {
+      "type": "string",
+      "enum": ["none", "low", "medium", "high"]
+    },
+    "counter_analysis": {
+      "type": "object",
+      "required": ["falsifiers", "kill_criteria"],
+      "properties": {
+        "falsifiers": { "type": "array", "items": { "type": "string" } },
+        "worst_case_loss": { "type": ["number", "null"] },
+        "kill_criteria": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "human_approval": {
+      "type": ["object", "null"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"]
+        },
+        "actor_role": { "type": ["string", "null"] },
+        "actor_id_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "approved_at": { "type": ["string", "null"], "format": "date-time" },
+        "notes": { "type": ["string", "null"] }
+      }
+    },
+    "v2_projection": { "type": ["object", "null"] },
+    "content_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

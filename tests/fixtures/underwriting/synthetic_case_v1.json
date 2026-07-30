@@ -1,206 +1,220 @@
 {
-  "schema_version": "underwriting-case-v1",
-  "run_id": "orange-fixture-run-0001",
+  "schema": "neuruh.underwriting_case_input.v1",
+  "run_id": "orange-run-syn-black-001",
+  "case_id": "SYN-BLACK-001",
+  "case_class": "synthetic",
   "fixture_mode": true,
-  "lead_id": null,
-  "synthetic_case_id": "synthetic-berrien-land-0001",
-  "property_identity": {
-    "parcel_apn": "11-00-0000-0001-00-0",
-    "address": "100 Fixture Road, Berrien County, MI",
-    "county_fips": "26021",
-    "latitude": 41.95,
-    "longitude": -86.48,
-    "acreage": 5.2,
-    "property_type": "vacant_land",
-    "identity_unknown_reason": null
+  "calibration_eligible": false,
+  "source_sha": "e231f00a9994a2c46afa72b5d6b59991bd89a7ad",
+  "underwriting_id": "22222222-2222-4222-8222-222222222201",
+  "generated_at": "2026-07-30T21:05:00Z",
+  "method_version": "valuation-lab-v1+black-court-synthetic",
+  "entity": {
+    "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+    "parcel_apn": "SYN-00-0000-000",
+    "county_fips": "18000",
+    "source_lead_id": null,
+    "acquisition_lead_id": null,
+    "situs_fingerprint_sha256": null
   },
-  "source_evidence": [
+  "evidence_items": [
     {
-      "evidence_id": "ev-property",
-      "evidence_type": "property_identity",
-      "value": {
-        "parcel_apn": "11-00-0000-0001-00-0",
-        "acreage": 5.2
+      "schema": "neuruh.evidence_item.v1",
+      "evidence_id": "11111111-1111-4111-8111-111111111101",
+      "source": {
+        "system": "landos-engine",
+        "name": "synthetic.parcel",
+        "ref": "SYN-BLACK-001",
+        "ref_sha256": null
       },
-      "provenance": {
-        "system": "synthetic_fixture",
-        "field": "property_record",
-        "record_id": "synthetic-berrien-land-0001",
-        "observed_at": "2026-07-30T12:00:00Z",
-        "method": "fixture_only"
+      "acquired_at": "2026-07-30T21:00:00Z",
+      "effective_at": "2026-07-01T00:00:00Z",
+      "entity": {
+        "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+        "parcel_apn": "SYN-00-0000-000",
+        "county_fips": "18000",
+        "source_lead_id": null,
+        "acquisition_lead_id": null,
+        "situs_fingerprint_sha256": null
       },
-      "verified": false,
-      "limitation": "Synthetic fixture; not a production parcel record."
+      "key": "gross_acres",
+      "value": 5.0,
+      "unit": "acres",
+      "method": "human_assert",
+      "confidence": "high",
+      "conflict_status": "none",
+      "range": null,
+      "assumptions": ["synthetic fixture only"],
+      "conflict_with": [],
+      "supersedes": null,
+      "verified": true,
+      "actor_role": "operator",
+      "created_at": "2026-07-30T21:00:00Z",
+      "content_sha256": "b0a7f0f3f2c854c797840c4739cc7bf2b594f079c7ee4bee80799ad2aa37dc59",
+      "licensing": {
+        "rights_note": "synthetic fixture — not a public record",
+        "redistributable": true,
+        "retention_class": "ephemeral"
+      }
     },
     {
-      "evidence_id": "ev-comps",
-      "evidence_type": "comparable_sales",
-      "value": [
-        "COMP-001",
-        "COMP-002",
-        "COMP-003",
-        "COMP-004"
-      ],
-      "provenance": {
-        "system": "synthetic_fixture",
-        "field": "comparable_sales",
-        "record_id": "synthetic-comp-set-0001",
-        "observed_at": "2026-07-30T12:00:00Z",
-        "method": "fixture_only"
+      "schema": "neuruh.evidence_item.v1",
+      "evidence_id": "11111111-1111-4111-8111-111111111102",
+      "source": {
+        "system": "landos-engine",
+        "name": "synthetic.comps",
+        "ref": "SYN-BLACK-001-comp-band",
+        "ref_sha256": null
       },
+      "acquired_at": "2026-07-30T21:00:00Z",
+      "effective_at": "2025-12-01T00:00:00Z",
+      "entity": {
+        "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+        "parcel_apn": "SYN-00-0000-000",
+        "county_fips": "18000",
+        "source_lead_id": null,
+        "acquisition_lead_id": null,
+        "situs_fingerprint_sha256": null
+      },
+      "key": "comp_median_ppa",
+      "value": 8000,
+      "unit": "usd_per_acre",
+      "method": "comp_median",
+      "confidence": "medium",
+      "conflict_status": "none",
+      "range": [6000, 11000],
+      "assumptions": ["three synthetic comparables in the fixture band"],
+      "conflict_with": [],
+      "supersedes": null,
       "verified": false,
-      "limitation": "Synthetic prices exercise the existing valuation engine only."
+      "actor_role": "system",
+      "created_at": "2026-07-30T21:00:00Z",
+      "content_sha256": "5ebb062f1beb2f1d87478e1e5a97fade016c9ad01550051382fdfd21e7f362aa",
+      "licensing": {
+        "rights_note": "synthetic comps — not market data",
+        "redistributable": false,
+        "retention_class": "ephemeral"
+      }
     },
     {
-      "evidence_id": "ev-environment",
-      "evidence_type": "contamination_kind",
-      "value": "adjacent historical dry cleaner; parcel status unverified",
-      "provenance": {
-        "system": "synthetic_fixture",
-        "field": "environmental_screen",
-        "record_id": "synthetic-screen-0001",
-        "observed_at": "2026-07-30T12:00:00Z",
-        "method": "fixture_only"
+      "schema": "neuruh.evidence_item.v1",
+      "evidence_id": "11111111-1111-4111-8111-111111111103",
+      "source": {
+        "system": "landos-engine",
+        "name": "synthetic.overlay",
+        "ref": "road_frontage_unverified",
+        "ref_sha256": null
       },
+      "acquired_at": "2026-07-30T21:00:00Z",
+      "effective_at": "2026-07-30T21:00:00Z",
+      "entity": {
+        "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+        "parcel_apn": "SYN-00-0000-000",
+        "county_fips": "18000",
+        "source_lead_id": null,
+        "acquisition_lead_id": null,
+        "situs_fingerprint_sha256": null
+      },
+      "key": "road_frontage_ft",
+      "value": null,
+      "unit": "ft",
+      "method": "overlay_join",
+      "confidence": "none",
+      "conflict_status": "none",
+      "range": null,
+      "assumptions": ["no road-centerline layer — landlocked risk unverified"],
+      "conflict_with": [],
+      "supersedes": null,
       "verified": false,
-      "limitation": "Desktop-screening scenario; no Phase I/BEA evidence."
-    }
-  ],
-  "condition_assumptions": [
-    {
-      "name": "site_condition",
-      "value": "vacant, uncleared",
-      "basis": "Synthetic scenario assumption; field inspection missing.",
-      "confirmed": false
-    },
-    {
-      "name": "buildable_fraction",
-      "value": 0.8,
-      "basis": "Synthetic modeling assumption; wetlands and slope verification missing.",
-      "confirmed": false
+      "actor_role": "system",
+      "created_at": "2026-07-30T21:00:00Z",
+      "content_sha256": "c82dfa0335c7544900e214bf43f5338a258a7584463e4d283bd303abd003fdda",
+      "licensing": {
+        "rights_note": "synthetic absence of overlay",
+        "redistributable": true,
+        "retention_class": "ephemeral"
+      }
     }
   ],
   "comparable_sales": [
     {
-      "comp_id": "COMP-001",
-      "sale_price": 78000,
-      "acreage": 5.0,
+      "comp_id": "SYN-COMP-LOW",
+      "sale_price": 30000,
+      "acreage": 5,
+      "sale_date": "2025-10-01T00:00:00Z",
+      "evidence_id": "11111111-1111-4111-8111-111111111102",
+      "source": "SYN-BLACK-001-comp-band"
+    },
+    {
+      "comp_id": "SYN-COMP-MEDIAN",
+      "sale_price": 40000,
+      "acreage": 5,
+      "sale_date": "2025-12-01T00:00:00Z",
+      "evidence_id": "11111111-1111-4111-8111-111111111102",
+      "source": "SYN-BLACK-001-comp-band"
+    },
+    {
+      "comp_id": "SYN-COMP-HIGH",
+      "sale_price": 55000,
+      "acreage": 5,
       "sale_date": "2026-02-01T00:00:00Z",
-      "source_evidence_id": "ev-comps",
-      "property_type": "vacant_land"
-    },
-    {
-      "comp_id": "COMP-002",
-      "sale_price": 92000,
-      "acreage": 5.5,
-      "sale_date": "2026-03-15T00:00:00Z",
-      "source_evidence_id": "ev-comps",
-      "property_type": "vacant_land"
-    },
-    {
-      "comp_id": "COMP-003",
-      "sale_price": 85000,
-      "acreage": 4.8,
-      "sale_date": "2026-04-20T00:00:00Z",
-      "source_evidence_id": "ev-comps",
-      "property_type": "vacant_land"
-    },
-    {
-      "comp_id": "COMP-004",
-      "sale_price": 99000,
-      "acreage": 6.0,
-      "sale_date": "2026-05-10T00:00:00Z",
-      "source_evidence_id": "ev-comps",
-      "property_type": "vacant_land"
+      "evidence_id": "11111111-1111-4111-8111-111111111102",
+      "source": "SYN-BLACK-001-comp-band"
     }
   ],
-  "buildable_fraction": 0.8,
-  "in_sfha": false,
-  "distance_to_water_m": 620,
+  "buildable_fraction": null,
+  "in_sfha": null,
+  "distance_to_water_m": null,
   "road_frontage_ft": null,
-  "arv": {
-    "value": null,
-    "currency": "USD",
-    "unknown_reason": "Vacant-land fixture has no residential ARV."
+  "zoning": {
+    "code": null,
+    "description": null,
+    "confirmed": false,
+    "source": null
   },
-  "rent_range": {
-    "low": null,
-    "high": null,
-    "currency": "USD",
-    "unknown_reason": "No supported land-lease or residential rent evidence."
+  "constraints": {
+    "landlocked": null,
+    "road_frontage_ft": null,
+    "road_type": null,
+    "wetlands_pct": null,
+    "fema_flood_pct": null,
+    "fema_zone": null,
+    "slope_avg_pct": null,
+    "buildable_pct": null,
+    "easements": [],
+    "notes": ["road frontage unverified"]
   },
-  "repair_range": {
-    "low": 8000,
-    "high": 18000,
-    "currency": "USD",
-    "unknown_reason": null
-  },
-  "cash_finance_assumptions": {
-    "offer_pct": 0.65,
-    "fee_pct": 0.03,
-    "fee_flat": 1500,
-    "repair_basis": "high",
-    "financing": "cash",
-    "down_payment_pct": 1.0,
-    "interest_rate_pct": null,
-    "term_months": null,
-    "unknowns": [
-      "closing timeline",
-      "title-curative cost"
-    ]
-  },
-  "zoning_land_constraints": [
+  "assumptions": [
     {
-      "constraint_type": "zoning",
-      "status": "unknown",
-      "detail": "Zoning designation and permitted use were not evidenced.",
-      "source_evidence_id": null
-    },
-    {
-      "constraint_type": "wetlands_and_slope",
-      "status": "unknown",
-      "detail": "Buildable fraction is an assumption pending mapped and field evidence.",
-      "source_evidence_id": null
+      "name": "synthetic_comp_count",
+      "value": 3,
+      "method": "human_assert",
+      "detail": "Fixture count only; not a production market claim.",
+      "evidence_ids": ["11111111-1111-4111-8111-111111111102"]
     }
   ],
-  "risk_register": [
-    {
-      "risk_id": "risk-environment-001",
-      "category": "environmental",
-      "severity": "high",
-      "statement": "Adjacent historical use may create environmental diligence exposure.",
-      "mitigation": "Require Phase I/BEA review before any approval or offer.",
-      "evidence_ids": [
-        "ev-environment"
-      ]
-    },
-    {
-      "risk_id": "risk-fixture-001",
-      "category": "evidence_quality",
-      "severity": "critical",
-      "statement": "Every source in this case is synthetic.",
-      "mitigation": "Never use this result for a real acquisition decision.",
-      "evidence_ids": [
-        "ev-property",
-        "ev-comps"
-      ]
-    }
-  ],
-  "strategy_names": [
-    "land_hold",
-    "builder_resale"
-  ],
-  "missing_evidence": [
-    "title commitment",
-    "boundary survey",
-    "zoning verification",
-    "wetlands and slope verification",
-    "rent evidence",
-    "Phase I/BEA determination"
-  ],
-  "recommended_decision": "proceed_to_human_review",
-  "decision_rationale": "Synthetic valuation is grounded only within fixture inputs; all real-world evidence gates remain open.",
-  "source_sha": "e231f00a9994a2c46afa72b5d6b59991bd89a7ad",
-  "source_worktree_dirty": true,
-  "generated_at": "2026-07-30T12:00:00Z"
+  "risk": {
+    "access": "unverified",
+    "flood": "unknown",
+    "title": "unknown",
+    "market": "synthetic"
+  },
+  "counter_analysis": {
+    "falsifiers": ["no real comps", "road frontage unverified", "zoning unknown"],
+    "worst_case_loss": null,
+    "kill_criteria": ["confirmed landlocked", "DNC if live"]
+  },
+  "human_approval": {
+    "required": true,
+    "status": "approved",
+    "actor_role": "operator",
+    "actor_id_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "approved_at": "2026-07-30T21:06:00Z",
+    "notes": "synthetic machinery approval only; no offer or contract authority"
+  },
+  "mao_pct": 0.7,
+  "mao_repairs": 0,
+  "mao_fee_pct": 0,
+  "mao_fee_flat": 0,
+  "include_v2_projection": true
 }
