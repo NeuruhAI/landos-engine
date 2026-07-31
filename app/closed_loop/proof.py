@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -29,31 +31,36 @@ ENTITY = {
     "county_fips": "18000",
 }
 OPERATOR_SHA = section_hash("synthetic machinery approval; no human identity")
+CRM_SOURCE_SHA = "a271107c1a9832c57ea05e96a4929964818d74f9"
+AEGIS_SOURCE_SHA = "e8850ab"
+FULL_GIT_SHA = re.compile(r"^[a-f0-9]{40}$")
 
 
-def _evidence() -> list[dict[str, Any]]:
+def _evidence(source_sha: str | None = None) -> list[dict[str, Any]]:
     # The emitted evidence is byte-identical to the producer input. This prevents
     # a same-ID/different-body split between the proof chain and underwriting.
     from app.underwriting import UnderwritingCaseV1
 
-    case = UnderwritingCaseV1.model_validate(_underwriting_input())
+    case = UnderwritingCaseV1.model_validate(_underwriting_input(source_sha))
     return [
         item.model_dump(mode="json", by_alias=True)
         for item in case.evidence_items
     ]
 
 
-def _underwriting_input() -> dict[str, Any]:
+def _underwriting_input(source_sha: str | None = None) -> dict[str, Any]:
     """Load the canonical file-only BLACK fixture and pin its run ID."""
 
     root = Path(__file__).resolve().parents[2]
     fixture = root / "tests" / "fixtures" / "underwriting" / "synthetic_case_v1.json"
     raw = json.loads(fixture.read_text(encoding="utf-8"))
     raw["run_id"] = CASE_ID
+    if source_sha is not None:
+        raw["source_sha"] = source_sha
     return raw
 
 
-def _produce_underwriting() -> dict[str, Any]:
+def _produce_underwriting(source_sha: str | None = None) -> dict[str, Any]:
     # Late import prevents this file-only proof module from initializing app runtime.
     from app.underwriting import (
         produce_underwriting_result,
@@ -61,7 +68,7 @@ def _produce_underwriting() -> dict[str, Any]:
         verify_receipt,
     )
 
-    input_payload = _underwriting_input()
+    input_payload = _underwriting_input(source_sha)
     produced = produce_underwriting_result(input_payload)
     if not verify_receipt(produced):
         raise ContractViolation("underwriting producer emitted an invalid receipt")
@@ -226,11 +233,35 @@ def _sealed_auxiliary(schema: str, body: dict[str, Any]) -> dict[str, Any]:
     return seal_content({"schema": schema, "run_id": CASE_ID, **body})
 
 
-def build_synthetic_one_case_proof() -> dict[str, dict[str, Any]]:
+def _resolved_code_pins(
+    code_pins: Mapping[str, str] | None,
+) -> dict[str, str]:
+    default_landos = str(_underwriting_input()["source_sha"])
+    resolved = {
+        "crm": CRM_SOURCE_SHA,
+        "landos": default_landos,
+        "aegis": AEGIS_SOURCE_SHA,
+    }
+    if code_pins is not None:
+        if set(code_pins) != set(resolved):
+            raise ContractViolation(
+                "code_pins must contain exactly crm, landos, and aegis"
+            )
+        resolved.update({key: str(value) for key, value in code_pins.items()})
+    for owner in ("crm", "landos"):
+        if not FULL_GIT_SHA.fullmatch(resolved[owner]):
+            raise ContractViolation(f"{owner} code pin must be a full Git SHA")
+    return resolved
+
+
+def build_synthetic_one_case_proof(
+    *, code_pins: Mapping[str, str] | None = None
+) -> dict[str, dict[str, Any]]:
     """Build and validate a deterministic, PII-free, no-write proof in memory."""
 
-    evidence = _evidence()
-    underwriting = _produce_underwriting()
+    resolved_pins = _resolved_code_pins(code_pins)
+    evidence = _evidence(resolved_pins["landos"])
+    underwriting = _produce_underwriting(resolved_pins["landos"])
     action = _action(underwriting, evidence)
     action_receipt = _sealed_auxiliary(
         "neuruh.action_receipt.synthetic.v1",
@@ -360,11 +391,7 @@ def build_synthetic_one_case_proof() -> dict[str, dict[str, Any]]:
         "authority": {
             "operator_role": "operator",
             "operator_id_sha256": OPERATOR_SHA,
-            "code_pins": {
-                "crm": "36530a8",
-                "landos": "e231f00",
-                "aegis": "e8850ab",
-            },
+            "code_pins": resolved_pins,
         },
         "gate_results": [
             {"gate": "pii_safe", "status": "pass", "evidence_sha256": None},
@@ -539,10 +566,13 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def write_synthetic_one_case_proof(
-    output_dir: str | Path, *, overwrite: bool = False
+    output_dir: str | Path,
+    *,
+    overwrite: bool = False,
+    code_pins: Mapping[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     output = Path(output_dir)
-    bundle = build_synthetic_one_case_proof()
+    bundle = build_synthetic_one_case_proof(code_pins=code_pins)
     if output.exists() and any(output.iterdir()) and not overwrite:
         raise FileExistsError(f"refusing to overwrite non-empty directory: {output}")
     output.mkdir(parents=True, exist_ok=True)

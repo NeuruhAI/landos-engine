@@ -12,6 +12,7 @@ from app.insight import compose
 
 from .canonical import content_sha256, verify_content_hash
 from .models import (
+    CRMCompsV2,
     CompsV1,
     ScenarioV1,
     UnderwritingCaseV1,
@@ -265,7 +266,7 @@ def _payload(case: UnderwritingCaseV1) -> dict[str, Any]:
         generated_at=case.generated_at,
         zoning=case.zoning,
         constraints=case.constraints,
-        comps=comps,
+        comps=CRMCompsV2.from_full_v1(comps),
     )
     return {
         "schema": "neuruh.underwriting_result.v1",

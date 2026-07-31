@@ -9,6 +9,7 @@ import pytest
 
 from app.underwriting import (
     AcquisitionLeadUnderwritingResultAdapter,
+    CRMComparableSaleV2,
     UnderwritingProductionError,
     UnderwritingResultV1,
     content_sha256,
@@ -27,11 +28,7 @@ FIXTURES = ROOT / "tests" / "fixtures" / "underwriting"
 SYNTHETIC = FIXTURES / "synthetic_case_v1.json"
 RED_TEAM = FIXTURES / "red_team_failure_v1.json"
 EXPECTED = ROOT / "data" / "underwriting-fixtures" / "synthetic_result_v1.json"
-BLACK = (
-    Path("/Users/jeramiehicks/neuruh-workspace/audit-output")
-    / "BLACK-CLOSED-LOOP-COURT-20260730T212633Z"
-)
-BLACK_CASES = BLACK / "tests" / "acceptance-cases.json"
+BLACK_CASES = ROOT / "contracts" / "black-v1" / "tests" / "acceptance-cases.json"
 
 
 def _load(path: Path) -> dict:
@@ -60,7 +57,7 @@ def test_syn_black_001_is_deterministic_and_matches_checked_example():
     )
     assert first_json == EXPECTED.read_text(encoding="utf-8").rstrip("\n")
     assert first.content_sha256 == (
-        "8a3d7b8e3b50ee051029618fdadd8dc66986a98eb1fa5c1e452f0ea9516698e8"
+        "382a5d07fdce7edf754a7c27a465c6f27a1f7347bfed01250deb6d5ae4c12990"
     )
 
 
@@ -120,7 +117,69 @@ def test_v2_projection_has_exact_preparation_only_shape():
     assert projected["schema"] == "underwriting_result.v2"
     assert projected["zoning"] == result.zoning.model_dump(mode="json")
     assert projected["constraints"] == result.constraints.model_dump(mode="json")
-    assert projected["comps"] == result.comps.model_dump(mode="json")
+    assert projected["comps"]["items"]
+    assert all(
+        set(item)
+        == {
+            "sale_price",
+            "acres",
+            "price_per_acre",
+            "sale_date",
+            "distance_mi",
+            "source",
+        }
+        for item in projected["comps"]["items"]
+    )
+    assert projected["comps"]["items"][0] == {
+        "sale_price": 30000.0,
+        "acres": 5.0,
+        "price_per_acre": 6000.0,
+        "sale_date": "2025-10-01T00:00:00Z",
+        "distance_mi": None,
+        "source": "SYN-BLACK-001-comp-band",
+    }
+
+    full_v1 = result.comps.items[0]
+    assert full_v1["acreage"] == projected["comps"]["items"][0]["acres"]
+    assert {
+        "comp_id",
+        "acreage",
+        "evidence_id",
+        "method",
+    } <= set(full_v1)
+    assert not {
+        "comp_id",
+        "acreage",
+        "evidence_id",
+        "method",
+    } & set(projected["comps"]["items"][0])
+
+
+def test_crm_v2_comp_projection_is_strict_and_requires_exact_fields():
+    projected = CRMComparableSaleV2.from_full_v1(
+        {
+            "comp_id": "provenance-only",
+            "sale_price": 10000,
+            "acreage": 2,
+            "price_per_acre": 5000,
+            "sale_date": None,
+            "source": None,
+            "evidence_id": "provenance-only",
+            "method": "comp_median",
+        }
+    )
+    assert projected.model_dump(mode="json") == {
+        "sale_price": 10000.0,
+        "acres": 2.0,
+        "price_per_acre": 5000.0,
+        "sale_date": None,
+        "distance_mi": None,
+        "source": None,
+    }
+    with pytest.raises(Exception, match="extra"):
+        CRMComparableSaleV2.model_validate(
+            {**projected.model_dump(mode="json"), "evidence_id": "forbidden"}
+        )
 
 
 def test_producer_delegates_to_existing_valuation_and_insight_modules(monkeypatch):
@@ -249,6 +308,18 @@ def test_adapter_prepares_only_exact_v2_and_has_no_write_api():
         "constraints",
         "comps",
     }
+    assert all(
+        set(item)
+        == {
+            "sale_price",
+            "acres",
+            "price_per_acre",
+            "sale_date",
+            "distance_mi",
+            "source",
+        }
+        for item in prepared["underwriting_result"]["comps"]["items"]
+    )
 
 
 def test_file_cli_writes_normative_artifact_and_run_context_atomically(

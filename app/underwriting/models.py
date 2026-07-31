@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from uuid import UUID
 
 from pydantic import (
@@ -136,6 +136,54 @@ class CompsV1(StrictModel):
     items: list[dict[str, Any]]
 
 
+class CRMComparableSaleV2(StrictModel):
+    """Exact comparable-sale row accepted by DeedSonar's sealed v2 parser."""
+
+    sale_price: Annotated[Number, Field(ge=0)]
+    acres: Annotated[Number, Field(gt=0)] | None
+    price_per_acre: Annotated[Number, Field(ge=0)] | None
+    sale_date: str | None
+    distance_mi: Annotated[Number, Field(ge=0)] | None
+    source: str | None
+
+    @classmethod
+    def from_full_v1(cls, comp: Mapping[str, Any]) -> "CRMComparableSaleV2":
+        """Drop V1-only provenance while mapping the acreage vocabulary."""
+
+        return cls(
+            sale_price=comp["sale_price"],
+            acres=comp.get("acreage"),
+            price_per_acre=comp.get("price_per_acre"),
+            sale_date=comp.get("sale_date"),
+            distance_mi=comp.get("distance_mi"),
+            source=comp.get("source"),
+        )
+
+
+class CRMCompsV2(StrictModel):
+    """Exact CRM v2 comp envelope, derived from the provenance-rich V1 form."""
+
+    fmv_low: Annotated[Number, Field(ge=0)] | None
+    fmv_estimate: Annotated[Number, Field(ge=0)] | None
+    fmv_high: Annotated[Number, Field(ge=0)] | None
+    comps_n: Annotated[int, Field(ge=0)] | None
+    confidence: str | None
+    items: list[CRMComparableSaleV2]
+
+    @classmethod
+    def from_full_v1(cls, comps: CompsV1) -> "CRMCompsV2":
+        return cls(
+            fmv_low=comps.fmv_low,
+            fmv_estimate=comps.fmv_estimate,
+            fmv_high=comps.fmv_high,
+            comps_n=comps.comps_n,
+            confidence=comps.confidence,
+            items=[
+                CRMComparableSaleV2.from_full_v1(item) for item in comps.items
+            ],
+        )
+
+
 class ValuationV1(StrictModel):
     mode: Literal["land", "house"]
     point_value: Number | None
@@ -201,7 +249,7 @@ class V2ProjectionV1(StrictModel):
     generated_at: AwareDatetime
     zoning: ZoningV1
     constraints: ConstraintsV1
-    comps: CompsV1
+    comps: CRMCompsV2
 
     model_config = ConfigDict(
         extra="forbid", populate_by_name=True, serialize_by_alias=True
@@ -316,7 +364,7 @@ class UnderwritingResultV1(StrictModel):
                 raise ValueError("v2_projection zoning mismatch")
             if self.v2_projection.constraints != self.constraints:
                 raise ValueError("v2_projection constraints mismatch")
-            if self.v2_projection.comps != self.comps:
+            if self.v2_projection.comps != CRMCompsV2.from_full_v1(self.comps):
                 raise ValueError("v2_projection comps mismatch")
         if self.human_approval is None or not self.human_approval.required:
             raise ValueError("human approval gate is mandatory")

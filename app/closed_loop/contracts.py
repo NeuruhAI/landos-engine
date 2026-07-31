@@ -252,6 +252,8 @@ class ActionProposalV1(StrictModel):
             and bool(self.approval.actor_id_sha256)
             and self.approval.approved_at is not None
         )
+        if self.proposed_action == "promote_stage" and not human_approval:
+            raise ValueError("stage promotion requires complete human approval")
         if (
             self.reversibility == "irreversible"
             or self.proposed_action in IRREVERSIBLE_ACTIONS

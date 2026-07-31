@@ -6,6 +6,8 @@ from .adapters import (
 )
 from .canonical import content_sha256, verify_content_hash
 from .models import (
+    CRMComparableSaleV2,
+    CRMCompsV2,
     EvidenceItemV1,
     UnderwritingCaseV1,
     UnderwritingResultV1,
@@ -20,6 +22,8 @@ from .producer import (
 
 __all__ = [
     "AcquisitionLeadUnderwritingResultAdapter",
+    "CRMComparableSaleV2",
+    "CRMCompsV2",
     "EvidenceItemV1",
     "UnderwritingCaseV1",
     "UnderwritingProductionError",

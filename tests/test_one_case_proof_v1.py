@@ -39,6 +39,27 @@ def test_syn_black_001_is_deterministic_valid_and_fully_linked():
     assert first["bundle-index.json"]["production_writes_performed"] is False
 
 
+def test_proof_code_pins_are_full_current_inputs_and_overridable():
+    bundle = build_synthetic_one_case_proof()
+    pins = bundle["one-case-proof-manifest-v1.json"]["authority"]["code_pins"]
+    assert len(pins["crm"]) == 40
+    assert len(pins["landos"]) == 40
+
+    custom = {
+        "crm": "c" * 40,
+        "landos": "d" * 40,
+        "aegis": "e8850ab",
+    }
+    custom_bundle = build_synthetic_one_case_proof(code_pins=custom)
+    custom_manifest = custom_bundle["one-case-proof-manifest-v1.json"]
+    assert custom_manifest["authority"]["code_pins"] == custom
+
+    with pytest.raises(ContractViolation, match="full Git SHA"):
+        build_synthetic_one_case_proof(
+            code_pins={**custom, "landos": "d" * 7}
+        )
+
+
 def test_three_evidence_items_are_sealed_and_pii_free():
     bundle = build_synthetic_one_case_proof()
     paths = sorted(path for path in bundle if path.startswith("evidence-"))
@@ -140,3 +161,26 @@ def test_generator_writes_atomically_and_refuses_implicit_overwrite(tmp_path, ca
         for path in output.glob("*.json")
     }
     verify_bundle(loaded)
+
+
+def test_cli_accepts_explicit_phase2_code_pins(tmp_path, capsys):
+    output = tmp_path / "SYN-BLACK-001"
+    assert (
+        cli.main(
+            [
+                "--output",
+                str(output),
+                "--landos-sha",
+                "d" * 40,
+                "--crm-sha",
+                "c" * 40,
+            ]
+        )
+        == 0
+    )
+    manifest = json.loads(
+        (output / "one-case-proof-manifest-v1.json").read_text(encoding="utf-8")
+    )
+    assert manifest["authority"]["code_pins"]["landos"] == "d" * 40
+    assert manifest["authority"]["code_pins"]["crm"] == "c" * 40
+    assert "ONE_CASE_PROOF_OK" in capsys.readouterr().err

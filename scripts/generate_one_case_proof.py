@@ -20,8 +20,29 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--landos-sha",
+        help="full LandOS Git SHA to pin in the proof authority block",
+    )
+    parser.add_argument(
+        "--crm-sha",
+        help="full DeedSonar Git SHA to pin in the proof authority block",
+    )
     args = parser.parse_args(argv)
-    bundle = write_synthetic_one_case_proof(args.output, overwrite=args.overwrite)
+    code_pins = None
+    if args.landos_sha or args.crm_sha:
+        if not args.landos_sha or not args.crm_sha:
+            parser.error("--landos-sha and --crm-sha must be provided together")
+        code_pins = {
+            "landos": args.landos_sha,
+            "crm": args.crm_sha,
+            "aegis": "e8850ab",
+        }
+    bundle = write_synthetic_one_case_proof(
+        args.output,
+        overwrite=args.overwrite,
+        code_pins=code_pins,
+    )
     manifest = bundle["one-case-proof-manifest-v1.json"]
     print(
         "ONE_CASE_PROOF_OK "

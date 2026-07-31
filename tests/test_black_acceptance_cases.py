@@ -12,6 +12,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from pydantic import ValidationError
 
 from app.underwriting import (
     UnderwritingResultV1,
@@ -153,6 +154,49 @@ def test_human_mint_offer_and_contract_gates_fail_closed() -> None:
             black.validate_action_semantics(
                 proposal, underwriting=case["underwriting_result"]
             )
+
+
+def test_stage_promotion_accepts_complete_human_approval() -> None:
+    proposal = copy.deepcopy(
+        black.load_fixture_package()["cases"][0]["action_proposal"]
+    )
+    proposal["proposed_action"] = "promote_stage"
+
+    validated = ActionProposalV1.model_validate(
+        seal_closed_loop_content(proposal)
+    )
+
+    assert validated.proposed_action == "promote_stage"
+    assert validated.approval.status == "approved"
+    assert validated.approval.actor_role == "operator"
+    assert validated.approval.actor_id_sha256
+    assert validated.approval.approved_at is not None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "pending"),
+        ("status", "rejected"),
+        ("status", "expired"),
+        ("actor_role", None),
+        ("actor_id_sha256", None),
+        ("approved_at", None),
+    ],
+)
+def test_stage_promotion_rejects_incomplete_human_approval(
+    field: str, value: str | None
+) -> None:
+    proposal = copy.deepcopy(
+        black.load_fixture_package()["cases"][0]["action_proposal"]
+    )
+    proposal["proposed_action"] = "promote_stage"
+    proposal["approval"][field] = value
+
+    with pytest.raises(
+        ValidationError, match="stage promotion requires complete human approval"
+    ):
+        ActionProposalV1.model_validate(seal_closed_loop_content(proposal))
 
 
 def test_manifest_chain_detects_body_hash_and_order_tamper() -> None:
