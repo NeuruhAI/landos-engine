@@ -1,0 +1,647 @@
+{
+  "court": "BLACK-CLOSED-LOOP-COURT-20260730T212633Z",
+  "description": "Acceptance fixtures for contract parse + synthetic one-case proof. No real persons. content_sha256 values are deterministic placeholders for structure tests unless recomputed by operator tooling.",
+  "cases": [
+    {
+      "id": "SYN-BLACK-001",
+      "case_class": "synthetic",
+      "tests": [
+        "AT-EV-01",
+        "AT-UW-01",
+        "AT-UW-02",
+        "AT-AP-01",
+        "AT-OR-01",
+        "AT-OR-02",
+        "AT-CR-01",
+        "AT-MF-01"
+      ],
+      "evidence_items": [
+        {
+          "schema": "neuruh.evidence_item.v1",
+          "evidence_id": "11111111-1111-4111-8111-111111111101",
+          "source": {
+            "system": "landos-engine",
+            "name": "synthetic.parcel",
+            "ref": "SYN-BLACK-001",
+            "ref_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "acquired_at": "2026-07-30T21:00:00Z",
+          "effective_at": "2026-07-01T00:00:00Z",
+          "entity": {
+            "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+            "parcel_apn": "SYN-00-0000-000",
+            "county_fips": "18000",
+            "source_lead_id": null,
+            "acquisition_lead_id": null,
+            "situs_fingerprint_sha256": null
+          },
+          "key": "gross_acres",
+          "value": 5.0,
+          "unit": "acres",
+          "method": "human_assert",
+          "confidence": "high",
+          "conflict_status": "none",
+          "verified": true,
+          "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "licensing": {
+            "rights_note": "synthetic fixture — not a public record",
+            "redistributable": true,
+            "retention_class": "ephemeral"
+          }
+        },
+        {
+          "schema": "neuruh.evidence_item.v1",
+          "evidence_id": "11111111-1111-4111-8111-111111111102",
+          "source": {
+            "system": "landos-engine",
+            "name": "synthetic.comps",
+            "ref": "SYN-BLACK-001-comp-band",
+            "ref_sha256": null
+          },
+          "acquired_at": "2026-07-30T21:00:00Z",
+          "effective_at": "2025-12-01T00:00:00Z",
+          "entity": {
+            "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+            "parcel_apn": "SYN-00-0000-000",
+            "county_fips": "18000",
+            "source_lead_id": null,
+            "acquisition_lead_id": null,
+            "situs_fingerprint_sha256": null
+          },
+          "key": "comp_median_ppa",
+          "value": 8000,
+          "unit": "usd_per_acre",
+          "method": "comp_median",
+          "confidence": "medium",
+          "conflict_status": "none",
+          "range": [6000, 11000],
+          "content_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "licensing": {
+            "rights_note": "synthetic comps — not redistributable as market data",
+            "redistributable": false,
+            "retention_class": "ephemeral"
+          }
+        },
+        {
+          "schema": "neuruh.evidence_item.v1",
+          "evidence_id": "11111111-1111-4111-8111-111111111103",
+          "source": {
+            "system": "landos-engine",
+            "name": "synthetic.overlay",
+            "ref": "road_frontage_unverified",
+            "ref_sha256": null
+          },
+          "acquired_at": "2026-07-30T21:00:00Z",
+          "effective_at": "2026-07-30T21:00:00Z",
+          "entity": {
+            "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+            "parcel_apn": "SYN-00-0000-000",
+            "county_fips": "18000",
+            "source_lead_id": null,
+            "acquisition_lead_id": null,
+            "situs_fingerprint_sha256": null
+          },
+          "key": "road_frontage_ft",
+          "value": null,
+          "unit": "ft",
+          "method": "overlay_join",
+          "confidence": "none",
+          "conflict_status": "none",
+          "verified": false,
+          "assumptions": [
+            "no road-centerline layer — landlocked risk unverified"
+          ],
+          "content_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "licensing": {
+            "rights_note": "synthetic absence of overlay",
+            "redistributable": true,
+            "retention_class": "ephemeral"
+          }
+        }
+      ],
+      "underwriting_result": {
+        "schema": "neuruh.underwriting_result.v1",
+        "underwriting_id": "22222222-2222-4222-8222-222222222201",
+        "generated_at": "2026-07-30T21:05:00Z",
+        "method_version": "valuation-lab-v1+synthetic",
+        "entity": {
+          "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+          "parcel_apn": "SYN-00-0000-000",
+          "county_fips": "18000"
+        },
+        "evidence_ids": [
+          "11111111-1111-4111-8111-111111111101",
+          "11111111-1111-4111-8111-111111111102",
+          "11111111-1111-4111-8111-111111111103"
+        ],
+        "zoning": {
+          "code": null,
+          "description": null,
+          "confirmed": false,
+          "source": null
+        },
+        "constraints": {
+          "landlocked": null,
+          "road_frontage_ft": null,
+          "road_type": null,
+          "wetlands_pct": null,
+          "fema_flood_pct": null,
+          "fema_zone": null,
+          "slope_avg_pct": null,
+          "buildable_pct": null,
+          "easements": [],
+          "notes": ["road frontage unverified"]
+        },
+        "comps": {
+          "fmv_low": 30000,
+          "fmv_estimate": 40000,
+          "fmv_high": 55000,
+          "comps_n": 3,
+          "confidence": "medium",
+          "items": []
+        },
+        "valuation": {
+          "mode": "land",
+          "point_value": 40000,
+          "range": [30000, 55000],
+          "base_ppa": 8000,
+          "net_factor": 1.0,
+          "comp_dispersion": 1.83,
+          "adjustments": [
+            {
+              "name": "road_frontage",
+              "factor": 1.0,
+              "verified": false,
+              "rationale": "unverified — may overvalue landlocked"
+            }
+          ],
+          "mao": null,
+          "reason_if_null": null
+        },
+        "assumptions": [
+          "acreage curve not applied (≤5 ac)",
+          "synthetic comps only"
+        ],
+        "ranges": {
+          "land_value": [30000, 55000]
+        },
+        "scenarios": [
+          {
+            "name": "base",
+            "offer": 28000,
+            "exit": 40000,
+            "assignment_fee": 5000,
+            "probability": 0.4,
+            "notes": []
+          },
+          {
+            "name": "downside",
+            "offer": 20000,
+            "exit": 25000,
+            "assignment_fee": 2000,
+            "probability": 0.3,
+            "notes": ["landlocked"]
+          },
+          {
+            "name": "upside",
+            "offer": 32000,
+            "exit": 55000,
+            "assignment_fee": 8000,
+            "probability": 0.3,
+            "notes": []
+          }
+        ],
+        "risk": {
+          "access": "unverified",
+          "flood": "unknown",
+          "title": "unknown",
+          "market": "synthetic"
+        },
+        "confidence": "low",
+        "counter_analysis": {
+          "falsifiers": [
+            "no real comps",
+            "road frontage unverified",
+            "zoning unknown"
+          ],
+          "worst_case_loss": 28000,
+          "kill_criteria": ["confirmed landlocked", "DNC if live"]
+        },
+        "human_approval": {
+          "required": true,
+          "status": "approved",
+          "actor_role": "operator",
+          "actor_id_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "approved_at": "2026-07-30T21:06:00Z",
+          "notes": "synthetic machinery approval only"
+        },
+        "v2_projection": {
+          "schema": "underwriting_result.v2",
+          "generated_at": "2026-07-30T21:05:00Z",
+          "zoning": {
+            "code": null,
+            "description": null,
+            "confirmed": false,
+            "source": null
+          },
+          "constraints": {
+            "landlocked": null,
+            "road_frontage_ft": null,
+            "road_type": null,
+            "wetlands_pct": null,
+            "fema_flood_pct": null,
+            "fema_zone": null,
+            "slope_avg_pct": null,
+            "buildable_pct": null,
+            "easements": [],
+            "notes": ["road frontage unverified"]
+          },
+          "comps": {
+            "fmv_low": 30000,
+            "fmv_estimate": 40000,
+            "fmv_high": 55000,
+            "comps_n": 3,
+            "confidence": "medium",
+            "items": []
+          }
+        },
+        "content_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "action_proposal": {
+        "schema": "neuruh.action_proposal.v1",
+        "proposal_id": "33333333-3333-4333-8333-333333333301",
+        "created_at": "2026-07-30T21:07:00Z",
+        "entity": {
+          "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+          "parcel_apn": "SYN-00-0000-000",
+          "county_fips": "18000"
+        },
+        "proposed_action": "no_action",
+        "authority": {
+          "propose_role": "system",
+          "approve_role_min": "operator",
+          "execute_role_min": "operator",
+          "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+          "capability_flags": []
+        },
+        "cost": {
+          "usd": 0,
+          "minutes": 5,
+          "compliance_risk": "none",
+          "burn_rate_note": "synthetic desk time only"
+        },
+        "reversibility": "reversible",
+        "expected_outcome": {
+          "primary": "data_gain",
+          "predicted_values": {
+            "machinery_proof": 1
+          },
+          "forecast_version": "synthetic-forecast-v0",
+          "confidence": "high",
+          "horizon_days": 0
+        },
+        "downside": {
+          "summary": "none — no external action",
+          "worst_case_usd": 0,
+          "legal_risk": "none"
+        },
+        "prerequisites": ["human_approval_synthetic"],
+        "approval": {
+          "status": "approved",
+          "actor_role": "operator",
+          "actor_id_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "approved_at": "2026-07-30T21:07:30Z",
+          "rejection_reason": null
+        },
+        "expiry": "2026-08-06T21:07:00Z",
+        "receipt_links": {
+          "underwriting_id": "22222222-2222-4222-8222-222222222201",
+          "underwriting_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "evidence_ids": [
+            "11111111-1111-4111-8111-111111111101",
+            "11111111-1111-4111-8111-111111111102",
+            "11111111-1111-4111-8111-111111111103"
+          ],
+          "lead_receipt_chain_sha256": null,
+          "aegis_decision_id": null
+        },
+        "content_sha256": "1010101010101010101010101010101010101010101010101010101010101010"
+      },
+      "outcome_record": {
+        "schema": "neuruh.outcome_record.v1",
+        "outcome_id": "44444444-4444-4444-8444-444444444401",
+        "proposal_id": "33333333-3333-4333-8333-333333333301",
+        "entity": {
+          "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+          "parcel_apn": "SYN-00-0000-000",
+          "county_fips": "18000"
+        },
+        "action_taken": "no_action",
+        "timestamps": {
+          "proposed_at": "2026-07-30T21:07:00Z",
+          "approved_at": "2026-07-30T21:07:30Z",
+          "started_at": "2026-07-30T21:07:30Z",
+          "completed_at": "2026-07-30T21:08:00Z",
+          "observed_at": "2026-07-30T21:08:00Z"
+        },
+        "cost": { "usd": 0, "minutes": 5 },
+        "contact_result": null,
+        "contract_result": null,
+        "financial_result": null,
+        "cycle_time": {
+          "hours_to_complete": 0.02,
+          "days_to_close": null
+        },
+        "deviations": [],
+        "external_factors": ["synthetic case"],
+        "evidence_ids": [
+          "11111111-1111-4111-8111-111111111101"
+        ],
+        "human_grading": {
+          "grade": "success",
+          "quality": "high",
+          "notes": "machinery proof only — not a market outcome",
+          "grader_role": "operator",
+          "graded_at": "2026-07-30T21:08:00Z",
+          "calibration_eligible": false
+        },
+        "is_test": false,
+        "is_synthetic": true,
+        "forecast_version": "synthetic-forecast-v0",
+        "content_sha256": "2020202020202020202020202020202020202020202020202020202020202020"
+      },
+      "calibration_record": {
+        "schema": "neuruh.calibration_record.v1",
+        "calibration_id": "55555555-5555-4555-8555-555555555501",
+        "forecast_version": "synthetic-forecast-v0",
+        "process_version": "black-court-20260730",
+        "window": {
+          "from": "2026-07-30T00:00:00Z",
+          "to": "2026-07-30T23:59:59Z"
+        },
+        "n_samples": 0,
+        "outcome_ids": [],
+        "predicted": {},
+        "actual": {},
+        "error_metrics": {
+          "n": 0,
+          "value_mae": null,
+          "value_mape": null,
+          "range_coverage": null,
+          "disposition_accuracy": null,
+          "close_rate_error": null
+        },
+        "confidence_calibration": {
+          "bins": [],
+          "notes": "synthetic case excluded — n_samples=0 for production claims"
+        },
+        "causal_caveats": [
+          "synthetic fixtures only",
+          "no production throughput"
+        ],
+        "model_or_process": "none-production",
+        "recommended_adjustment": {
+          "type": "none",
+          "detail": "do not adjust models on synthetic",
+          "applies_to": null,
+          "status": "draft"
+        },
+        "forbidden_overfitting_rule": {
+          "rule_id": "NO_FIT_LT_30",
+          "text": "Do not change scoring weights, valuation knobs, or automated policies on fewer than 30 non-test, non-synthetic, human-graded eligible outcomes in the same process_version. Holdout required before production weight change. One-case luck is not signal.",
+          "min_samples_for_claim": 30,
+          "min_samples_for_weight_change": 100,
+          "holdout_required": true,
+          "auto_apply_forbidden": true
+        },
+        "next_sample_threshold": 30,
+        "human_acceptance": {
+          "status": "pending",
+          "actor_role": null,
+          "accepted_at": null,
+          "notes": "no claim to accept"
+        },
+        "content_sha256": "3030303030303030303030303030303030303030303030303030303030303030"
+      },
+      "manifest": {
+        "schema": "neuruh.one_case_proof_manifest.v1",
+        "manifest_id": "66666666-6666-4666-8666-666666666601",
+        "case_id": "SYN-BLACK-001",
+        "case_class": "synthetic",
+        "created_at": "2026-07-30T21:10:00Z",
+        "entity": {
+          "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+          "parcel_apn": "SYN-00-0000-000",
+          "county_fips": "18000"
+        },
+        "sections": {
+          "SIGNAL": {
+            "present": true,
+            "artifact_refs": [
+              {
+                "type": "synthetic_signal",
+                "id": "SYN-BLACK-001",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "authority": "landos-engine",
+            "notes": ["synthetic"]
+          },
+          "CANDIDATE_SCORE": {
+            "present": true,
+            "artifact_refs": [
+              {
+                "type": "synthetic_score",
+                "id": "SYN-BLACK-001-score",
+                "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              }
+            ],
+            "authority": "landos-engine",
+            "notes": []
+          },
+          "CRM_LEAD": {
+            "present": false,
+            "artifact_refs": [],
+            "authority": "crm",
+            "notes": ["synthetic — no CRM lead"]
+          },
+          "EVIDENCE": {
+            "present": true,
+            "artifact_refs": [
+              {
+                "type": "evidence_item",
+                "id": "11111111-1111-4111-8111-111111111101",
+                "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              {
+                "type": "evidence_item",
+                "id": "11111111-1111-4111-8111-111111111102",
+                "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              {
+                "type": "evidence_item",
+                "id": "11111111-1111-4111-8111-111111111103",
+                "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+              }
+            ],
+            "authority": "landos-engine",
+            "notes": []
+          },
+          "UNDERWRITING": {
+            "present": true,
+            "artifact_refs": [
+              {
+                "type": "underwriting_result_v1",
+                "id": "22222222-2222-4222-8222-222222222201",
+                "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+              }
+            ],
+            "authority": "landos-engine",
+            "notes": ["v2_projection shape included for CRM compatibility test"]
+          },
+          "ACTION_PROPOSAL": {
+            "present": true,
+            "artifact_refs": [
+              {
+                "type": "action_proposal",
+                "id": "33333333-3333-4333-8333-333333333301",
+                "sha256": "1010101010101010101010101010101010101010101010101010101010101010"
+              }
+            ],
+            "authority": "human",
+            "notes": []
+          },
+          "ACTION_RECEIPT": {
+            "present": true,
+            "artifact_refs": [
+              {
+                "type": "action_receipt",
+                "id": "no_action",
+                "sha256": "1010101010101010101010101010101010101010101010101010101010101010"
+              }
+            ],
+            "authority": "human",
+            "notes": ["no external action"]
+          },
+          "OUTCOME": {
+            "present": true,
+            "artifact_refs": [
+              {
+                "type": "outcome_record",
+                "id": "44444444-4444-4444-8444-444444444401",
+                "sha256": "2020202020202020202020202020202020202020202020202020202020202020"
+              }
+            ],
+            "authority": "human",
+            "notes": ["is_synthetic=true"]
+          },
+          "CALIBRATION_LINK": {
+            "present": true,
+            "artifact_refs": [
+              {
+                "type": "calibration_record",
+                "id": "55555555-5555-4555-8555-555555555501",
+                "sha256": "3030303030303030303030303030303030303030303030303030303030303030"
+              }
+            ],
+            "authority": "vault",
+            "notes": ["n_samples=0; synthetic excluded"]
+          }
+        },
+        "section_hashes": {
+          "SIGNAL": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "CANDIDATE_SCORE": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "CRM_LEAD": "0000000000000000000000000000000000000000000000000000000000000000",
+          "EVIDENCE": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "UNDERWRITING": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "ACTION_PROPOSAL": "1010101010101010101010101010101010101010101010101010101010101010",
+          "ACTION_RECEIPT": "1010101010101010101010101010101010101010101010101010101010101010",
+          "OUTCOME": "2020202020202020202020202020202020202020202020202020202020202020",
+          "CALIBRATION_LINK": "3030303030303030303030303030303030303030303030303030303030303030"
+        },
+        "chain_sha256": "4040404040404040404040404040404040404040404040404040404040404040",
+        "authority": {
+          "operator_role": "operator",
+          "operator_id_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "code_pins": {
+            "crm": "36530a8",
+            "landos": "e231f00",
+            "aegis": "e8850ab"
+          }
+        },
+        "gate_results": [
+          { "gate": "pii_safe", "status": "pass", "evidence_sha256": null },
+          { "gate": "not_test", "status": "pass", "evidence_sha256": null },
+          {
+            "gate": "synthetic_not_calibration_eligible",
+            "status": "pass",
+            "evidence_sha256": null
+          },
+          {
+            "gate": "underwriting_approved",
+            "status": "pass",
+            "evidence_sha256": null
+          },
+          {
+            "gate": "proposal_approved",
+            "status": "pass",
+            "evidence_sha256": null
+          }
+        ],
+        "verdict": "PASS"
+      }
+    },
+    {
+      "id": "NEGATIVE-MIX-SYNTHETIC-INTO-CALIBRATION",
+      "case_class": "synthetic",
+      "tests": ["AT-OR-02", "AT-CR-03"],
+      "expect": "FAIL",
+      "reason": "calibration_eligible must be false when is_synthetic=true",
+      "outcome_record": {
+        "schema": "neuruh.outcome_record.v1",
+        "outcome_id": "44444444-4444-4444-8444-444444444499",
+        "proposal_id": null,
+        "entity": {
+          "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+          "parcel_apn": "SYN-BAD",
+          "county_fips": "18000"
+        },
+        "action_taken": "no_action",
+        "timestamps": {},
+        "cost": {},
+        "cycle_time": {},
+        "deviations": [],
+        "external_factors": [],
+        "evidence_ids": [],
+        "human_grading": {
+          "grade": "success",
+          "calibration_eligible": true
+        },
+        "is_test": false,
+        "is_synthetic": true,
+        "content_sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+      }
+    },
+    {
+      "id": "STATE-UNDERWRITING-ZERO-PAYLOADS",
+      "tests": ["AT-SS-01"],
+      "expect": "OBSERVED",
+      "observation": {
+        "underwriting_result_populated": 0,
+        "source": "NEURUH-CANONICAL-AUDIT-20260730T173044Z"
+      }
+    },
+    {
+      "id": "STATE-PIPELINE-STAGE-AUDIT-SCOPE",
+      "tests": ["AT-SS-02"],
+      "expect": "OBSERVED",
+      "observation": {
+        "table": "public.pipeline_stage_audit",
+        "trigger_on": "public.pipeline_stages",
+        "triggers_on_lead_drag": false,
+        "rows": 0,
+        "source_migration": "084_core_spine_pipelines.sql"
+      }
+    }
+  ]
+}

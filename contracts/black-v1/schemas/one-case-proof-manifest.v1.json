@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuruh.local/contracts/one-case-proof-manifest.v1.json",
+  "title": "OneCaseProofManifestV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "manifest_id",
+    "case_id",
+    "case_class",
+    "created_at",
+    "entity",
+    "sections",
+    "section_hashes",
+    "chain_sha256",
+    "authority",
+    "gate_results",
+    "verdict"
+  ],
+  "properties": {
+    "schema": { "const": "neuruh.one_case_proof_manifest.v1" },
+    "manifest_id": { "type": "string", "format": "uuid" },
+    "case_id": { "type": "string", "minLength": 1 },
+    "case_class": { "type": "string", "enum": ["synthetic", "operator_live"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "entity": { "type": "object" },
+    "sections": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "SIGNAL",
+        "CANDIDATE_SCORE",
+        "CRM_LEAD",
+        "EVIDENCE",
+        "UNDERWRITING",
+        "ACTION_PROPOSAL",
+        "ACTION_RECEIPT",
+        "OUTCOME",
+        "CALIBRATION_LINK"
+      ],
+      "properties": {
+        "SIGNAL": { "$ref": "#/$defs/section" },
+        "CANDIDATE_SCORE": { "$ref": "#/$defs/section" },
+        "CRM_LEAD": { "$ref": "#/$defs/section" },
+        "EVIDENCE": { "$ref": "#/$defs/section" },
+        "UNDERWRITING": { "$ref": "#/$defs/section" },
+        "ACTION_PROPOSAL": { "$ref": "#/$defs/section" },
+        "ACTION_RECEIPT": { "$ref": "#/$defs/section" },
+        "OUTCOME": { "$ref": "#/$defs/section" },
+        "CALIBRATION_LINK": { "$ref": "#/$defs/section" }
+      }
+    },
+    "section_hashes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
+    },
+    "chain_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "authority": {
+      "type": "object",
+      "required": ["code_pins"],
+      "properties": {
+        "operator_role": { "type": ["string", "null"] },
+        "operator_id_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "code_pins": {
+          "type": "object",
+          "properties": {
+            "crm": { "type": "string" },
+            "landos": { "type": "string" },
+            "aegis": { "type": "string" }
+          }
+        }
+      }
+    },
+    "gate_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["gate", "status"],
+        "properties": {
+          "gate": { "type": "string" },
+          "status": { "type": "string", "enum": ["pass", "fail", "skipped"] },
+          "evidence_sha256": {
+            "type": ["string", "null"],
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "INCOMPLETE"]
+    }
+  },
+  "$defs": {
+    "section": {
+      "type": "object",
+      "required": ["present", "artifact_refs", "authority"],
+      "properties": {
+        "present": { "type": "boolean" },
+        "artifact_refs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "id", "sha256"],
+            "properties": {
+              "type": { "type": "string" },
+              "id": { "type": "string" },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        "authority": {
+          "type": "string",
+          "enum": ["landos-engine", "crm", "aegis", "vault", "human"]
+        },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

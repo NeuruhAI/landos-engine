@@ -1,0 +1,14 @@
+{
+  "source_package": "BLACK-CLOSED-LOOP-COURT-20260730T212633Z",
+  "court_manifest_sha256": "d2bf52e276dee91ffff1e54529fa6497425487b55d1d074eb157144d84c3f594",
+  "algorithm": "sha256",
+  "files": {
+    "schemas/action-proposal.v1.json": "c38010ca79e436f5d4131768e6ed3a5e84cf358e7064c977b9c338c5d8ae4322",
+    "schemas/calibration-record.v1.json": "0b096a379664f5c8c9abd1da9cba3affd777f8004499240672802f5ed6ee6427",
+    "schemas/evidence-item.v1.json": "3b4c1fad1ef690d9f7f936986a10dc3e905f8f2b1bf0dd1a7506563f35965cd0",
+    "schemas/one-case-proof-manifest.v1.json": "de42784eafc1b7bff9e11e1d035427b1a93f404d62fc5b84ccd4608b9e87fb2e",
+    "schemas/outcome-record.v1.json": "1bba54b3907fe94caaf3c981ee25b0ea7c7d5097c2f9a6f0b2355ea240c025db",
+    "schemas/underwriting-result.v1.json": "bf1e77fd862a153856932fb9d903f3bb0fe4d468b898452786fc460a1a835824",
+    "tests/acceptance-cases.json": "f1fe11798b2e37f7199332fed443d7f842fee91b10e7c0cbcc03fd13c119f1c6"
+  }
+}

@@ -330,7 +330,7 @@ def assert_insert_row_valid(values):
     return row
 
 
-def main(dry_run: bool = False, lead_ids=None) -> None:
+def main(dry_run: bool = False, lead_ids=None) -> dict:
     lead_filter = list(lead_ids) if lead_ids else None
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute(
@@ -683,7 +683,23 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                 print(f"  scores:   {brief['scores']}")
                 print(f"  contamination: {brief['contamination']}   kin: {len(brief['kin'])}")
             print("\nHARD STOP — dry-run only (nothing written). Re-run without --dry-run to project.")
-            return
+            return {
+                "leads_read": len(leads),
+                "enriched": 0,
+                "discovered_inserted": 0,
+                "recipe_stamped": 0,
+                "phones_projected": 0,
+                "non_callable_kept_phoneless": phones_cleared,
+                "dnc_suppressed": dnc_suppressed,
+                "hub_labeled": 0,
+                "bea_flagged": 0,
+                "score_projected": 0,
+                "jarvis_composed": len(jarvis_briefs),
+                "unmatched": 0,
+                "contact_candidates": contact_candidates,
+                "contact_orphans": contact_orphans,
+                "push_receipt_rows": 0,
+            }
 
         # === A8.2 CONTACT BRIDGE (RULING 2026-07-14) — sole writer of spine seller
         # contacts. Every callable lead gets its seller send-target row; a
@@ -722,6 +738,24 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
     print(f"hubs in effect ({len(hub_label)}):")
     for k in sorted(hub_label, key=lambda k: -groups[k]["count"]):
         print(f"  {hub_label[k]}")
+    return {
+        "leads_read": len(leads),
+        "enriched": enriched,
+        "discovered_inserted": discovered_inserted,
+        "recipe_stamped": recipe_stamped,
+        "phones_projected": phones_set,
+        "non_callable_kept_phoneless": phones_cleared,
+        "dnc_suppressed": dnc_suppressed,
+        "hub_labeled": hubs_stamped,
+        "bea_flagged": bea_flagged,
+        "score_projected": score_projected,
+        "jarvis_composed": jarvis_composed,
+        "unmatched": unmatched,
+        "contact_candidates": sum(contact_stats.values()),
+        "contact_bridge": dict(contact_stats),
+        "contact_orphans": 0,
+        "push_receipt_rows": len(projected_lead_ids),
+    }
 
 
 CALLABLE_OR_SUPPRESSED = """

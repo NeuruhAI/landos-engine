@@ -147,7 +147,11 @@ def main(dry_run=False):
             for lead_id, es, n in results:
                 print(f"  {lead_id}  emerging_score={es}  ({n} signal(s))")
             print("\nHARD STOP — dry-run only. Re-run without --dry-run to write owner_leads.")
-            return
+            return {
+                "temporal_qualifying_signals": len(signals),
+                "leads_scored": len(per_lead),
+                "owner_leads_updated": 0,
+            }
 
         conn.commit()
 
@@ -157,6 +161,11 @@ def main(dry_run=False):
         print(f"  lead {lead_id}  emerging_score={es}  ({n} contributing signal(s))")
     print("\nProjection is sync_to_crm.py's job (single-writer). "
           "Run `python -m scripts.sync_to_crm` next to carry it into public.acquisition_leads.")
+    return {
+        "temporal_qualifying_signals": len(signals),
+        "leads_scored": len(per_lead),
+        "owner_leads_updated": updated,
+    }
 
 
 if __name__ == "__main__":

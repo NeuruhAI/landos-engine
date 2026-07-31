@@ -1,0 +1,220 @@
+{
+  "schema": "neuruh.underwriting_case_input.v1",
+  "run_id": "orange-run-syn-black-001",
+  "case_id": "SYN-BLACK-001",
+  "case_class": "synthetic",
+  "fixture_mode": true,
+  "calibration_eligible": false,
+  "source_sha": "65321eb9b1884fc6befa96fc0cc9ef76beb2c83a",
+  "underwriting_id": "22222222-2222-4222-8222-222222222201",
+  "generated_at": "2026-07-30T21:05:00Z",
+  "method_version": "valuation-lab-v1+black-court-synthetic",
+  "entity": {
+    "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+    "parcel_apn": "SYN-00-0000-000",
+    "county_fips": "18000",
+    "source_lead_id": null,
+    "acquisition_lead_id": null,
+    "situs_fingerprint_sha256": null
+  },
+  "evidence_items": [
+    {
+      "schema": "neuruh.evidence_item.v1",
+      "evidence_id": "11111111-1111-4111-8111-111111111101",
+      "source": {
+        "system": "landos-engine",
+        "name": "synthetic.parcel",
+        "ref": "SYN-BLACK-001",
+        "ref_sha256": null
+      },
+      "acquired_at": "2026-07-30T21:00:00Z",
+      "effective_at": "2026-07-01T00:00:00Z",
+      "entity": {
+        "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+        "parcel_apn": "SYN-00-0000-000",
+        "county_fips": "18000",
+        "source_lead_id": null,
+        "acquisition_lead_id": null,
+        "situs_fingerprint_sha256": null
+      },
+      "key": "gross_acres",
+      "value": 5.0,
+      "unit": "acres",
+      "method": "human_assert",
+      "confidence": "high",
+      "conflict_status": "none",
+      "range": null,
+      "assumptions": ["synthetic fixture only"],
+      "conflict_with": [],
+      "supersedes": null,
+      "verified": true,
+      "actor_role": "operator",
+      "created_at": "2026-07-30T21:00:00Z",
+      "content_sha256": "b0a7f0f3f2c854c797840c4739cc7bf2b594f079c7ee4bee80799ad2aa37dc59",
+      "licensing": {
+        "rights_note": "synthetic fixture — not a public record",
+        "redistributable": true,
+        "retention_class": "ephemeral"
+      }
+    },
+    {
+      "schema": "neuruh.evidence_item.v1",
+      "evidence_id": "11111111-1111-4111-8111-111111111102",
+      "source": {
+        "system": "landos-engine",
+        "name": "synthetic.comps",
+        "ref": "SYN-BLACK-001-comp-band",
+        "ref_sha256": null
+      },
+      "acquired_at": "2026-07-30T21:00:00Z",
+      "effective_at": "2025-12-01T00:00:00Z",
+      "entity": {
+        "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+        "parcel_apn": "SYN-00-0000-000",
+        "county_fips": "18000",
+        "source_lead_id": null,
+        "acquisition_lead_id": null,
+        "situs_fingerprint_sha256": null
+      },
+      "key": "comp_median_ppa",
+      "value": 8000,
+      "unit": "usd_per_acre",
+      "method": "comp_median",
+      "confidence": "medium",
+      "conflict_status": "none",
+      "range": [6000, 11000],
+      "assumptions": ["three synthetic comparables in the fixture band"],
+      "conflict_with": [],
+      "supersedes": null,
+      "verified": false,
+      "actor_role": "system",
+      "created_at": "2026-07-30T21:00:00Z",
+      "content_sha256": "5ebb062f1beb2f1d87478e1e5a97fade016c9ad01550051382fdfd21e7f362aa",
+      "licensing": {
+        "rights_note": "synthetic comps — not market data",
+        "redistributable": false,
+        "retention_class": "ephemeral"
+      }
+    },
+    {
+      "schema": "neuruh.evidence_item.v1",
+      "evidence_id": "11111111-1111-4111-8111-111111111103",
+      "source": {
+        "system": "landos-engine",
+        "name": "synthetic.overlay",
+        "ref": "road_frontage_unverified",
+        "ref_sha256": null
+      },
+      "acquired_at": "2026-07-30T21:00:00Z",
+      "effective_at": "2026-07-30T21:00:00Z",
+      "entity": {
+        "tenant_id": "1840ac90-54bd-4b3d-8baf-227c8d84ab5a",
+        "parcel_apn": "SYN-00-0000-000",
+        "county_fips": "18000",
+        "source_lead_id": null,
+        "acquisition_lead_id": null,
+        "situs_fingerprint_sha256": null
+      },
+      "key": "road_frontage_ft",
+      "value": null,
+      "unit": "ft",
+      "method": "overlay_join",
+      "confidence": "none",
+      "conflict_status": "none",
+      "range": null,
+      "assumptions": ["no road-centerline layer — landlocked risk unverified"],
+      "conflict_with": [],
+      "supersedes": null,
+      "verified": false,
+      "actor_role": "system",
+      "created_at": "2026-07-30T21:00:00Z",
+      "content_sha256": "c82dfa0335c7544900e214bf43f5338a258a7584463e4d283bd303abd003fdda",
+      "licensing": {
+        "rights_note": "synthetic absence of overlay",
+        "redistributable": true,
+        "retention_class": "ephemeral"
+      }
+    }
+  ],
+  "comparable_sales": [
+    {
+      "comp_id": "SYN-COMP-LOW",
+      "sale_price": 30000,
+      "acreage": 5,
+      "sale_date": "2025-10-01T00:00:00Z",
+      "evidence_id": "11111111-1111-4111-8111-111111111102",
+      "source": "SYN-BLACK-001-comp-band"
+    },
+    {
+      "comp_id": "SYN-COMP-MEDIAN",
+      "sale_price": 40000,
+      "acreage": 5,
+      "sale_date": "2025-12-01T00:00:00Z",
+      "evidence_id": "11111111-1111-4111-8111-111111111102",
+      "source": "SYN-BLACK-001-comp-band"
+    },
+    {
+      "comp_id": "SYN-COMP-HIGH",
+      "sale_price": 55000,
+      "acreage": 5,
+      "sale_date": "2026-02-01T00:00:00Z",
+      "evidence_id": "11111111-1111-4111-8111-111111111102",
+      "source": "SYN-BLACK-001-comp-band"
+    }
+  ],
+  "buildable_fraction": null,
+  "in_sfha": null,
+  "distance_to_water_m": null,
+  "road_frontage_ft": null,
+  "zoning": {
+    "code": null,
+    "description": null,
+    "confirmed": false,
+    "source": null
+  },
+  "constraints": {
+    "landlocked": null,
+    "road_frontage_ft": null,
+    "road_type": null,
+    "wetlands_pct": null,
+    "fema_flood_pct": null,
+    "fema_zone": null,
+    "slope_avg_pct": null,
+    "buildable_pct": null,
+    "easements": [],
+    "notes": ["road frontage unverified"]
+  },
+  "assumptions": [
+    {
+      "name": "synthetic_comp_count",
+      "value": 3,
+      "method": "human_assert",
+      "detail": "Fixture count only; not a production market claim.",
+      "evidence_ids": ["11111111-1111-4111-8111-111111111102"]
+    }
+  ],
+  "risk": {
+    "access": "unverified",
+    "flood": "unknown",
+    "title": "unknown",
+    "market": "synthetic"
+  },
+  "counter_analysis": {
+    "falsifiers": ["no real comps", "road frontage unverified", "zoning unknown"],
+    "worst_case_loss": null,
+    "kill_criteria": ["confirmed landlocked", "DNC if live"]
+  },
+  "human_approval": {
+    "required": true,
+    "status": "approved",
+    "actor_role": "operator",
+    "actor_id_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "approved_at": "2026-07-30T21:06:00Z",
+    "notes": "synthetic machinery approval only; no offer or contract authority"
+  },
+  "mao_pct": 0.7,
+  "mao_repairs": 0,
+  "mao_fee_pct": 0,
+  "mao_fee_flat": 0,
+  "include_v2_projection": true
+}

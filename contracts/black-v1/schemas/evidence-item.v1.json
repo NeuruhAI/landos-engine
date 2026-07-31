@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuruh.local/contracts/evidence-item.v1.json",
+  "title": "EvidenceItemV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "evidence_id",
+    "source",
+    "acquired_at",
+    "effective_at",
+    "entity",
+    "value",
+    "unit",
+    "method",
+    "confidence",
+    "conflict_status",
+    "content_sha256",
+    "licensing"
+  ],
+  "properties": {
+    "schema": { "const": "neuruh.evidence_item.v1" },
+    "evidence_id": { "type": "string", "format": "uuid" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "name"],
+      "properties": {
+        "system": {
+          "type": "string",
+          "enum": ["landos-engine", "crm", "ingest", "human", "aegis", "external"]
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "ref": { "type": ["string", "null"] },
+        "ref_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "acquired_at": { "type": "string", "format": "date-time" },
+    "effective_at": { "type": "string", "format": "date-time" },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenant_id"],
+      "properties": {
+        "tenant_id": { "type": "string", "format": "uuid" },
+        "parcel_apn": { "type": ["string", "null"] },
+        "county_fips": { "type": ["string", "null"] },
+        "source_lead_id": { "type": ["string", "null"], "format": "uuid" },
+        "acquisition_lead_id": { "type": ["string", "null"], "format": "uuid" },
+        "situs_fingerprint_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "key": { "type": ["string", "null"] },
+    "value": {
+      "type": ["number", "string", "boolean", "null", "object", "array"]
+    },
+    "unit": { "type": ["string", "null"] },
+    "method": {
+      "type": "string",
+      "enum": [
+        "direct_read",
+        "comp_median",
+        "overlay_join",
+        "human_assert",
+        "model_infer"
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["none", "low", "medium", "high"]
+    },
+    "conflict_status": {
+      "type": "string",
+      "enum": ["none", "suspected", "confirmed", "resolved"]
+    },
+    "range": {
+      "type": ["array", "null"],
+      "items": { "type": ["number", "null"] },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "assumptions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "conflict_with": {
+      "type": "array",
+      "items": { "type": "string", "format": "uuid" }
+    },
+    "supersedes": { "type": ["string", "null"], "format": "uuid" },
+    "verified": { "type": ["boolean", "null"] },
+    "actor_role": {
+      "type": ["string", "null"],
+      "enum": ["system", "operator", "desk", "admin", null]
+    },
+    "created_at": { "type": ["string", "null"], "format": "date-time" },
+    "content_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "licensing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rights_note", "redistributable", "retention_class"],
+      "properties": {
+        "rights_note": { "type": "string", "minLength": 1 },
+        "redistributable": { "type": "boolean" },
+        "retention_class": {
+          "type": "string",
+          "enum": ["operational", "ephemeral", "vault_only"]
+        }
+      }
+    }
+  }
+}
