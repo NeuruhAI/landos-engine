@@ -5,7 +5,7 @@
   "case_class": "synthetic",
   "fixture_mode": true,
   "calibration_eligible": false,
-  "source_sha": "e231f00a9994a2c46afa72b5d6b59991bd89a7ad",
+  "source_sha": "65321eb9b1884fc6befa96fc0cc9ef76beb2c83a",
   "underwriting_id": "22222222-2222-4222-8222-222222222201",
   "generated_at": "2026-07-30T21:05:00Z",
   "method_version": "valuation-lab-v1+black-court-synthetic",
