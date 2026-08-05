@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuruh.local/contracts/nc_dps_score_receipt.v1.schema.json",
+  "title": "NC DPS Score Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "property_id",
+    "as_of",
+    "input_sha256",
+    "weights_sha256",
+    "scores",
+    "factors",
+    "contradictions",
+    "section_hashes",
+    "chain_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "nc_dps_score_receipt.v1"
+    },
+    "property_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "as_of": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "weights_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "raw_dps_score",
+        "normalized_dps_score",
+        "opportunity_score",
+        "urgency_score",
+        "evidence_confidence",
+        "composite_priority",
+        "route"
+      ],
+      "properties": {
+        "raw_dps_score": {
+          "type": "number"
+        },
+        "normalized_dps_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "opportunity_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "urgency_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "evidence_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "composite_priority": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "route": {
+          "type": "string"
+        }
+      }
+    },
+    "factors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "factor",
+          "value",
+          "points",
+          "evidence_source_ids"
+        ],
+        "properties": {
+          "factor": {
+            "type": "string"
+          },
+          "value": {
+            "type": "number"
+          },
+          "points": {
+            "type": "number"
+          },
+          "evidence_source_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "section_hashes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
+    },
+    "chain_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}
