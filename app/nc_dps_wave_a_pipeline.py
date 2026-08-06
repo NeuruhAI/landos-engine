@@ -312,7 +312,13 @@ def build(signals_path: Path, output_dir: Path, schema_path: Path) -> dict[str, 
     for packet in packets:
         priority = packet["scores"]["composite_priority"]
         route = receipt_by_property[packet["property_id"]]["route"]
-        if priority >= 35:
+        source_urls = {
+            source.get("source_url")
+            for source in packet.get("source_records", [])
+            if source.get("source_url")
+        }
+        corroborated = len(source_urls) >= 2
+        if priority >= 45 and corroborated:
             crm.append({
                 "projection_version": "nc_dps_crm_projection.v1",
                 "external_key": packet["property_id"],
