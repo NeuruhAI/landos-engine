@@ -16,7 +16,12 @@ from app.nc_dps_contract import (
     validate_opportunity_lanes,
 )
 
-COUNTY_NAMES = {"37119": "Mecklenburg", "37179": "Union", "37135": "Orange", "37057": "Davidson"}
+COUNTY_NAMES = {
+    "37119": "Mecklenburg",
+    "37179": "Union",
+    "37135": "Orange",
+    "37057": "Davidson",
+}
 
 
 def utc_now() -> str:
@@ -24,7 +29,12 @@ def utc_now() -> str:
 
 
 def canonical_bytes(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
 
 
 def sha256(value: Any) -> str:
@@ -32,12 +42,8 @@ def sha256(value: Any) -> str:
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows = []
     with path.open(encoding="utf-8") as fh:
-        for line in fh:
-            if line.strip():
-                rows.append(json.loads(line))
-    return rows
+        return [json.loads(line) for line in fh if line.strip()]
 
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -45,6 +51,12 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as fh:
         for row in rows:
             fh.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+
+
+def numeric(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def owner_type(owner: str | None) -> str:
@@ -60,42 +72,80 @@ def owner_type(owner: str | None) -> str:
     return "individual" if text else "unknown"
 
 
-def build_property(signals: list[dict[str, Any]], schema: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    base = max(signals, key=lambda s: (s["source_type"] == "title_instrument", s.get("confidence", 0)))
-    details = [s.get("detail_json") or {} for s in signals]
-    fips = base["geography"]
-    parcel = base["parcel_apn"]
-    owner = base.get("owner_name") or None
+def build_property(
+    signals: list[dict[str, Any]],
+    schema: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    distress = [
+        row for row in signals
+        if row.get("source_type") in {"taxdelinquent", "taxsale", "tax_foreclosure_case"}
+    ]
+    context = [
+        row for row in signals
+        if row.get("source_type") == "title_instrument"
+    ]
+    if not distress:
+        raise ValueError("qualified property group has no distress evidence")
+
+    base = max(context or distress, key=lambda row: float(row.get("confidence", 0)))
+    details = [row.get("detail_json") or {} for row in signals]
+    fips = str(base["geography"])
+    parcel = str(base["parcel_apn"])
+    owner = base.get("owner_name") or distress[0].get("owner_name") or None
     property_id = f"NC:{fips}:{parcel}"
 
-    assessed_values = [d.get("assessed_value") for d in details if isinstance(d.get("assessed_value"), (int, float))]
+    assessed_values = [
+        numeric(detail.get("assessed_value"))
+        for detail in details
+    ]
+    assessed_values = [value for value in assessed_values if value is not None]
     assessed = max(assessed_values) if assessed_values else None
-    tax_balances = [d.get("tax_balance") for d in details if isinstance(d.get("tax_balance"), (int, float))]
-    tax_balance = sum(tax_balances) if tax_balances else None
-    tax_years = sorted({int(d["tax_year"]) for d in details if isinstance(d.get("tax_year"), int)})
-    out_of_state = any(d.get("out_of_state") is True for d in details)
-    mailing = next((d.get("mailing_address") for d in details if d.get("mailing_address")), None)
-    address = next((s.get("raw_address") for s in signals if s.get("raw_address")), None)
-    types = {s["source_type"] for s in signals}
 
-    triggers = []
-    if "taxdelinquent" in types or "taxsale" in types or "tax_foreclosure_case" in types:
-        triggers.append("tax_distress")
-    if "civil_case" in types or "lis_pendens" in types or "tax_foreclosure_case" in types:
+    balances = [
+        numeric((row.get("detail_json") or {}).get("tax_balance"))
+        for row in distress
+    ]
+    balances = [value for value in balances if value is not None and value > 0]
+    tax_balance = sum(balances) if balances else None
+
+    tax_years = sorted({
+        int((row.get("detail_json") or {})["tax_year"])
+        for row in distress
+        if isinstance((row.get("detail_json") or {}).get("tax_year"), int)
+    })
+
+    out_of_state = any(detail.get("out_of_state") is True for detail in details)
+    mailing = next(
+        (detail.get("mailing_address") for detail in details if detail.get("mailing_address")),
+        None,
+    )
+    address = next(
+        (row.get("raw_address") for row in context + distress if row.get("raw_address")),
+        None,
+    )
+
+    types = {row.get("source_type") for row in signals}
+    source_urls = {
+        str((row.get("detail_json") or {}).get("source_url") or row.get("source") or "")
+        for row in signals
+    }
+    source_urls.discard("")
+    corroborated = bool(context) and len(source_urls) >= 2
+
+    triggers = ["tax_distress"]
+    if types & {"civil_case", "lis_pendens", "tax_foreclosure_case"}:
         triggers.append("court_action")
-    if "probate" in types or "pre_probate_death" in types:
+    if types & {"probate", "pre_probate_death"}:
         triggers.append("death_or_probate")
     if "judgment_lien" in types:
         triggers.append("recorded_lien_or_judgment")
-    if "vacancy" in types or "code_violation" in types:
+    if types & {"vacancy", "code_violation"}:
         triggers.append("vacancy_or_code")
-    if "entity_status" in types:
-        triggers.append("entity_failure")
     if out_of_state:
         triggers.append("absentee_or_out_of_state")
     triggers = list(dict.fromkeys(triggers))
 
-    active = set()
+    active: set[str] = set()
     if out_of_state:
         active.update({"absentee_owner", "out_of_state_owner"})
     if len(tax_years) >= 5:
@@ -106,41 +156,65 @@ def build_property(signals: list[dict[str, Any]], schema: dict[str, Any]) -> tup
     raw_score = raw_dps_score(active)
     normalized = normalized_dps_score(active)
 
-    equity_lane = 5.0
-    if assessed is not None:
-        equity_lane = 20.0 if assessed >= 250000 else 15.0 if assessed >= 150000 else 10.0
-    distress_lane = 25.0 if "tax_foreclosure_case" in types or "taxsale" in types else 18.0 if "taxdelinquent" in types else 0.0
-    title_lane = 8.0 if "judgment_lien" in types else 0.0
-    owner_lane = 10.0 if out_of_state else 0.0
-    market_lane = 5.0 if assessed and assessed >= 125000 else 2.0
+    if assessed is None:
+        equity_lane = 0.0
+    elif assessed >= 250000:
+        equity_lane = 20.0
+    elif assessed >= 150000:
+        equity_lane = 15.0
+    elif assessed >= 75000:
+        equity_lane = 10.0
+    else:
+        equity_lane = 5.0
+
+    if "taxsale" in types:
+        distress_lane = 25.0
+    elif "tax_foreclosure_case" in types:
+        distress_lane = 20.0
+    else:
+        distress_lane = 8.0
+
     lanes = {
         "equity_quality": equity_lane,
         "tax_and_court_distress": distress_lane,
-        "title_curative_opportunity": title_lane,
-        "owner_detachment": owner_lane,
-        "market_liquidity": market_lane,
+        "title_curative_opportunity": 8.0 if "judgment_lien" in types else 0.0,
+        "owner_detachment": 10.0 if out_of_state else 0.0,
+        "market_liquidity": 5.0 if assessed is not None and assessed >= 250000 else 2.0 if assessed is not None and assessed >= 125000 else 0.0,
     }
     opportunity = validate_opportunity_lanes(lanes)
-    urgency = 75.0 if "taxsale" in types else 62.0 if "tax_foreclosure_case" in types else 48.0 if "taxdelinquent" in types else 28.0
-    evidence = round(sum(float(s.get("confidence", 0)) for s in signals) / len(signals) * 100, 2)
+    urgency = 75.0 if "taxsale" in types else 62.0 if "tax_foreclosure_case" in types else 35.0
+
+    average_confidence = round(
+        sum(float(row.get("confidence", 0)) for row in signals) / len(signals) * 100,
+        2,
+    )
+    evidence = average_confidence if corroborated else min(35.0, average_confidence)
     priority = composite_priority(opportunity, urgency, evidence)
     route = route_priority(priority)
 
-    years_bucket = "unknown"
-    if tax_years:
-        years_bucket = "one_year" if len(tax_years) == 1 else "two_to_four_years" if len(tax_years) <= 4 else "five_plus_years"
-    elif "taxdelinquent" not in types:
-        years_bucket = "none"
+    if not corroborated:
+        queue = "enrichment_backlog"
+    elif priority >= 45:
+        queue = "crm_research"
+    else:
+        queue = "analyst_research"
 
-    matched_recipes = []
-    if "tax_distress" in triggers and out_of_state:
-        matched_recipes.append("tax_distress_absentee_owner")
-    if "tax_distress" in triggers:
-        matched_recipes.append("published_tax_distress")
-    if out_of_state:
-        matched_recipes.append("long_term_absentee_enrichment")
+    years_bucket = (
+        "one_year" if len(tax_years) == 1
+        else "two_to_four_years" if 2 <= len(tax_years) <= 4
+        else "five_plus_years" if len(tax_years) >= 5
+        else "unknown"
+    )
+
+    if "court_action" in triggers:
+        recommended = "stalled_tax_case_resolution"
+    elif corroborated and out_of_state:
+        recommended = "tax_distress_absentee_owner"
+    else:
+        recommended = "monitor"
 
     governance_keys = schema["properties"]["governance"]["properties"].keys()
+
     packet = {
         "schema_version": "nc_dps_property_packet.v1",
         "property_id": property_id,
@@ -161,7 +235,7 @@ def build_property(signals: list[dict[str, Any]], schema: dict[str, Any]) -> tup
             "judgment_and_lien_balance": None,
             "estimated_equity": None,
             "equity_ratio": None,
-            "equity_confidence": 25.0 if assessed is not None else 0.0,
+            "equity_confidence": 35.0 if corroborated and assessed is not None else 0.0,
         },
         "tax_distress": {
             "delinquent_years": tax_years,
@@ -169,7 +243,7 @@ def build_property(signals: list[dict[str, Any]], schema: dict[str, Any]) -> tup
             "tax_balance": tax_balance,
             "delinquency_bucket": years_bucket,
             "foreclosure_case_number": None,
-            "foreclosure_stage": "unknown" if "taxdelinquent" in types else "none",
+            "foreclosure_stage": "unknown" if "court_action" in triggers else "none",
             "sale_date": None,
             "upset_bid_deadline": None,
         },
@@ -196,7 +270,7 @@ def build_property(signals: list[dict[str, Any]], schema: dict[str, Any]) -> tup
         },
         "title": {
             "free_and_clear_status": "unknown",
-            "deed_chain_status": "unknown",
+            "deed_chain_status": "incomplete" if corroborated else "unknown",
             "title_issue_codes": [],
             "competing_deed_flag": False,
             "fraud_flag": False,
@@ -223,13 +297,13 @@ def build_property(signals: list[dict[str, Any]], schema: dict[str, Any]) -> tup
             "trigger_classes": triggers,
         },
         "recipes": {
-            "matched_recipes": matched_recipes,
-            "recommended_recipe": matched_recipes[0] if matched_recipes else None,
+            "matched_recipes": [recommended] if recommended != "monitor" else [],
+            "recommended_recipe": recommended,
         },
         "risks": [
             "assessed_value_is_not_verified_market_value",
             "mortgage_and_title_balances_not_yet_verified",
-        ],
+        ] + ([] if corroborated else ["single_source_distress_requires_enrichment"]),
         "next_research_steps": [
             "Verify current tax balance and foreclosure stage with the county tax office.",
             "Pull the current deed and prior conveyances from the Register of Deeds.",
@@ -239,27 +313,29 @@ def build_property(signals: list[dict[str, Any]], schema: dict[str, Any]) -> tup
         ],
         "source_records": [
             {
-                "source_id": s["signal_id"],
-                "source_url": (s.get("detail_json") or {}).get("source_url") or "unknown://source",
-                "retrieved_at": s.get("fetched_at") or utc_now(),
+                "source_id": str(row["signal_id"]),
+                "source_url": str((row.get("detail_json") or {}).get("source_url") or row.get("source") or "unknown://source"),
+                "retrieved_at": str(row.get("fetched_at") or utc_now()),
                 "evidence_class": "verified_public_record",
-                "confidence": float(s.get("confidence", 0)),
+                "confidence": float(row.get("confidence", 0)),
                 "field_paths": ["identity", "valuation", "ownership", "tax_distress"],
             }
-            for s in signals
+            for row in signals
         ],
         "governance": {key: False for key in governance_keys},
     }
 
-    packet_hash = sha256(packet)
     receipt = {
-        "schema_version": "nc_dps_wave_a_score_receipt.v1",
+        "schema_version": "nc_dps_wave_a_score_receipt.v2",
         "property_id": property_id,
         "generated_at": utc_now(),
         "active_raw_signals": sorted(active),
         "opportunity_lanes": lanes,
         "route": route,
-        "property_packet_sha256": packet_hash,
+        "queue": queue,
+        "corroborated": corroborated,
+        "source_family_count": len(source_urls),
+        "property_packet_sha256": sha256(packet),
         "input_signal_sha256": sha256(signals),
         "score_components": packet["scores"],
     }
@@ -271,29 +347,38 @@ def build(signals_path: Path, output_dir: Path, schema_path: Path) -> dict[str, 
     output_dir.mkdir(parents=True, exist_ok=True)
     signals = read_jsonl(signals_path)
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for signal in signals:
-        if signal.get("geography") and signal.get("parcel_apn"):
-            groups[(signal["geography"], signal["parcel_apn"])].append(signal)
+
+    for row in signals:
+        if row.get("geography") and row.get("parcel_apn"):
+            groups[(str(row["geography"]), str(row["parcel_apn"]))].append(row)
 
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    packets, receipts = [], []
-    for _, rows in groups.items():
-        packet, receipt = build_property(rows, schema)
+    packets: list[dict[str, Any]] = []
+    receipts: list[dict[str, Any]] = []
+
+    for group in groups.values():
+        packet, receipt = build_property(group, schema)
         packets.append(packet)
         receipts.append(receipt)
-    packets.sort(key=lambda p: p["scores"]["composite_priority"], reverse=True)
-    receipt_by_property = {r["property_id"]: r for r in receipts}
+
+    packets.sort(key=lambda packet: packet["scores"]["composite_priority"], reverse=True)
+    by_property = {receipt["property_id"]: receipt for receipt in receipts}
+    ordered_receipts = [by_property[packet["property_id"]] for packet in packets]
 
     write_jsonl(output_dir / "property_packets.jsonl", packets)
-    write_jsonl(output_dir / "score_receipts.jsonl", [receipt_by_property[p["property_id"]] for p in packets])
+    write_jsonl(output_dir / "score_receipts.jsonl", ordered_receipts)
 
     with (output_dir / "ranked_properties.csv").open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=[
-            "rank", "property_id", "county", "parcel_id", "property_address", "owner_of_record",
-            "assessed_value_proxy", "tax_balance", "composite_priority", "route", "triggers",
-        ])
+        fields = [
+            "rank", "property_id", "county", "parcel_id", "property_address",
+            "owner_of_record", "assessed_value_proxy", "tax_balance",
+            "composite_priority", "route", "queue", "corroborated",
+            "source_family_count", "triggers",
+        ]
+        writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
         for rank, packet in enumerate(packets, 1):
+            receipt = by_property[packet["property_id"]]
             writer.writerow({
                 "rank": rank,
                 "property_id": packet["property_id"],
@@ -304,54 +389,48 @@ def build(signals_path: Path, output_dir: Path, schema_path: Path) -> dict[str, 
                 "assessed_value_proxy": packet["valuation"]["conservative_as_is_value"],
                 "tax_balance": packet["valuation"]["tax_balance"],
                 "composite_priority": packet["scores"]["composite_priority"],
-                "route": receipt_by_property[packet["property_id"]]["route"],
+                "route": receipt["route"],
+                "queue": receipt["queue"],
+                "corroborated": receipt["corroborated"],
+                "source_family_count": receipt["source_family_count"],
                 "triggers": "|".join(packet["scores"]["trigger_classes"]),
             })
 
-    crm, transactions, dispositions = [], [], []
-    for packet in packets:
-        priority = packet["scores"]["composite_priority"]
-        route = receipt_by_property[packet["property_id"]]["route"]
-        if priority >= 35:
-            crm.append({
-                "projection_version": "nc_dps_crm_projection.v1",
-                "external_key": packet["property_id"],
-                "pipeline": "acquisition",
-                "stage": "research_queue",
-                "status": route,
-                "priority": priority,
-                "property": packet["identity"],
-                "county_fips": packet["county_fips"],
-                "parcel_id": packet["parcel_id"],
-                "recommended_recipe": packet["recipes"]["recommended_recipe"],
-                "next_actions": packet["next_research_steps"],
-                "source_count": len(packet["source_records"]),
-                "write_authorized": False,
-            })
-        if priority >= 55:
-            transactions.append({
-                "projection_version": "nc_dps_transaction_projection.v1",
-                "property_id": packet["property_id"],
-                "status": "pre_transaction_diligence",
-                "tasks": [
-                    "verify_title_and_all_interest_holders",
-                    "verify_taxes_liens_mortgages_and_bankruptcy",
-                    "verify_occupancy_and_property_condition",
-                    "prepare_primary_fallback_and_floor_strategy",
-                    "obtain_principal_and_legal_approval_before_execution",
-                ],
-                "execution_authorized": False,
-            })
-        if priority >= 55:
-            dispositions.append({
-                "projection_version": "nc_dps_disposition_projection.v1",
-                "property_id": packet["property_id"],
-                "status": "blocked_until_control_and_title_verified",
-                "candidate_channels": ["broker_mls", "investor_sale", "builder_land_sale", "hold_or_rental"],
-                "pricing_authorized": False,
-                "marketing_authorized": False,
-            })
+    research = [
+        packet for packet in packets
+        if by_property[packet["property_id"]]["queue"] in {"analyst_research", "crm_research"}
+    ]
+    backlog = [
+        packet for packet in packets
+        if by_property[packet["property_id"]]["queue"] == "enrichment_backlog"
+    ]
+    crm = [
+        {
+            "projection_version": "nc_dps_crm_projection.v2",
+            "external_key": packet["property_id"],
+            "pipeline": "acquisition",
+            "stage": "research_queue",
+            "status": by_property[packet["property_id"]]["route"],
+            "priority": packet["scores"]["composite_priority"],
+            "property": packet["identity"],
+            "county_fips": packet["county_fips"],
+            "parcel_id": packet["parcel_id"],
+            "recommended_recipe": packet["recipes"]["recommended_recipe"],
+            "next_actions": packet["next_research_steps"],
+            "source_count": len(packet["source_records"]),
+            "write_authorized": False,
+        }
+        for packet in packets
+        if by_property[packet["property_id"]]["queue"] == "crm_research"
+    ]
 
+    # Transactions and dispositions remain empty until verified equity and
+    # control/title evidence exist. This is an honest gate, not a failed build.
+    transactions: list[dict[str, Any]] = []
+    dispositions: list[dict[str, Any]] = []
+
+    write_jsonl(output_dir / "research_queue.jsonl", research)
+    write_jsonl(output_dir / "enrichment_backlog.jsonl", backlog)
     write_jsonl(output_dir / "crm_projection.jsonl", crm)
     write_jsonl(output_dir / "transaction_projection.jsonl", transactions)
     write_jsonl(output_dir / "disposition_projection.jsonl", dispositions)
@@ -360,9 +439,11 @@ def build(signals_path: Path, output_dir: Path, schema_path: Path) -> dict[str, 
         "generated_at": utc_now(),
         "input_signals": len(signals),
         "property_packets": len(packets),
+        "research_queue": len(research),
+        "enrichment_backlog": len(backlog),
         "crm_projections": len(crm),
-        "transaction_projections": len(transactions),
-        "disposition_projections": len(dispositions),
+        "transaction_projections": 0,
+        "disposition_projections": 0,
         "top_priority": packets[0]["scores"]["composite_priority"] if packets else None,
     }
     (output_dir / "engine_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
