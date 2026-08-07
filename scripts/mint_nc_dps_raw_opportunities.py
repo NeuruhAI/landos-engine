@@ -6,10 +6,6 @@ import json
 import uuid
 from pathlib import Path
 
-import psycopg
-from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
-
 from app.config import DATABASE_URL
 from app.nc_dps_raw_writer import build_raw_candidates, read_jsonl
 from app.score_absentee import classify_owner_type
@@ -49,6 +45,12 @@ def main() -> None:
         print("\nNo score threshold or qualification is required for raw intake.")
         print("Use --apply only after reviewing the exact raw opportunity set.")
         return
+
+    # Database dependencies are intentionally imported only for --apply. The
+    # default dry-run must work in a clean repo checkout without psycopg.
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg.types.json import Jsonb
 
     inserted = updated = 0
     lead_ids: list[str] = []
