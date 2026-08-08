@@ -33,11 +33,13 @@ FIREWALL / RAILS (JOB 5 directive):
     only still-phoneless leads and re-stamps provenance in place (converges).
     Within the CSV, (target_key, normalized number) de-dupes.
 
-KEY BRIDGE: the staged target_key IS public.acquisition_leads.lead_id (the
-skip-trace targets were exported from the CRM board, source_kind
-acq_lead_distress). The spine row is acquisition_leads.source_lead_id ->
-landos.owner_leads.lead_id. Targets with no source_lead_id (CRM-native leads)
-are a named skip — no spine row to write.
+KEY BRIDGE: a full-file census runs before planning and checks target_key
+against acquisition_leads.lead_id, acquisition_leads.source_lead_id, and
+owner_leads.lead_id. The staged CRM convention hops lead_id -> source_lead_id
+-> owner_leads.lead_id. The older LandOS convention is recognized as the
+paired source_lead_id + owner_leads.lead_id namespace, then routed away to its
+existing importer because it lacks this intake's staged DNC receipt columns.
+Mixed, colliding, or incomplete conventions stop before any write.
 
 TRACERFY ToS (pinned): traced phones are INTERNAL-USE-ONLY — for our own
 outreach on these leads. They are NEVER exported, resold, or shared to a third
@@ -60,7 +62,7 @@ from app.config import DATABASE_URL
 from app.run_manifest import sha256_file, git_commit_info, utc_now, insert_run_log
 from scripts.import_resolved import norm_phone   # reuse the spine normalizer
 
-__VERSION__ = "1.0.0"
+__VERSION__ = "1.1.0"
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 SOURCE_STAMP = "tracerfy_20260713"
@@ -75,6 +77,9 @@ STAGED_CSV = os.path.expanduser(
 CONFIDENCE_BY_TYPE = {"mobile": 0.80, "landline": 0.70}
 DEFAULT_CONFIDENCE = 0.70
 SYNC_THRESHOLD = 0.6   # mirror scripts/sync_to_crm.THRESHOLD (projection gate)
+
+CRM_LEAD_ID = "crm_lead_id"
+LANDOS_LEAD_ID = "landos_lead_id"
 
 
 # ---- pure helpers -----------------------------------------------------------
@@ -191,17 +196,31 @@ def load_staged(csv_path: str):
 
     Rows stay grouped long enough to retain DNC-only target verdicts. build_phones
     remains the hard boundary that prevents a DNC digit entering the spine.
+    Existing file formats are preserved: staged files expose target_key while
+    tracerfy_resolved files expose lead_id. The latter is loaded only so its
+    keys can be censused before run() routes it to scripts.import_resolved.
     """
     with open(csv_path, newline="") as f:
-        all_rows = list(csv.DictReader(f))
+        reader = csv.DictReader(f)
+        all_rows = list(reader)
+        fields = set(reader.fieldnames or [])
+    if "target_key" in fields:
+        key_column = "target_key"
+    elif "lead_id" in fields:
+        key_column = "lead_id"
+    else:
+        raise RuntimeError(
+            "STOP — input has neither target_key nor lead_id; cannot census keys"
+        )
     clean = [r for r in all_rows if is_scrub_pass(r)]
     dropped = [r for r in all_rows if not is_scrub_pass(r)]
     by_target: Dict[str, List[Dict[str, str]]] = defaultdict(list)
     for r in all_rows:
-        by_target[(r.get("target_key") or "").strip()].append(r)
+        by_target[(r.get(key_column) or "").strip()].append(r)
     verdicts = {k: target_verdict(v) for k, v in by_target.items()}
     stats = {
         "csv_rows": len(all_rows),
+        "key_column": key_column,
         "scrub_pass_rows": len(clean),
         "scrub_dropped_rows": len(dropped),
         "dropped_flags": _count(dropped, "scrub_flags"),
@@ -228,6 +247,33 @@ def _count(rows, col):
 
 # ---- the intake -------------------------------------------------------------
 
+KEY_CENSUS_SQL = """
+    with input_keys as (
+        select unnest(%(keys)s::text[]) as target_key
+    )
+    select k.target_key,
+           (
+               select count(*)
+               from public.acquisition_leads a
+               where a.tenant_id = %(tenant)s
+                 and a.lead_id::text = k.target_key
+           ) as crm_lead_id_matches,
+           (
+               select count(*)
+               from public.acquisition_leads a
+               where a.tenant_id = %(tenant)s
+                 and a.source_lead_id::text = k.target_key
+           ) as crm_source_lead_id_matches,
+           (
+               select count(*)
+               from landos.owner_leads ol
+               where ol.tenant_id = %(tenant)s
+                 and ol.lead_id::text = k.target_key
+           ) as landos_lead_id_matches
+    from input_keys k
+    order by k.target_key
+"""
+
 BRIDGE_SQL = """
     select a.lead_id::text          as target_key,
            a.source_lead_id::text   as owner_lead_id,
@@ -239,7 +285,8 @@ BRIDGE_SQL = """
     from public.acquisition_leads a
     left join landos.owner_leads ol
       on ol.lead_id = a.source_lead_id and ol.tenant_id = %(tenant)s
-    where a.lead_id::text = any(%(keys)s)
+    where a.tenant_id = %(tenant)s
+      and a.lead_id::text = any(%(keys)s)
 """
 
 WRITE_SQL = """
@@ -254,15 +301,83 @@ WRITE_SQL = """
 """
 
 
+def summarize_key_census(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    return {
+        "target_keys": len(rows),
+        "crm_lead_id": sum(int(r["crm_lead_id_matches"]) > 0 for r in rows),
+        "crm_source_lead_id": sum(
+            int(r["crm_source_lead_id_matches"]) > 0 for r in rows
+        ),
+        "landos_lead_id": sum(int(r["landos_lead_id_matches"]) > 0 for r in rows),
+    }
+
+
+def select_key_convention(rows: List[Dict[str, Any]]) -> str:
+    """Choose one estate-wide key convention; never infer from a filename.
+
+    A LandOS lead ID is expected to hit both acquisition_leads.source_lead_id
+    and owner_leads.lead_id. Those two hits are one semantic convention, not
+    an ambiguity. Any per-key overlap, mixture, orphan, duplicate source match,
+    or unmapped key refuses the whole file before bridge planning.
+    """
+    if not rows:
+        raise RuntimeError("STOP — key convention census found no target keys")
+
+    def pattern(row: Dict[str, Any]) -> tuple[int, int, int]:
+        return (
+            int(row["crm_lead_id_matches"]),
+            int(row["crm_source_lead_id_matches"]),
+            int(row["landos_lead_id_matches"]),
+        )
+
+    patterns = {row["target_key"]: pattern(row) for row in rows}
+    if all(value == (1, 0, 0) for value in patterns.values()):
+        return CRM_LEAD_ID
+    if all(value == (0, 1, 1) for value in patterns.values()):
+        return LANDOS_LEAD_ID
+
+    examples = ", ".join(
+        f"{key[:8]}…={value}" for key, value in list(patterns.items())[:5]
+    )
+    raise RuntimeError(
+        "STOP — ambiguous or unsupported target_key convention; expected every "
+        "key to match exactly CRM lead_id=(1,0,0) or the paired "
+        "CRM source_lead_id + LandOS lead_id=(0,1,1). "
+        f"Observed examples [crm_pk, crm_source, landos]: {examples}"
+    )
+
+
+def _print_key_census(summary: Dict[str, int], key_column: str) -> None:
+    total = summary["target_keys"]
+    print(f"\n{'='*72}\nTARGET KEY CONVENTION CENSUS\n{'='*72}")
+    print(f"  distinct {key_column} values: {total}")
+    print("  public.acquisition_leads.lead_id:        "
+          f"{summary['crm_lead_id']}/{total}")
+    print("  public.acquisition_leads.source_lead_id: "
+          f"{summary['crm_source_lead_id']}/{total}")
+    print("  landos.owner_leads.lead_id:              "
+          f"{summary['landos_lead_id']}/{total}")
+
+
+def _print_key_route(convention: str) -> None:
+    hop = (
+        "target_key -> acquisition_leads.lead_id -> "
+        "acquisition_leads.source_lead_id -> owner_leads.lead_id"
+        if convention == CRM_LEAD_ID
+        else "target_key -> acquisition_leads.source_lead_id "
+             "-> owner_leads.lead_id"
+    )
+    print(f"  convention: {convention}")
+    print(f"  bridge: {hop}")
+
+
 def run(csv_path: str, dry_run: bool = True, limit: int | None = None) -> Dict[str, Any]:
     run_id = str(uuid.uuid4())
     started = utc_now()
     csv_sha = sha256_file(csv_path)
     by_target, stats = load_staged(csv_path)
 
-    targets = sorted(by_target)
-    if limit:
-        targets = targets[:limit]
+    all_targets = sorted(by_target)
 
     outcome = {"updated": 0, "landed": 0, "marked_dnc": 0,
                "receipt_refreshed": 0, "skip_unmapped": 0, "skip_no_spine": 0,
@@ -271,6 +386,21 @@ def run(csv_path: str, dry_run: bool = True, limit: int | None = None) -> Dict[s
     rows_out = []
 
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+        # Census the complete input before --limit or any bridge/write planning.
+        cur.execute(KEY_CENSUS_SQL, {"tenant": TENANT, "keys": all_targets})
+        census_rows = cur.fetchall()
+        census = summarize_key_census(census_rows)
+        _print_key_census(census, stats["key_column"])
+        convention = select_key_convention(census_rows)
+        _print_key_route(convention)
+        if convention == LANDOS_LEAD_ID:
+            raise RuntimeError(
+                "STOP — LandOS/source-keyed input belongs to "
+                "scripts.import_resolved; this intake requires the staged "
+                "target_key + scrub_status receipt format"
+            )
+
+        targets = all_targets[:limit] if limit else all_targets
         cur.execute(BRIDGE_SQL, {"tenant": TENANT, "keys": targets})
         bridge = {r["target_key"]: r for r in cur.fetchall()}
 
@@ -405,7 +535,13 @@ def run(csv_path: str, dry_run: bool = True, limit: int | None = None) -> Dict[s
             conn.commit()
 
     _print_receipt(csv_path, csv_sha, stats, outcome, rows_out, dry_run, limit)
-    return {"dry_run": dry_run, "stats": stats, "outcome": outcome}
+    return {
+        "dry_run": dry_run,
+        "key_convention": convention,
+        "key_census": census,
+        "stats": stats,
+        "outcome": outcome,
+    }
 
 
 def _print_receipt(csv_path, csv_sha, stats, outcome, rows_out, dry_run, limit):

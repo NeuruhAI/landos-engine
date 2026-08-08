@@ -2,7 +2,8 @@
 sync_to_crm.py — P4 of the Contact Resolver directive (D1 v2 §6): the sync
 projection. THE SOLE WRITER of contact/pierce data into public.acquisition_leads.
 
-    python -m scripts.sync_to_crm
+    python -m scripts.sync_to_crm                         # dry-run
+    python -m scripts.sync_to_crm --apply --authority-receipt receipt.json
 
 Reads landos.owner_leads (the engine's source of truth — READ-ONLY here) and
 projects onto public.acquisition_leads, matched on
@@ -44,6 +45,10 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.config import DATABASE_URL
+from app.crm_projection_authority import (
+    load_authority_receipt,
+    validate_authority_receipt,
+)
 from app.jarvis_brief import compose_brief
 from scripts.seller_contact import upsert_seller_contact_phone
 
@@ -330,7 +335,31 @@ def assert_insert_row_valid(values):
     return row
 
 
-def main(dry_run: bool = False, lead_ids=None) -> None:
+def _require_authority(authority_receipt) -> None:
+    """Fail closed before DB connect until canonical authenticity is integrated.
+
+    The local validator proves shape, expiry, and content integrity only. A
+    caller can calculate an ordinary SHA-256, so that hash is not a Governance
+    signature and must never be promoted into mutation authority.
+    """
+    if authority_receipt is None:
+        raise RuntimeError(
+            "CRM projection is fail-closed: --apply requires --authority-receipt"
+        )
+    if isinstance(authority_receipt, dict):
+        validate_authority_receipt(authority_receipt, tenant_id=TENANT)
+    else:
+        load_authority_receipt(authority_receipt, tenant_id=TENANT)
+    raise RuntimeError(
+        "CRM projection remains BLOCKED: receipt shape/hash validated, but "
+        "canonical Governance signature + receipt-spine replay verification "
+        "is not integrated"
+    )
+
+
+def main(dry_run: bool = True, lead_ids=None, authority_receipt=None) -> None:
+    if not dry_run:
+        _require_authority(authority_receipt)
     lead_filter = list(lead_ids) if lead_ids else None
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute(
@@ -769,7 +798,9 @@ def assert_no_orphan_callable_leads(cur):
             f"The A8.2 bridge failed to close; aborting sync.")
 
 
-def backfill_contacts(dry_run: bool = False):
+def backfill_contacts(dry_run: bool = True, authority_receipt=None):
+    if not dry_run:
+        _require_authority(authority_receipt)
     """JOB 3 — close the bridge for the existing orphans in the same motion
     (same writer, same shape). Census before/after; the leak assertion gates it."""
     import psycopg
@@ -895,7 +926,7 @@ def sync_emerging(conn, tenant_id: str, limit: int = 2000) -> None:
     print("\n[emerging] syncing pre-market boomer heat map data (LandOS → CRM public)...")
     cur = conn.cursor()
     cur.execute("""
-        select 
+        select
           ol.lead_id,
           ol.final_lead_score as base_score,
           -- In real use, these come from the emerging ingest output / dedicated table
@@ -963,8 +994,13 @@ def sync_emerging(conn, tenant_id: str, limit: int = 2000) -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="landos -> CRM projection (single writer)")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="compose + preview Jarvis briefs (5); write nothing")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true",
+                      help="compose + preview Jarvis briefs (default; write nothing)")
+    mode.add_argument("--apply", action="store_true",
+                      help="blocked until canonical Governance receipt authenticity is integrated")
+    ap.add_argument("--authority-receipt",
+                    help="JSON Governance ESCALATE + human approval receipt")
     ap.add_argument("--lead-id", action="append",
                     help="project only this landos.owner_leads lead_id; repeatable")
     ap.add_argument("--backfill-contacts", action="store_true",
@@ -973,9 +1009,13 @@ if __name__ == "__main__":
                     help="round-trip a synthetic row through a REAL txn + ROLLBACK; prove the "
                          "projection is DB-legal and the source CHECK is real (writes nothing)")
     args = ap.parse_args()
+    dry_run = not args.apply
+    if args.authority_receipt and dry_run:
+        ap.error("--authority-receipt is accepted only with --apply")
     if args.check_constraints:
         check_constraints()
     elif args.backfill_contacts:
-        backfill_contacts(dry_run=args.dry_run)
+        backfill_contacts(dry_run=dry_run, authority_receipt=args.authority_receipt)
     else:
-        main(dry_run=args.dry_run, lead_ids=args.lead_id)
+        main(dry_run=dry_run, lead_ids=args.lead_id,
+             authority_receipt=args.authority_receipt)

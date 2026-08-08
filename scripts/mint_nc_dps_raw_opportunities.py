@@ -3,8 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import uuid
 from pathlib import Path
+
+# Direct-file execution puts ``scripts/`` rather than the repository root on
+# sys.path. Repair only that invocation mode; ``python -m`` remains unchanged.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.nc_dps_raw_writer import build_raw_candidates, read_jsonl
 from app.score_absentee import classify_owner_type

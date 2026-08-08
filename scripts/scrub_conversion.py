@@ -29,12 +29,8 @@ Classification (deterministic, order matters — first match wins):
     python -m scripts.scrub_conversion --spot-check  # 10-row rendered sheet on the SURVIVORS
 """
 import argparse
+import json
 import re
-
-import psycopg
-from psycopg.rows import dict_row
-
-from app.config import DATABASE_URL
 from app.score_absentee import classify_owner_type
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
@@ -151,120 +147,39 @@ def classify(owner_name, vintage_flag):
     return ("keep", "ambiguous_flagged", True)
 
 
-LOAD_SQL = """
-    select a.lead_id, a.parcel_apn, a.county_fips, a.owner_name, a.card_state, a.stage,
-           po.vintage_flag
-      from public.acquisition_leads a
-      left join landos.parcel_owner po
-        on po.county_fips = a.county_fips and po.parcel_apn = a.parcel_apn
-     where a.tenant_id = %s and a.signal_tags @> array['conversion']
-     order by a.owner_name, a.parcel_apn
-"""
-
-RETIRE_SQL = """
-    update public.acquisition_leads set
-        card_state = 'dead',
-        stage = 'archived',
-        value_add_notes = trim(both E'\\n' from
-            coalesce(value_add_notes || E'\\n', '') ||
-            'RETIRED conversion-scrub ' || %(date)s || ': ' || %(reason)s ||
-            case when %(human_review)s then ' (human_review — reversible)' else '' end ||
-            ' — ' || %(detail)s),
-        parcel_meta = coalesce(parcel_meta, '{}'::jsonb) || jsonb_build_object(
-            'retired', jsonb_build_object(
-                'lens', 'conversion', 'reason', %(reason)s::text,
-                'human_review', %(human_review)s, 'at', %(date)s::text, 'by', 'ccT-scrub'))
-    where lead_id = %(lead_id)s and tenant_id = %(tenant)s
-      and card_state is distinct from 'dead'   -- idempotent: never re-stamp an already-retired row
-"""
+def build_request(tenant_id: str = TENANT) -> dict[str, object]:
+    """Return a non-executable request for the sole CRM writer."""
+    return {
+        "schema": "landos.crm_maintenance_request.v1",
+        "action": "scrub_conversion",
+        "tenant_id": tenant_id,
+        "apply": False,
+        "writer": "scripts/sync_to_crm.py",
+        "authority_required": True,
+        "classifier_version": SCRUB_DATE,
+    }
 
 
-def run(commit=False):
-    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
-        cur.execute(LOAD_SQL, (TENANT,))
-        rows = cur.fetchall()
-        graded = [(r, classify(r["owner_name"], r["vintage_flag"])) for r in rows]
-
-        retire = [(r, v) for r, v in graded if v[0] == "retire"]
-        keep = [(r, v) for r, v in graded if v[0] == "keep"]
-        flagged_kept = [(r, v) for r, v in keep if v[2]]     # ambiguous, left active
-        by_reason = {}
-        for r, v in retire:
-            by_reason.setdefault(v[1], []).append(r)
-
-        print(f"\n{'='*74}\nCONVERSION SCRUB — {len(rows)} minted rows\n{'='*74}")
-        print(f"  RETIRE {len(retire)}   KEEP {len(keep)} (of which {len(flagged_kept)} "
-              f"flagged for human review, left ACTIVE)")
-        print(f"  clean CONVERSION count after scrub: {len(keep)}")
-        print("\n  retire breakdown:")
-        for reason in ("govt", "cemetery", "school", "medical", "surname_collision"):
-            n = len(by_reason.get(reason, []))
-            print(f"    {reason:<18} {n:>4}")
-
-        for reason in ("govt", "cemetery", "school", "medical", "surname_collision"):
-            lst = by_reason.get(reason, [])
-            if not lst:
-                continue
-            print(f"\n== RETIRE :: {reason} ({len(lst)}) — every row ==")
-            for r in lst:
-                print(f"   {r['owner_name']!r}   [{r['county_fips']}/{r['parcel_apn']}] vf={r['vintage_flag']}")
-
-        if flagged_kept:
-            print(f"\n== FLAGGED FOR HUMAN REVIEW — kept ACTIVE ({len(flagged_kept)}) ==")
-            for r, v in flagged_kept:
-                print(f"   {r['owner_name']!r}   [{r['county_fips']}/{r['parcel_apn']}]  ({v[1]})")
-
-        survivors = [r for r, v in keep if not v[2]]
-        print(f"\n== SURVIVORS (clean church/lodge) — {len(survivors)} rows, "
-              f"{len({r['owner_name'] for r in survivors})} unique owners ==")
-
-        if not commit:
-            print("\nDRY-RUN — nothing written. Re-run with --commit to retire.")
-            return graded
-
-        n = 0
-        for r, v in retire:
-            detail = f"owner {r['owner_name']!r} is not a conversion target for this lens"
-            cur.execute(RETIRE_SQL, {"date": SCRUB_DATE, "reason": v[1], "human_review": v[2],
-                                     "detail": detail, "lead_id": r["lead_id"], "tenant": TENANT})
-            n += cur.rowcount
-        conn.commit()
-        print(f"\nCOMMITTED — retired {n} rows (card_state='dead', stage='archived', "
-              f"reason in value_add_notes + parcel_meta.retired).")
-        return graded
+def run(commit: bool = False) -> dict[str, object]:
+    """Compatibility API: return a request, never execute the legacy mutation."""
+    if commit:
+        raise RuntimeError("commit removed: route the request through scripts.sync_to_crm")
+    return build_request()
 
 
-def spot_check(n=10):
-    """10-row rendered sheet on the SURVIVORS (the gate that was skipped). Reads the live
-    clean set so it reflects the scrub."""
-    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
-        cur.execute(LOAD_SQL, (TENANT,))
-        rows = cur.fetchall()
-    # a survivor = kept AND not flagged for review (the clean, callable church/lodge set)
-    survivors = [r for r in rows
-                 if (lambda v: v[0] == "keep" and not v[2])(classify(r["owner_name"], r["vintage_flag"]))]
-    # de-dupe display by owner_name, take an evenly-spaced sample across the alphabet
-    seen, uniq = set(), []
-    for r in survivors:
-        if r["owner_name"] not in seen:
-            seen.add(r["owner_name"]); uniq.append(r)
-    step = max(1, len(uniq) // n)
-    sample = uniq[::step][:n]
-    print(f"\n{'='*74}\nCONVERSION SPOT-CHECK — {len(sample)} survivor rows "
-          f"(of {len(uniq)} unique clean owners)\n{'='*74}")
-    for i, r in enumerate(sample, 1):
-        print(f"{i:2}. {r['owner_name']!r}")
-        print(f"     {r['county_fips']}/{r['parcel_apn']}   card={r['card_state']} stage={r['stage']}")
-    return sample
+def spot_check(n: int = 10) -> dict[str, object]:
+    request = build_request()
+    request["sample_size"] = n
+    return request
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="retire CONVERSION-lens contamination (dry-run default)")
-    ap.add_argument("--commit", action="store_true", help="LIVE: retire contaminated rows")
-    ap.add_argument("--spot-check", action="store_true", help="10-row sheet on survivors (no writes)")
-    ap.add_argument("--n", type=int, default=10)
+    ap = argparse.ArgumentParser(description="emit a read-only conversion scrub request")
+    ap.add_argument("--commit", action="store_true", help="legacy spelling; always blocked")
+    ap.add_argument("--spot-check", action="store_true", help="emit request only")
+    ap.add_argument("--n", type=int, default=10, help="retained compatibility flag")
     a = ap.parse_args()
-    if a.spot_check:
-        spot_check(a.n)
-    else:
-        run(commit=a.commit)
+    if a.commit:
+        ap.error("--commit removed: route a typed request through scripts.sync_to_crm")
+    print(json.dumps(spot_check(a.n) if a.spot_check else run(), sort_keys=True))
+    print("REQUEST ONLY — no database connection or CRM write.")
