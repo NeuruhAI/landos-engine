@@ -125,6 +125,7 @@ def run(
     signals_path: Path,
     output_dir: Path,
     reuse_mecklenburg_csv: Path | None = None,
+    mecklenburg_taxpayers: Path | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -137,24 +138,29 @@ def run(
     core.fragmented_flag = fragmented_flag_strict
 
     fresh_dir = output_dir / "fresh_non_mecklenburg"
-    fresh_summary = v2.run(signals_path, None, fresh_dir)
+    fresh_summary = v2.run(signals_path, mecklenburg_taxpayers, fresh_dir)
     fresh_rows = read_csv(fresh_dir / "LANDOS_ENRICHED_OPPORTUNITIES.csv")
 
     reused_meck: list[dict[str, Any]] = []
-    if reuse_mecklenburg_csv and reuse_mecklenburg_csv.exists():
-        reused_meck = [
-            row for row in read_csv(reuse_mecklenburg_csv)
-            if str(row.get("county_fips") or "") == "37119"
-        ]
-        # Repair the two classification fields on reused rows as well.
-        for row in reused_meck:
-            row["heir_indicator"] = heir_flag_strict(str(row.get("owner_name") or ""), [])
-            row["fragmented_ownership_indicator"] = fragmented_flag_strict(str(row.get("owner_name") or ""))
+    if mecklenburg_taxpayers:
+        # Fresh Mecklenburg owner-scan matching already ran inside v2 with the
+        # strict classifiers patched in; keep those rows and skip any reuse CSV.
+        combined = fresh_rows
+    else:
+        if reuse_mecklenburg_csv and reuse_mecklenburg_csv.exists():
+            reused_meck = [
+                row for row in read_csv(reuse_mecklenburg_csv)
+                if str(row.get("county_fips") or "") == "37119"
+            ]
+            # Repair the two classification fields on reused rows as well.
+            for row in reused_meck:
+                row["heir_indicator"] = heir_flag_strict(str(row.get("owner_name") or ""), [])
+                row["fragmented_ownership_indicator"] = fragmented_flag_strict(str(row.get("owner_name") or ""))
 
-    combined = [
-        row for row in fresh_rows
-        if str(row.get("county_fips") or "") != "37119"
-    ] + reused_meck
+        combined = [
+            row for row in fresh_rows
+            if str(row.get("county_fips") or "") != "37119"
+        ] + reused_meck
     combined.sort(key=lambda r: (str(r.get("county_fips") or ""), str(r.get("parcel_apn") or "")))
     core.write_csv(output_dir / "LANDOS_ENRICHED_OPPORTUNITIES.csv", combined)
 
@@ -169,6 +175,8 @@ def run(
         "heir_signal_properties": sum(1 for r in combined if _truthy(r.get("heir_indicator"))),
         "tax_foreclosure_properties": sum(1 for r in combined if _truthy(r.get("tax_foreclosure_indicator"))),
         "reused_mecklenburg_properties": len(reused_meck),
+        "mecklenburg_staging_rows": fresh_summary.get("mecklenburg_staging_rows", 0),
+        "fresh_mecklenburg_property_matches": fresh_summary.get("mecklenburg_unique_property_matches", 0),
         "equity_verified_properties": 0,
         "equity_status": "UNKNOWN_UNTIL_DEBT_INSTRUMENT_SEARCH",
         "contact_authorized": False,
@@ -188,8 +196,13 @@ def main() -> None:
     p.add_argument("--signals", required=True, type=Path)
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("--reuse-mecklenburg-csv", type=Path)
+    p.add_argument("--mecklenburg-taxpayers", type=Path)
     args = p.parse_args()
-    print(json.dumps(run(args.signals, args.output, args.reuse_mecklenburg_csv), indent=2, sort_keys=True))
+    print(json.dumps(
+        run(args.signals, args.output, args.reuse_mecklenburg_csv, args.mecklenburg_taxpayers),
+        indent=2,
+        sort_keys=True,
+    ))
 
 
 if __name__ == "__main__":
