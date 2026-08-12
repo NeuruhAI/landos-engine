@@ -49,3 +49,47 @@ class RawWriterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def test_operator_ranked_metadata_rides_into_emerging_signals():
+    from app.nc_dps_raw_writer import build_raw_candidates
+
+    signal = {
+        "signal_id": "s1",
+        "source": "operator_raw_upload:t4",
+        "source_type": "operator_raw_opportunity",
+        "geography": "37179",
+        "parcel_apn": "09222012",
+        "owner_name": "CHAMBERS EDNA MAE HEIRS",
+        "raw_address": "203 E EAST AVE",
+        "confidence": 0.7,
+        "fetched_at": "2026-08-12T00:00:00Z",
+        "detail_json": {
+            "raw": {
+                "recipe_id": "stalled_tax_foreclosure_heirship",
+                "curative_priority_score": "93",
+                "priority_tier": "A",
+                "trigger_classes": "tax_distress|court_action|heir_or_estate",
+                "scoring_version": "nc_curative_rank.v3",
+                "recipe_version": "nc_curative_recipes.v1",
+            },
+        },
+    }
+    # operator_raw_opportunity is enabled by the v2 minter; emulate that here.
+    import app.nc_dps_raw_writer as w
+
+    original = w.RAW_OPPORTUNITY_TYPES
+    try:
+        w.RAW_OPPORTUNITY_TYPES = original | {"operator_raw_opportunity"}
+        candidates, summary = build_raw_candidates([signal])
+    finally:
+        w.RAW_OPPORTUNITY_TYPES = original
+
+    assert len(candidates) == 1
+    nc = candidates[0]["emerging_signals"]["nc_dps"]
+    assert nc["recommended_recipe"] == "stalled_tax_foreclosure_heirship"
+    assert nc["curative_priority_score"] == 93.0
+    assert nc["priority_tier"] == "A"
+    assert nc["scoring_version"] == "nc_curative_rank.v3"
+    assert nc["recipe_version"] == "nc_curative_recipes.v1"
+    assert nc["contact_authorized"] is False
