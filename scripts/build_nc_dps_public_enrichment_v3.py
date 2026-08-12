@@ -101,6 +101,132 @@ def fragmented_flag_strict(owner: str) -> bool:
     return False
 
 
+_DIRECTIONALS = {"N", "S", "E", "W", "NE", "NW", "SE", "SW", "NORTH", "SOUTH", "EAST", "WEST"}
+
+
+def situs_key(text: Any) -> tuple[str, str] | None:
+    """Conservative street-number + street-name key for situs comparison.
+
+    Mecklenburg's publication prefixes an optional unit number before the
+    street number ("127 601 N TRYON ST"), so the last numeric token before the
+    first non-directional street token is the street number.
+    """
+    cleaned = re.sub(r"[^A-Z0-9 ]", " ", str(text or "").upper())
+    numbers: list[str] = []
+    street = None
+    for token in cleaned.split():
+        if token.isdigit():
+            numbers.append(token)
+            continue
+        if token in _DIRECTIONALS:
+            continue
+        street = token
+        break
+    if not numbers or not street:
+        return None
+    return numbers[-1], street
+
+
+def build_mecklenburg_signals_addr(
+    unresolved: list[dict[str, Any]],
+    owner_matches: dict[str, list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Owner matching with publication-address corroboration.
+
+    Upgrades the unique-owner rule: a unique owner match with a conflicting
+    publication address is refused instead of minted, and an owner holding
+    several parcels resolves when exactly one candidate parcel's site address
+    matches the publication address.
+    """
+    import hashlib
+
+    signals: list[dict[str, Any]] = []
+    unresolved_report: list[dict[str, Any]] = []
+    for row in unresolved:
+        key = core.norm_owner(row.get("owner_name"))
+        candidates = owner_matches.get(key, []) if key else []
+        unique_by_parcel: dict[str, dict[str, Any]] = {}
+        for candidate in candidates:
+            parcel = str(candidate.get("parno") or candidate.get("altparno") or "").strip()
+            if parcel:
+                unique_by_parcel[core.norm_parcel(parcel)] = candidate
+        pub_key = situs_key(row.get("property_address"))
+
+        chosen: dict[str, Any] | None = None
+        match_basis = ""
+        confidence = 0.0
+        if len(unique_by_parcel) == 1:
+            one = next(iter(unique_by_parcel.values()))
+            cand_key = situs_key(one.get("siteadd"))
+            if pub_key and cand_key and pub_key != cand_key:
+                unresolved_report.append({
+                    "owner_name": row.get("owner_name"),
+                    "tax_account_or_bill": row.get("tax_account_or_bill"),
+                    "tax_balance": row.get("tax_balance"),
+                    "candidate_parcel_count": 1,
+                    "status": "ADDRESS_CONFLICT_ON_UNIQUE_OWNER_MATCH",
+                    "source_url": row.get("source_url"),
+                })
+                continue
+            chosen = one
+            corroborated = bool(pub_key and cand_key and pub_key == cand_key)
+            match_basis = (
+                "unique_owner_match_address_corroborated"
+                if corroborated
+                else "unique_normalized_owner_to_onemap_parcel"
+            )
+            confidence = 0.88 if corroborated else 0.72
+        elif len(unique_by_parcel) > 1 and pub_key:
+            addr_hits = [
+                c for c in unique_by_parcel.values()
+                if situs_key(c.get("siteadd")) == pub_key
+            ]
+            if len(addr_hits) == 1:
+                chosen = addr_hits[0]
+                match_basis = "owner_plus_address_match"
+                confidence = 0.80
+
+        if chosen is None:
+            unresolved_report.append({
+                "owner_name": row.get("owner_name"),
+                "tax_account_or_bill": row.get("tax_account_or_bill"),
+                "tax_balance": row.get("tax_balance"),
+                "candidate_parcel_count": len(unique_by_parcel),
+                "status": "NO_UNIQUE_PROPERTY_MATCH",
+                "source_url": row.get("source_url"),
+            })
+            continue
+
+        parcel = str(chosen.get("parno") or chosen.get("altparno") or "").strip()
+        sid_seed = f"meck-owner-match|{row.get('staging_id')}|{parcel}"
+        signals.append({
+            "signal_id": hashlib.sha256(sid_seed.encode()).hexdigest(),
+            "source": "official_distress:mecklenburg:unique_owner_parcel_match",
+            "source_type": "taxdelinquent",
+            "geography": "37119",
+            "event_date": row.get("source_as_of") or "2026-08-04",
+            "raw_address": chosen.get("siteadd") or "",
+            "parcel_apn": parcel,
+            "owner_name": chosen.get("ownname") or row.get("owner_name") or "",
+            "detail_json": {
+                "observation_kind": "published_tax_distress_property_matched",
+                "county": "Mecklenburg",
+                "county_fips": "37119",
+                "tax_balance": row.get("tax_balance"),
+                "source_url": row.get("source_url"),
+                "source_label": row.get("source_label"),
+                "source_as_of": row.get("source_as_of"),
+                "publication_property_address": row.get("property_address"),
+                "match_basis": match_basis,
+                "match_confidence": confidence,
+                "contact_authorized": False,
+            },
+            "confidence": confidence,
+            "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        })
+    return signals, unresolved_report
+
+
 def read_csv(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -136,6 +262,7 @@ def run(
     core.request_json = request_json_post
     core.heir_flag = heir_flag_strict
     core.fragmented_flag = fragmented_flag_strict
+    core.build_mecklenburg_signals = build_mecklenburg_signals_addr
 
     fresh_dir = output_dir / "fresh_non_mecklenburg"
     fresh_summary = v2.run(signals_path, mecklenburg_taxpayers, fresh_dir)

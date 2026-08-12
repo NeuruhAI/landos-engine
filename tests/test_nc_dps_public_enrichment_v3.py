@@ -92,3 +92,57 @@ class V3FreshMecklenburgTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class MecklenburgAddressCorroborationTests(unittest.TestCase):
+    ROW = {
+        "staging_id": "abc",
+        "owner_name": "DOE JOHN",
+        "tax_balance": 4580.24,
+        "property_address": "127 601 N TRYON ST CHARLOTTE NC 28202",
+        "source_url": "https://example.test",
+        "source_label": "IND",
+        "source_as_of": "2026-08-04",
+    }
+
+    def test_situs_key_handles_unit_prefix_and_directionals(self):
+        self.assertEqual(v3.situs_key("127 601 N TRYON ST CHARLOTTE NC 28202"), ("601", "TRYON"))
+        self.assertEqual(v3.situs_key("601 N TRYON ST"), ("601", "TRYON"))
+        self.assertEqual(v3.situs_key("1069 MCALWAY RD"), ("1069", "MCALWAY"))
+        self.assertIsNone(v3.situs_key(""))
+
+    def test_unique_owner_match_with_matching_address_is_corroborated(self):
+        matches = {v3.core.norm_owner("DOE JOHN"): [{"parno": "06724316", "ownname": "DOE JOHN", "siteadd": "601 N TRYON ST"}]}
+        signals, report = v3.build_mecklenburg_signals_addr([dict(self.ROW)], matches)
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["detail_json"]["match_basis"], "unique_owner_match_address_corroborated")
+        self.assertEqual(signals[0]["confidence"], 0.88)
+        self.assertEqual(report, [])
+
+    def test_unique_owner_match_with_conflicting_address_is_refused(self):
+        matches = {v3.core.norm_owner("DOE JOHN"): [{"parno": "06724316", "ownname": "DOE JOHN", "siteadd": "9 OAK AV"}]}
+        signals, report = v3.build_mecklenburg_signals_addr([dict(self.ROW)], matches)
+        self.assertEqual(signals, [])
+        self.assertEqual(report[0]["status"], "ADDRESS_CONFLICT_ON_UNIQUE_OWNER_MATCH")
+
+    def test_multi_parcel_owner_resolves_via_single_address_hit(self):
+        matches = {v3.core.norm_owner("DOE JOHN"): [
+            {"parno": "P1", "ownname": "DOE JOHN", "siteadd": "601 N TRYON ST"},
+            {"parno": "P2", "ownname": "DOE JOHN", "siteadd": "9 OAK AV"},
+        ]}
+        signals, report = v3.build_mecklenburg_signals_addr([dict(self.ROW)], matches)
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["parcel_apn"], "P1")
+        self.assertEqual(signals[0]["detail_json"]["match_basis"], "owner_plus_address_match")
+        self.assertEqual(signals[0]["confidence"], 0.80)
+
+    def test_ambiguous_owner_without_address_stays_unresolved(self):
+        row = dict(self.ROW, property_address=None)
+        matches = {v3.core.norm_owner("DOE JOHN"): [
+            {"parno": "P1", "ownname": "DOE JOHN", "siteadd": "601 N TRYON ST"},
+            {"parno": "P2", "ownname": "DOE JOHN", "siteadd": "9 OAK AV"},
+        ]}
+        signals, report = v3.build_mecklenburg_signals_addr([row], matches)
+        self.assertEqual(signals, [])
+        self.assertEqual(report[0]["status"], "NO_UNIQUE_PROPERTY_MATCH")
+        self.assertEqual(report[0]["candidate_parcel_count"], 2)
