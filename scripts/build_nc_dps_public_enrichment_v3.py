@@ -101,6 +101,132 @@ def fragmented_flag_strict(owner: str) -> bool:
     return False
 
 
+_DIRECTIONALS = {"N", "S", "E", "W", "NE", "NW", "SE", "SW", "NORTH", "SOUTH", "EAST", "WEST"}
+
+
+def situs_key(text: Any) -> tuple[str, str] | None:
+    """Conservative street-number + street-name key for situs comparison.
+
+    Mecklenburg's publication prefixes an optional unit number before the
+    street number ("127 601 N TRYON ST"), so the last numeric token before the
+    first non-directional street token is the street number.
+    """
+    cleaned = re.sub(r"[^A-Z0-9 ]", " ", str(text or "").upper())
+    numbers: list[str] = []
+    street = None
+    for token in cleaned.split():
+        if token.isdigit():
+            numbers.append(token)
+            continue
+        if token in _DIRECTIONALS:
+            continue
+        street = token
+        break
+    if not numbers or not street:
+        return None
+    return numbers[-1], street
+
+
+def build_mecklenburg_signals_addr(
+    unresolved: list[dict[str, Any]],
+    owner_matches: dict[str, list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Owner matching with publication-address corroboration.
+
+    Upgrades the unique-owner rule: a unique owner match with a conflicting
+    publication address is refused instead of minted, and an owner holding
+    several parcels resolves when exactly one candidate parcel's site address
+    matches the publication address.
+    """
+    import hashlib
+
+    signals: list[dict[str, Any]] = []
+    unresolved_report: list[dict[str, Any]] = []
+    for row in unresolved:
+        key = core.norm_owner(row.get("owner_name"))
+        candidates = owner_matches.get(key, []) if key else []
+        unique_by_parcel: dict[str, dict[str, Any]] = {}
+        for candidate in candidates:
+            parcel = str(candidate.get("parno") or candidate.get("altparno") or "").strip()
+            if parcel:
+                unique_by_parcel[core.norm_parcel(parcel)] = candidate
+        pub_key = situs_key(row.get("property_address"))
+
+        chosen: dict[str, Any] | None = None
+        match_basis = ""
+        confidence = 0.0
+        if len(unique_by_parcel) == 1:
+            one = next(iter(unique_by_parcel.values()))
+            cand_key = situs_key(one.get("siteadd"))
+            if pub_key and cand_key and pub_key != cand_key:
+                unresolved_report.append({
+                    "owner_name": row.get("owner_name"),
+                    "tax_account_or_bill": row.get("tax_account_or_bill"),
+                    "tax_balance": row.get("tax_balance"),
+                    "candidate_parcel_count": 1,
+                    "status": "ADDRESS_CONFLICT_ON_UNIQUE_OWNER_MATCH",
+                    "source_url": row.get("source_url"),
+                })
+                continue
+            chosen = one
+            corroborated = bool(pub_key and cand_key and pub_key == cand_key)
+            match_basis = (
+                "unique_owner_match_address_corroborated"
+                if corroborated
+                else "unique_normalized_owner_to_onemap_parcel"
+            )
+            confidence = 0.88 if corroborated else 0.72
+        elif len(unique_by_parcel) > 1 and pub_key:
+            addr_hits = [
+                c for c in unique_by_parcel.values()
+                if situs_key(c.get("siteadd")) == pub_key
+            ]
+            if len(addr_hits) == 1:
+                chosen = addr_hits[0]
+                match_basis = "owner_plus_address_match"
+                confidence = 0.80
+
+        if chosen is None:
+            unresolved_report.append({
+                "owner_name": row.get("owner_name"),
+                "tax_account_or_bill": row.get("tax_account_or_bill"),
+                "tax_balance": row.get("tax_balance"),
+                "candidate_parcel_count": len(unique_by_parcel),
+                "status": "NO_UNIQUE_PROPERTY_MATCH",
+                "source_url": row.get("source_url"),
+            })
+            continue
+
+        parcel = str(chosen.get("parno") or chosen.get("altparno") or "").strip()
+        sid_seed = f"meck-owner-match|{row.get('staging_id')}|{parcel}"
+        signals.append({
+            "signal_id": hashlib.sha256(sid_seed.encode()).hexdigest(),
+            "source": "official_distress:mecklenburg:unique_owner_parcel_match",
+            "source_type": "taxdelinquent",
+            "geography": "37119",
+            "event_date": row.get("source_as_of") or "2026-08-04",
+            "raw_address": chosen.get("siteadd") or "",
+            "parcel_apn": parcel,
+            "owner_name": chosen.get("ownname") or row.get("owner_name") or "",
+            "detail_json": {
+                "observation_kind": "published_tax_distress_property_matched",
+                "county": "Mecklenburg",
+                "county_fips": "37119",
+                "tax_balance": row.get("tax_balance"),
+                "source_url": row.get("source_url"),
+                "source_label": row.get("source_label"),
+                "source_as_of": row.get("source_as_of"),
+                "publication_property_address": row.get("property_address"),
+                "match_basis": match_basis,
+                "match_confidence": confidence,
+                "contact_authorized": False,
+            },
+            "confidence": confidence,
+            "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        })
+    return signals, unresolved_report
+
+
 def read_csv(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -125,6 +251,7 @@ def run(
     signals_path: Path,
     output_dir: Path,
     reuse_mecklenburg_csv: Path | None = None,
+    mecklenburg_taxpayers: Path | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -135,26 +262,32 @@ def run(
     core.request_json = request_json_post
     core.heir_flag = heir_flag_strict
     core.fragmented_flag = fragmented_flag_strict
+    core.build_mecklenburg_signals = build_mecklenburg_signals_addr
 
     fresh_dir = output_dir / "fresh_non_mecklenburg"
-    fresh_summary = v2.run(signals_path, None, fresh_dir)
+    fresh_summary = v2.run(signals_path, mecklenburg_taxpayers, fresh_dir)
     fresh_rows = read_csv(fresh_dir / "LANDOS_ENRICHED_OPPORTUNITIES.csv")
 
     reused_meck: list[dict[str, Any]] = []
-    if reuse_mecklenburg_csv and reuse_mecklenburg_csv.exists():
-        reused_meck = [
-            row for row in read_csv(reuse_mecklenburg_csv)
-            if str(row.get("county_fips") or "") == "37119"
-        ]
-        # Repair the two classification fields on reused rows as well.
-        for row in reused_meck:
-            row["heir_indicator"] = heir_flag_strict(str(row.get("owner_name") or ""), [])
-            row["fragmented_ownership_indicator"] = fragmented_flag_strict(str(row.get("owner_name") or ""))
+    if mecklenburg_taxpayers:
+        # Fresh Mecklenburg owner-scan matching already ran inside v2 with the
+        # strict classifiers patched in; keep those rows and skip any reuse CSV.
+        combined = fresh_rows
+    else:
+        if reuse_mecklenburg_csv and reuse_mecklenburg_csv.exists():
+            reused_meck = [
+                row for row in read_csv(reuse_mecklenburg_csv)
+                if str(row.get("county_fips") or "") == "37119"
+            ]
+            # Repair the two classification fields on reused rows as well.
+            for row in reused_meck:
+                row["heir_indicator"] = heir_flag_strict(str(row.get("owner_name") or ""), [])
+                row["fragmented_ownership_indicator"] = fragmented_flag_strict(str(row.get("owner_name") or ""))
 
-    combined = [
-        row for row in fresh_rows
-        if str(row.get("county_fips") or "") != "37119"
-    ] + reused_meck
+        combined = [
+            row for row in fresh_rows
+            if str(row.get("county_fips") or "") != "37119"
+        ] + reused_meck
     combined.sort(key=lambda r: (str(r.get("county_fips") or ""), str(r.get("parcel_apn") or "")))
     core.write_csv(output_dir / "LANDOS_ENRICHED_OPPORTUNITIES.csv", combined)
 
@@ -169,6 +302,8 @@ def run(
         "heir_signal_properties": sum(1 for r in combined if _truthy(r.get("heir_indicator"))),
         "tax_foreclosure_properties": sum(1 for r in combined if _truthy(r.get("tax_foreclosure_indicator"))),
         "reused_mecklenburg_properties": len(reused_meck),
+        "mecklenburg_staging_rows": fresh_summary.get("mecklenburg_staging_rows", 0),
+        "fresh_mecklenburg_property_matches": fresh_summary.get("mecklenburg_unique_property_matches", 0),
         "equity_verified_properties": 0,
         "equity_status": "UNKNOWN_UNTIL_DEBT_INSTRUMENT_SEARCH",
         "contact_authorized": False,
@@ -188,8 +323,13 @@ def main() -> None:
     p.add_argument("--signals", required=True, type=Path)
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("--reuse-mecklenburg-csv", type=Path)
+    p.add_argument("--mecklenburg-taxpayers", type=Path)
     args = p.parse_args()
-    print(json.dumps(run(args.signals, args.output, args.reuse_mecklenburg_csv), indent=2, sort_keys=True))
+    print(json.dumps(
+        run(args.signals, args.output, args.reuse_mecklenburg_csv, args.mecklenburg_taxpayers),
+        indent=2,
+        sort_keys=True,
+    ))
 
 
 if __name__ == "__main__":

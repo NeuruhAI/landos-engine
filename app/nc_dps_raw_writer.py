@@ -123,6 +123,27 @@ def build_raw_candidates(signals: list[dict[str, Any]]) -> tuple[list[dict[str, 
         if out_of_state is True:
             tags.append("nc_dps:out_of_state")
 
+        # Ranked-universe metadata rides along when the operator upload carries
+        # it (DEEDSONAR_RAW_IMPORT columns land verbatim in detail_json.raw).
+        ranked_meta: dict[str, Any] = {}
+        for row in rows:
+            raw = _detail(row).get("raw")
+            if isinstance(raw, dict) and str(raw.get("recipe_id") or "").strip():
+                score_text = str(raw.get("curative_priority_score") or "").strip()
+                try:
+                    score_value: float | None = float(score_text) if score_text else None
+                except ValueError:
+                    score_value = None
+                ranked_meta = {
+                    "recommended_recipe": str(raw.get("recipe_id")).strip(),
+                    "curative_priority_score": score_value,
+                    "priority_tier": str(raw.get("priority_tier") or "").strip() or None,
+                    "trigger_classes": str(raw.get("trigger_classes") or "").strip() or None,
+                    "scoring_version": str(raw.get("scoring_version") or "").strip() or None,
+                    "recipe_version": str(raw.get("recipe_version") or "").strip() or None,
+                }
+                break
+
         emerging_signals = {
             "nc_dps": {
                 "stage": "raw_opportunity",
@@ -135,10 +156,19 @@ def build_raw_candidates(signals: list[dict[str, Any]]) -> tuple[list[dict[str, 
                 "out_of_state_observed": out_of_state,
                 "qualification_status": "not_yet_qualified",
                 "verified_equity": None,
-                "recommended_recipe": None,
+                "recommended_recipe": ranked_meta.get("recommended_recipe"),
                 "contact_authorized": False,
             }
         }
+        for key_name in (
+            "curative_priority_score",
+            "priority_tier",
+            "trigger_classes",
+            "scoring_version",
+            "recipe_version",
+        ):
+            if ranked_meta.get(key_name) is not None:
+                emerging_signals["nc_dps"][key_name] = ranked_meta[key_name]
 
         candidates.append({
             "property_id": f"NC:{county_fips}:{parcel_apn}",
