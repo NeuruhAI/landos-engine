@@ -420,6 +420,9 @@ def test_17_persist_batch_helper_does_not_call_network(tmp_path, monkeypatch):
     )
     assert out["csv"].exists()
     assert calls == []
+    unknown = [r for r in out["staged"] if receipt_mod.nanp_key(r["phone"]) == UNKNOWN_PHONE][0]
+    assert unknown["scrub_status"] == "unchecked"
+    assert unknown["scrub_flags"] == "vendor_unknown"
 
 
 # ---- 18. receipt audited back to exact provider operation -------------------
@@ -484,3 +487,205 @@ def test_resume_dnc_cli_requires_dnc_flag():
     src = Path("scripts/skip_trace_tracerfy.py").read_text()
     assert "--resume-dnc-queue requires --dnc" in src
     assert "resume_dnc_queue_id" in inspect.getsource(tracerfy.run_batch)
+
+
+# ---- tri-state hop: persist_batch_dnc_receipt → _dnc_index → classifier ----
+
+def _one_phone_recs(phone, owner=OWNER_A, dnc=False):
+    return [(
+        {"lead_id": owner, "owner_name": "SYNTHETIC OWNER A"},
+        {"phones": [{"number": phone, "type": "mobile", "confidence": 0.7, "dnc": dnc}],
+         "emails": []},
+    )]
+
+
+def _batch_hop(tmp_path, phone, vendor_row, recs=None, mapping=None):
+    recs = recs if recs is not None else _one_phone_recs(phone)
+    mapping = mapping if mapping is not None else {OWNER_A: CRM_A}
+    stats = {
+        "dnc_queue_id": "9001",
+        "dnc_scrubbed": 1,
+        "dnc_rows": [vendor_row],
+        "trace_queue_id": "8001",
+    }
+    return tracerfy.persist_batch_dnc_receipt(
+        recs, stats, out_dir=str(tmp_path), map_keys=lambda _ids: mapping,
+        scrubbed_at="2026-08-17T00:00:00Z",
+        provider_base="https://tracerfy.com/v1/api",
+    )
+
+
+def _staged_row(out, phone):
+    key = receipt_mod.nanp_key(phone)
+    matched = [r for r in out["staged"] if receipt_mod.nanp_key(r["phone"]) == key]
+    assert matched, f"missing staged row for {phone}"
+    return matched[0]
+
+
+def test_batch_hop_as_bool_never_coerces_none():
+    assert tracerfy._as_bool(None) is None
+    assert tracerfy._as_bool({}.get("is_clean")) is None
+    assert tracerfy._as_bool(True) is True
+    assert tracerfy._as_bool(False) is False
+    idx = tracerfy._dnc_index([{"phone": UNKNOWN_PHONE, "is_clean": None}])
+    assert idx[UNKNOWN_PHONE]["is_clean"] is None
+    idx_missing = tracerfy._dnc_index([{"phone": UNKNOWN_PHONE}])
+    assert idx_missing[UNKNOWN_PHONE]["is_clean"] is None
+
+
+def test_batch_hop_A_explicit_true_is_clean(tmp_path):
+    out = _batch_hop(tmp_path, CLEAN_PHONE, {"phone": CLEAN_PHONE, **_clean_info()})
+    row = _staged_row(out, CLEAN_PHONE)
+    assert row["scrub_status"] == "clean"
+    assert row["scrub_flags"] == ""
+    assert is_scrub_pass(row)
+
+
+def test_batch_hop_B_explicit_false_is_vendor_not_clean(tmp_path):
+    out = _batch_hop(
+        tmp_path, DNC_PHONE,
+        {"phone": DNC_PHONE, **_clean_info(is_clean=False)},
+    )
+    row = _staged_row(out, DNC_PHONE)
+    assert row["scrub_status"] == "dnc"
+    assert row["scrub_flags"] == "vendor_not_clean"
+    assert not is_scrub_pass(row)
+
+
+def test_batch_hop_C_null_is_clean_stays_unchecked(tmp_path):
+    out = _batch_hop(
+        tmp_path, UNKNOWN_PHONE,
+        {"phone": UNKNOWN_PHONE, "is_clean": None,
+         "national_dnc": False, "state_dnc": False, "dma": False, "litigator": False},
+    )
+    row = _staged_row(out, UNKNOWN_PHONE)
+    assert row["scrub_status"] == "unchecked"
+    assert row["scrub_flags"] == "vendor_unknown"
+    assert not is_scrub_pass(row)
+    by_target, _stats = load_staged(str(out["csv"]))
+    assert target_verdict(by_target[CRM_A]) is None
+    assert build_phones(by_target[CRM_A]) == []
+
+
+def test_batch_hop_D_missing_is_clean_key_stays_unchecked(tmp_path):
+    out = _batch_hop(
+        tmp_path, UNKNOWN_PHONE,
+        {"phone": UNKNOWN_PHONE, "national_dnc": False,
+         "state_dnc": False, "dma": False, "litigator": False},
+    )
+    row = _staged_row(out, UNKNOWN_PHONE)
+    assert row["scrub_status"] == "unchecked"
+    assert row["scrub_flags"] == "vendor_unknown"
+
+
+def test_batch_hop_E_missing_vendor_record_writes_nothing(tmp_path):
+    recs = _one_phone_recs(UNKNOWN_PHONE)
+    stats = {
+        "dnc_queue_id": "9001",
+        "dnc_scrubbed": 1,
+        "dnc_rows": [{"phone": CLEAN_PHONE, **_clean_info()}],
+        "trace_queue_id": "8001",
+    }
+    with pytest.raises(DncReceiptError, match="missing="):
+        tracerfy.persist_batch_dnc_receipt(
+            recs, stats, out_dir=str(tmp_path), map_keys=lambda _ids: _mapping(),
+            scrubbed_at="2026-08-17T00:00:00Z",
+            provider_base="https://tracerfy.com/v1/api",
+        )
+    assert classify_vendor_result(None, UNKNOWN_PHONE) == ("unchecked", "vendor_missing")
+    assert not (tmp_path / "tracerfy_dnc_receipt_9001.csv").exists()
+
+
+def test_batch_hop_F_synthetic_555_stays_unchecked(tmp_path):
+    out = _batch_hop(tmp_path, SYNTH_555, {"phone": SYNTH_555, **_clean_info()})
+    row = _staged_row(out, SYNTH_555)
+    assert row["scrub_status"] == "unchecked"
+    assert row["scrub_flags"] == "synthetic_555"
+    assert not is_scrub_pass(row)
+
+
+def test_batch_hop_G_explicit_national_dnc_is_blocked(tmp_path):
+    out = _batch_hop(
+        tmp_path, DNC_PHONE,
+        {"phone": DNC_PHONE, **_clean_info(is_clean=False, national_dnc=True)},
+    )
+    row = _staged_row(out, DNC_PHONE)
+    assert row["scrub_status"] == "dnc"
+    assert "national_dnc" in row["scrub_flags"]
+    assert not is_scrub_pass(row)
+
+
+def test_batch_hop_H_conflicting_clean_plus_flag_is_dnc_not_clean(tmp_path):
+    out = _batch_hop(
+        tmp_path, CLEAN_PHONE,
+        {"phone": CLEAN_PHONE, **_clean_info(national_dnc=True)},
+    )
+    row = _staged_row(out, CLEAN_PHONE)
+    assert row["scrub_status"] == "dnc"
+    assert row["scrub_flags"] == "national_dnc"
+    assert not is_scrub_pass(row)
+
+
+def test_batch_hop_resume_keeps_unknown_unchecked_without_resubmit(tmp_path, monkeypatch):
+    submits = []
+
+    def boom_submit(*_a, **_k):
+        submits.append("submit")
+        raise AssertionError("no new provider submit")
+
+    monkeypatch.setattr(tracerfy, "submit_trace", boom_submit)
+    monkeypatch.setattr(tracerfy, "submit_dnc", boom_submit)
+    monkeypatch.setattr(tracerfy, "_request", boom_submit)
+
+    dnc_rows = [
+        {"phone": CLEAN_PHONE, **_clean_info()},
+        {"phone": DNC_PHONE, **_clean_info(is_clean=False, national_dnc=True)},
+        {"phone": UNKNOWN_PHONE, "is_clean": None,
+         "national_dnc": False, "state_dnc": False, "dma": False, "litigator": False},
+        {"phone": "15175550100", **_clean_info()},
+    ]
+    trace_results = [
+        {"primary_phone": CLEAN_PHONE, "landline_1": DNC_PHONE},
+        {"primary_phone": UNKNOWN_PHONE, "mobile_1": SYNTH_555},
+    ]
+    monkeypatch.setattr(tracerfy, "poll_queue", lambda *_a, **_k: trace_results)
+    monkeypatch.setattr(tracerfy, "poll_dnc", lambda *_a, **_k: dnc_rows)
+
+    targets = [
+        {"lead_id": OWNER_A, "owner_name": "SYNTHETIC OWNER A"},
+        {"lead_id": OWNER_B, "owner_name": "SYNTHETIC OWNER B"},
+    ]
+    recs, stats = tracerfy.trace_pool(
+        targets, "test-key", do_dnc=True,
+        resume_queue_id="8001", resume_dnc_queue_id="9001",
+    )
+    unknown_phone = next(
+        p for _, c in recs for p in c["phones"]
+        if tracerfy._digits(p["number"]) == UNKNOWN_PHONE
+    )
+    assert unknown_phone.get("dnc") is not True
+
+    persist_vendor_payload(
+        tmp_path, dnc_queue_id="9001", vendor_rows=dnc_rows, trace_queue_id="8001",
+    )
+    first = tracerfy.persist_batch_dnc_receipt(
+        recs, stats, out_dir=str(tmp_path), map_keys=lambda _ids: _mapping(),
+        scrubbed_at="2026-08-17T00:00:00Z",
+        provider_base="https://tracerfy.com/v1/api",
+    )
+    unknown = _staged_row(first, UNKNOWN_PHONE)
+    assert unknown["scrub_status"] == "unchecked"
+    assert unknown["scrub_flags"] == "vendor_unknown"
+    blocked = _staged_row(first, DNC_PHONE)
+    assert blocked["scrub_status"] == "dnc"
+
+    second = tracerfy.persist_batch_dnc_receipt(
+        recs, stats, out_dir=str(tmp_path), map_keys=lambda _ids: _mapping(),
+        scrubbed_at="2026-08-17T00:00:00Z",
+        provider_base="https://tracerfy.com/v1/api",
+    )
+    assert second["reused"] is True
+    assert second["csv_sha256"] == first["csv_sha256"]
+    unknown2 = _staged_row(second, UNKNOWN_PHONE)
+    assert unknown2["scrub_status"] == "unchecked"
+    assert submits == []

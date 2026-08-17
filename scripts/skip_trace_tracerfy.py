@@ -513,13 +513,21 @@ def _pair_results(results, targets):
 
 
 def _as_bool(v):
+    """Provider nullable boolean. None/missing/unrecognized stay None. Never None→False."""
+    if v is None:
+        return None
     if isinstance(v, bool):
         return v
     if isinstance(v, (int, float)):
         return v != 0
     if isinstance(v, str):
-        return v.strip().lower() in ("true", "yes", "1", "y", "t")
-    return False
+        s = v.strip().lower()
+        if s in ("true", "yes", "1", "y", "t"):
+            return True
+        if s in ("false", "no", "0", "n", "f"):
+            return False
+        return None
+    return None
 
 
 def _digits(s):
@@ -546,15 +554,21 @@ def _dnc_index(rows):
 
 
 def _apply_dnc(recs, dnc_map):
-    """Stamp dnc on each phone. Strict: callable ONLY if is_clean (i.e. national/state/dma/litigator
-    all false). A number Tracerfy did not return in the scrub is left unflagged (unchecked)."""
+    """Stamp dnc on each phone. Callable ONLY on explicit is_clean True with no explicit
+    block flags. Explicit False or explicit national/state/dma/litigator True is blocked.
+    Missing vendor rows and is_clean None stay unflagged (unchecked). Never None→False."""
+    flag_names = ("national_dnc", "state_dnc", "dma", "litigator")
     for _, c in recs:
         for p in c["phones"]:
             info = dnc_map.get(_digits(p["number"]))
             if info is None:
                 continue
-            p["dnc"] = not info["is_clean"] or info["national_dnc"] or info["state_dnc"] \
-                or info["dma"] or info["litigator"]
+            flags = any(info.get(name) is True for name in flag_names)
+            is_clean = info.get("is_clean")
+            if is_clean is True and not flags:
+                p["dnc"] = False
+            elif flags or is_clean is False:
+                p["dnc"] = True
 
 
 def trace_pool(targets, key, do_dnc=False, dnc_budget_usd=None, resume_queue_id=None,
