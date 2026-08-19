@@ -58,6 +58,8 @@ from app.resolution.official_import import (
     entity_relationships as official_entity,
     estate_relationships as official_estate,
     load_import_csv as official_load,
+    recover_entity_confidence,
+    recover_estate_confidence,
 )
 from app.resolution.router import QUEUE_CONTACT_STATUS
 
@@ -483,6 +485,53 @@ def apply_plan(conn, records_by_id, plans: List[dict], tenant_id: str,
     return dict(counts)
 
 
+def normalize_care_of_party_names(conn, tenant_id: str) -> dict:
+    """Strip a care-of marker out of a canonical party name, in place.
+
+    A parcel roll writes the marker inside the owner name -- `% IDA MAE P
+    BROWN`. T22 imported it verbatim, so the graph holds a party whose name is
+    an annotation plus a person. Any later supply that cleans the marker (T24C
+    does) resolves the same human to `IDA MAE P BROWN` and lands a SECOND party
+    beside the first. The adapter now strips it on the way in; this repairs the
+    rows that arrived before it did, so both supplies converge on one party.
+
+    Fails closed: if the stripped name already belongs to a DIFFERENT party,
+    nothing is touched and the collision is reported for a human. Merging two
+    party rows is not a rename and is not done here.
+
+    Idempotent by construction -- after one run no care-of name is left to match.
+    """
+    report = {"CANDIDATES": [], "RENAMED": 0, "COLLISIONS": []}
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(r"""
+            select party_id::text, kind, canonical_name,
+                   btrim(regexp_replace(canonical_name,
+                         '^\s*(%|C\s*/\s*O|ATTN)[:.]?\s+', '', 'i')) as stripped
+              from public.parties
+             where tenant_id = %s::uuid
+               and canonical_name ~* '^\s*(%|C\s*/\s*O|ATTN)[:.]?\s+'
+        """, (tenant_id,))
+        rows = cur.fetchall()
+        for r in rows:
+            if not r["stripped"] or r["stripped"] == r["canonical_name"]:
+                continue
+            cur.execute("""select party_id::text from public.parties
+                            where tenant_id=%s::uuid and kind=%s and canonical_name=%s""",
+                        (tenant_id, r["kind"], r["stripped"]))
+            clash = cur.fetchone()
+            if clash and clash["party_id"] != r["party_id"]:
+                report["COLLISIONS"].append(
+                    {"party_id": r["party_id"], "from": r["canonical_name"],
+                     "to": r["stripped"], "existing_party_id": clash["party_id"]})
+                continue
+            cur.execute("""update public.parties set canonical_name=%s, updated_at=now()
+                            where party_id=%s::uuid""", (r["stripped"], r["party_id"]))
+            report["RENAMED"] += cur.rowcount
+            report["CANDIDATES"].append({"party_id": r["party_id"],
+                                         "from": r["canonical_name"], "to": r["stripped"]})
+    return report
+
+
 def resolution_row_for(rec, tenant_id: str, estate_rev: str) -> dict:
     ns = rec.next_source or {}
     living = rec.living_parties
@@ -521,6 +570,17 @@ def main() -> int:
                                             / "05_IMPORT_READY"),
                     help="T22 import-ready official identity evidence (EXACT/HIGH only)")
     ap.add_argument("--no-t22", action="store_true", help="project without T22 evidence")
+    ap.add_argument("--t24c-dir", default=str(Path.home() / "neuruh-workspace"
+                                              / "T24C_PUBLIC_DATA_GRAND_MINE_20260819"),
+                    help="T24C package ROOT. Its 05_IMPORT_READY rows carry no "
+                         "confidence token; the gate reads it from 04_NORMALIZED "
+                         "and drops any row the evidence does not cover.")
+    ap.add_argument("--no-t24c", action="store_true", help="project without T24C evidence")
+    ap.add_argument("--cascade-dir", action="append", default=[],
+                    help="A $0 contact-cascade output directory. Its _rejected.json "
+                         "records which candidates the voter file was already asked "
+                         "about and returned nothing for, so the router stops "
+                         "recommending it to them. Repeatable.")
     ap.add_argument("--database-url", default=os.environ.get("DEEDSONAR_DATABASE_URL") or os.environ.get("DATABASE_URL"))
     ap.add_argument("--apply", action="store_true", help="perform the production write")
     ap.add_argument("--verify-idempotent", action="store_true")
@@ -545,28 +605,95 @@ def main() -> int:
     ipath = bundle_dir / "CANDIDATE_IDENTITY_LEDGER.csv"
     identity = load_csv(ipath) if ipath.exists() else []
 
-    # T22's official county-roll and registry identities. REVIEW rows are not
-    # in these files and are never imported without a human.
+    # Official county-roll and registry identities. REVIEW rows are not in these
+    # files and are never imported without a human.
+    #
+    # T22 is loaded first and T24C second, because build_records() keeps the
+    # first relationship it sees for a given (person, role) and T22's are the
+    # ones already standing in production. A second supply may extend the graph;
+    # it may not restate or reorder it.
     official: dict = {}
-    t22_counts = {"ESTATE_ROWS": 0, "ENTITY_ROWS": 0, "CANDIDATES": 0, "RELATIONSHIPS": 0}
+    supply_counts: dict = {}
+
+    def _absorb(rels_by_cid) -> int:
+        n = 0
+        for cid, rels in rels_by_cid.items():
+            official.setdefault(cid, []).extend(rels)
+            n += len(rels)
+        return n
+
     if not args.no_t22:
         t22 = Path(args.t22_dir).expanduser()
         estate_rows = official_load(t22 / "NC_ESTATE_IDENTITY_IMPORT.csv")
         entity_rows = official_load(t22 / "NC_ENTITY_IDENTITY_IMPORT.csv")
-        t22_counts["ESTATE_ROWS"] = len(estate_rows)
-        t22_counts["ENTITY_ROWS"] = len(entity_rows)
-        for source in (official_estate(estate_rows), official_entity(entity_rows)):
-            for cid, rels in source.items():
-                official.setdefault(cid, []).extend(rels)
-        t22_counts["CANDIDATES"] = len(official)
-        t22_counts["RELATIONSHIPS"] = sum(len(v) for v in official.values())
-        print(f"T22     estate_rows={t22_counts['ESTATE_ROWS']} "
-              f"entity_rows={t22_counts['ENTITY_ROWS']} "
-              f"candidates={t22_counts['CANDIDATES']} "
-              f"relationships={t22_counts['RELATIONSHIPS']}")
+        rel_n = (_absorb(official_estate(estate_rows))
+                 + _absorb(official_entity(entity_rows)))
+        supply_counts["T22"] = {"ESTATE_ROWS": len(estate_rows),
+                                "ENTITY_ROWS": len(entity_rows),
+                                "RELATIONSHIPS": rel_n,
+                                "DIR": str(t22)}
+
+    if not args.no_t24c:
+        t24c = Path(args.t24c_dir).expanduser()
+        imp, norm = t24c / "05_IMPORT_READY", t24c / "04_NORMALIZED"
+        estate_rows = official_load(imp / "NC_ESTATE_IDENTITY_IMPORT.csv")
+        entity_rows = official_load(imp / "NC_ENTITY_IDENTITY_IMPORT.csv")
+        # Confidence is recovered from the supply's own evidence, never asserted
+        # by the import file. Withhold these maps and every T24C row is dropped.
+        est_conf = recover_estate_confidence(norm / "ESTATE_RESOLUTION_EVIDENCE.csv")
+        ent_conf = recover_entity_confidence(norm / "ENTITY_RESOLUTION_EVIDENCE.csv")
+        rel_n = (_absorb(official_estate(estate_rows, est_conf))
+                 + _absorb(official_entity(entity_rows, ent_conf)))
+        supply_counts["T24C"] = {"ESTATE_ROWS": len(estate_rows),
+                                 "ENTITY_ROWS": len(entity_rows),
+                                 "RELATIONSHIPS": rel_n,
+                                 "ESTATE_EVIDENCE_KEYS": len(est_conf),
+                                 "ENTITY_EVIDENCE_KEYS": len(ent_conf),
+                                 "DIR": str(t24c)}
+
+    t22_counts = {
+        "ESTATE_ROWS": sum(v["ESTATE_ROWS"] for v in supply_counts.values()),
+        "ENTITY_ROWS": sum(v["ENTITY_ROWS"] for v in supply_counts.values()),
+        "CANDIDATES": len(official),
+        "RELATIONSHIPS": sum(len(v) for v in official.values()),
+        "BY_SUPPLY": supply_counts,
+    }
+    for name, c in supply_counts.items():
+        print(f"{name:<7} estate_rows={c['ESTATE_ROWS']} entity_rows={c['ENTITY_ROWS']} "
+              f"relationships_admitted={c['RELATIONSHIPS']}")
+    print(f"OFFICIAL candidates={t22_counts['CANDIDATES']} "
+          f"relationships={t22_counts['RELATIONSHIPS']}")
+
+    # What the free cascade has already been asked, and what it returned. A
+    # source that was RUN and found nothing is exhausted; a source that was HELD
+    # because its file was not on the host was never actually asked, and saying
+    # otherwise would retire a route that still has yield in it.
+    attempted: Dict[str, set] = defaultdict(set)
+    cascade_counts = {"DIRS": 0, "EXHAUSTED_SUBJECTS": 0, "HELD_NOT_EXHAUSTED": 0}
+    EXHAUSTED_VERDICTS = {"NO_MATCH", "IDENTITY_CORROBORATED_NO_PHONE"}
+    for d in args.cascade_dir:
+        rej = Path(d).expanduser() / "_rejected.json"
+        if not rej.exists():
+            print(f"cascade dir has no _rejected.json, skipped: {d}", file=sys.stderr)
+            continue
+        cascade_counts["DIRS"] += 1
+        for row in json.loads(rej.read_text()):
+            cid = (row.get("candidate_id") or "").strip()
+            if not cid:
+                continue
+            if row.get("verdict") in EXHAUSTED_VERDICTS:
+                attempted[cid].add("NCSBE_PUBLIC_VOTER_FILE")
+                cascade_counts["EXHAUSTED_SUBJECTS"] += 1
+            else:
+                cascade_counts["HELD_NOT_EXHAUSTED"] += 1
+    if args.cascade_dir:
+        print(f"CASCADE dirs={cascade_counts['DIRS']} "
+              f"candidates_with_an_exhausted_automatic_source={len(attempted)} "
+              f"held_not_exhausted={cascade_counts['HELD_NOT_EXHAUSTED']}")
 
     records = build_records(estate, appends, ledger, rev, identity_ledger=identity,
-                            official_relationships=official)
+                            official_relationships=official,
+                            attempted_sources=attempted)
     by_id = {r.candidate_id: r for r in records}
     # Everything with a proven party, not only everything with a phone. The
     # narrower set is still reported separately so the phone numbers stay
@@ -614,6 +741,7 @@ def main() -> int:
             "tenant_ids": sorted(tenant_ids),
             "actions": dict(actions),
             "callability_status": CALLABILITY_NOT_AUTHORIZED,
+            "CASCADE_MEMORY": {**cascade_counts, "CANDIDATES": len(attempted)},
         }
         (out / "CONTACT_PROJECTION_RECEIPT.json").write_text(json.dumps(court, indent=2, sort_keys=True))
         print(json.dumps(court, indent=2, sort_keys=True))
@@ -684,6 +812,18 @@ def main() -> int:
         print(f"\nrollback manifest written: {priv / 'ROLLBACK_MANIFEST.json'} "
               f"({len(manifest['rows'])} rows)")
 
+        # Before the first insert: make the graph's names match the names the
+        # adapter now produces, or the same human lands twice.
+        careof = normalize_care_of_party_names(conn, tenant_id)
+        (priv / "CARE_OF_NAME_REPAIR.json").write_text(json.dumps(careof, indent=2, sort_keys=True))
+        print(f"care-of name repair: renamed={careof['RENAMED']} "
+              f"collisions_held={len(careof['COLLISIONS'])}")
+        if careof["COLLISIONS"]:
+            print("\nREFUSING TO WRITE: a care-of rename would collide with an "
+                  "existing party; merging parties is a human decision", file=sys.stderr)
+            conn.rollback()
+            return 6
+
         resolution_rows = [resolution_row_for(r, tenant_id, rev) for r in records]
         counts = apply_plan(conn, by_id, plans, tenant_id, rev, run_id, resolution_rows)
         conn.commit()
@@ -715,6 +855,8 @@ def main() -> int:
             "CONTACT_ROWS_NOOP": counts.get(ACTION_NOOP, 0),
             "CONTACT_CONFLICTS_HELD": counts.get(ACTION_CONFLICT_HOLD, 0),
             "DUPLICATES_CREATED": dupes,
+            "CARE_OF_NAMES_REPAIRED": careof["RENAMED"],
+            "CARE_OF_COLLISIONS_HELD": len(careof["COLLISIONS"]),
             "CALLABILITY_LEAKS": callable_leak,
             "pre_write_counts": manifest["pre_write_counts"],
             "post_write_counts": post,

@@ -546,6 +546,38 @@ def test_identity_ledger_adds_named_parties_without_duplicating_phone_ones():
     assert by_id["c2"].operator_queue == "ESTATE_IDENTITY_FOUND_CONTACT_NEEDED"
 
 
+def test_a_source_already_run_is_not_recommended_again():
+    """The v3 memory rule only bites if something hands the router the memory.
+
+    It had the rule and no memory: a candidate the voter file had already been
+    asked about, and which it had no phone for, was routed straight back to the
+    voter file. 62 Qualified rows in production carried that instruction.
+    """
+    idl = [{"candidate_id": "c2", "matched_person": "MARY DOE", "relationship": "HEIR",
+            "phone_present": "NO", "identity_source": "NCSBE_PUBLIC_VOTER_FILE",
+            "why_matched": "TIER_A", "observed_at": "2026-08-16T00:00:00Z"}]
+    naive = {r.candidate_id: r for r in
+             build_records(ESTATE, APPENDS, LEDGER, "rev1", identity_ledger=idl)}
+    assert naive["c2"].next_source["next_source"] == "NCSBE_PUBLIC_VOTER_FILE"
+
+    remembered = {r.candidate_id: r for r in build_records(
+        ESTATE, APPENDS, LEDGER, "rev1", identity_ledger=idl,
+        attempted_sources={"c2": ["NCSBE_PUBLIC_VOTER_FILE"]})}
+    route = remembered["c2"].next_source
+    assert route["next_source"] == "MANUAL_PUBLIC_RECORD"
+    assert "exhausted" in route["blocking_reason"]
+
+
+def test_memory_of_one_candidate_does_not_reroute_another():
+    idl = [{"candidate_id": "c2", "matched_person": "MARY DOE", "relationship": "HEIR",
+            "phone_present": "NO", "identity_source": "NCSBE_PUBLIC_VOTER_FILE",
+            "why_matched": "TIER_A", "observed_at": "2026-08-16T00:00:00Z"}]
+    recs = {r.candidate_id: r for r in build_records(
+        ESTATE, APPENDS, LEDGER, "rev1", identity_ledger=idl,
+        attempted_sources={"c1": ["NCSBE_PUBLIC_VOTER_FILE"]})}
+    assert recs["c2"].next_source["next_source"] == "NCSBE_PUBLIC_VOTER_FILE"
+
+
 def test_qualified_board_explains_every_qualified_row():
     recs = build_records(ESTATE, APPENDS, LEDGER, "rev1")
     board = to_qualified_board(recs)

@@ -38,7 +38,9 @@ from app.contact.owner_identity import parse_owner_name
 from app.contact.phone_normalize import normalize_us_phone
 from app.custody.sync_guard import prepare_output_dir
 from app.resolution.official_import import (
-    entity_relationships, estate_relationships, load_import_csv, parse_source_document,
+    canonical_person, entity_relationships, estate_relationships, load_import_csv,
+    normalize_person, parse_source_document, recover_entity_confidence,
+    recover_estate_confidence,
 )
 
 NCSBE_COUNTIES = {
@@ -87,50 +89,96 @@ def main() -> int:
                                                / "_raw" / "ncsbe"))
     ap.add_argument("--out-dir", default=str(Path.home() / "neuruh-private" / "contact-intelligence"
                                              / "runs" / "T24A_T22_CONTACT_CASCADE"))
+    ap.add_argument("--t24c-dir", default="",
+                    help="T24C package ROOT. Confidence is recovered from its "
+                         "04_NORMALIZED evidence, never taken from the import file.")
+    ap.add_argument("--subjects-filter", default="",
+                    help="CSV of candidate_id,person. Restricts the cascade to "
+                         "those subjects -- the newly proven identities -- instead "
+                         "of re-asking the voter file about people already asked.")
     args = ap.parse_args()
 
     out = prepare_output_dir(args.out_dir, what="T22 contact cascade output")
     t22 = Path(args.t22_dir).expanduser()
     ncsbe = Path(args.ncsbe_dir).expanduser()
 
-    estate_rows = load_import_csv(t22 / "NC_ESTATE_IDENTITY_IMPORT.csv")
-    entity_rows = load_import_csv(t22 / "NC_ENTITY_IDENTITY_IMPORT.csv")
+    estate_rows = [("T22", r, None)
+                   for r in load_import_csv(t22 / "NC_ESTATE_IDENTITY_IMPORT.csv")]
+    entity_rows = [("T22", r, None)
+                   for r in load_import_csv(t22 / "NC_ENTITY_IDENTITY_IMPORT.csv")]
+    if args.t24c_dir:
+        t24c = Path(args.t24c_dir).expanduser()
+        imp, norm = t24c / "05_IMPORT_READY", t24c / "04_NORMALIZED"
+        est_conf = recover_estate_confidence(norm / "ESTATE_RESOLUTION_EVIDENCE.csv")
+        ent_conf = recover_entity_confidence(norm / "ENTITY_RESOLUTION_EVIDENCE.csv")
+        estate_rows += [("T24C", r, est_conf)
+                        for r in load_import_csv(imp / "NC_ESTATE_IDENTITY_IMPORT.csv")]
+        entity_rows += [("T24C", r, ent_conf)
+                        for r in load_import_csv(imp / "NC_ENTITY_IDENTITY_IMPORT.csv")]
+
+    # Only the identities this run actually proved, when a filter is supplied.
+    wanted = None
+    if args.subjects_filter:
+        wanted = set()
+        for row in load_import_csv(Path(args.subjects_filter).expanduser()):
+            wanted.add(((row.get("candidate_id") or "").strip(),
+                        normalize_person(row.get("person") or "")))
+
+    def admitted(lane, row, conf_map, person) -> bool:
+        """Same gate the importer uses: stated confidence, or recovered from
+        evidence, and never defaulted."""
+        meta = parse_source_document(row.get("source_document") or "")
+        confidence = meta["confidence"]
+        if not confidence and conf_map is not None:
+            got = conf_map.get(((row.get("candidate_id") or row.get("property_candidate_id")
+                                 or "").strip(), normalize_person(person)))
+            confidence = (got.confidence if got else "").upper()
+        return confidence in {"EXACT", "HIGH"}
 
     # Each subject keeps the county and mailing address its own source stated;
     # that is what makes an address-corroborated match possible at all.
     subjects = []
-    for row in estate_rows:
-        meta = parse_source_document(row.get("source_document") or "")
-        if meta["confidence"] not in {"EXACT", "HIGH"}:
-            continue
+    seen_subject = set()
+    for lane, row, conf_map in estate_rows:
         person = ((row.get("personal_representative_name") or "").strip()
                   or (row.get("heir_name") or "").strip())
-        if not person:
+        if not person or not admitted(lane, row, conf_map, person):
             continue
+        cid = (row.get("property_candidate_id") or "").strip()
+        key = (cid, normalize_person(person))
+        if wanted is not None and key not in wanted:
+            continue
+        if key in seen_subject:
+            continue
+        seen_subject.add(key)
         subjects.append({
-            "candidate_id": (row.get("property_candidate_id") or "").strip(),
-            "person": person,
+            "candidate_id": cid,
+            "person": canonical_person(person),
             "county": (row.get("county") or "").strip(),
             "mailing_address": (row.get("mailing_address") or "").strip(),
             "mailing_city": (row.get("mailing_city") or "").strip(),
             "mailing_state": (row.get("mailing_state") or "").strip(),
             "mailing_zip": (row.get("mailing_zip") or "").strip(),
-            "origin": "T22_ESTATE",
+            "origin": f"{lane}_ESTATE",
         })
-    for row in entity_rows:
-        meta = parse_source_document(row.get("source_document") or "")
-        if meta["confidence"] not in {"EXACT", "HIGH"}:
-            continue
+    for lane, row, conf_map in entity_rows:
         person = (row.get("official_name") or "").strip()
-        if not person:
+        if not person or not admitted(lane, row, conf_map, person):
             continue
+        cid = (row.get("property_candidate_id") or "").strip()
+        key = (cid, normalize_person(person))
+        if wanted is not None and key not in wanted:
+            continue
+        if key in seen_subject:
+            continue
+        seen_subject.add(key)
         subjects.append({
-            "candidate_id": (row.get("property_candidate_id") or "").strip(),
-            "person": person,
+            "candidate_id": cid,
+            "person": canonical_person(person),
             "county": (row.get("county") or "").strip(),
             "mailing_address": (row.get("mailing_office") or "").strip(),
             "mailing_city": "", "mailing_state": "", "mailing_zip": "",
-            "origin": "T22_ENTITY",
+            "origin": f"{lane}_ENTITY",
         })
 
     by_county = {}
@@ -194,13 +242,14 @@ def main() -> int:
 
     report = {
         "generated_at": utcnow(),
-        "T22_PARTIES_ACCEPTED": len(subjects),
-        "T22_PARTIES_CONTACT_ATTEMPTED": len(subjects),
-        "T22_HIGH_PHONE": verdicts.get("HIGH_PHONE", 0),
-        "T22_CONTACT_ABSENT": verdicts.get("NO_PHONE", 0)
+        "PARTIES_ACCEPTED": len(subjects),
+        "SUBJECTS_FILTERED_TO": (len(wanted) if wanted is not None else None),
+        "PARTIES_CONTACT_ATTEMPTED": len(subjects),
+        "HIGH_PHONE": verdicts.get("HIGH_PHONE", 0),
+        "CONTACT_ABSENT": verdicts.get("NO_PHONE", 0)
                               + verdicts.get("IDENTITY_ONLY_NO_PHONE_ON_RECORD", 0),
-        "T22_HELD": verdicts.get("HELD_NO_VOTER_FILE", 0),
-        "T22_EMAIL": 0,
+        "HELD": verdicts.get("HELD_NO_VOTER_FILE", 0),
+        "EMAIL": 0,
         "PROVIDER_SPEND_USD": "0.00",
         "verdicts": dict(verdicts),
         "counties": {c: len(g) for c, g in sorted(by_county.items())},

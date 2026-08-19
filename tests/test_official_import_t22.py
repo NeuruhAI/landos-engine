@@ -101,9 +101,13 @@ def test_a_registered_agent_stays_a_registered_agent():
 
 
 def test_source_document_parses_into_its_five_parts():
+    """The parser learned T24C's grammar and gained a `corroborating_sources`
+    field for it. T22 states no corroboration list, so the field is empty and
+    the five parts T22 does state are unchanged."""
     meta = parse_source_document("T22|WAKE_PARCELS|http://x|conf=EXACT|OFFICIAL_ROLE_STATED")
     assert meta == {"lane": "T22", "source_name": "WAKE_PARCELS", "locator": "http://x",
-                    "confidence": "EXACT", "match_method": "OFFICIAL_ROLE_STATED"}
+                    "confidence": "EXACT", "match_method": "OFFICIAL_ROLE_STATED",
+                    "corroborating_sources": ()}
 
 
 @pytest.mark.skipif(not (Path.home() / "neuruh-workspace"

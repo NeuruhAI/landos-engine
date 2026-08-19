@@ -42,7 +42,39 @@ def utcnow() -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--cascade-dir", action="append", default=[],
+                    help="A $0 contact-cascade output directory. Repeatable. See "
+                         "the note on negative memory below.")
     args = ap.parse_args()
+
+    # ------------------------------------------------------------------
+    # Negative memory.
+    #
+    # The query below derives "already attempted" from the evidence rows a
+    # candidate carries -- which means it can only ever see sources that
+    # SUCCEEDED. A candidate the voter file was asked about and had no phone for
+    # produces no evidence, looks untried, and is routed straight back to the
+    # voter file. 62 Qualified rows carried exactly that instruction.
+    #
+    # The cascade's own _rejected.json is the missing record: it lists every
+    # subject the source was asked about and returned nothing for. HELD is not
+    # in that set -- a source whose file was absent from the host was never
+    # actually asked, and retiring it would discard a route that still has yield.
+    # ------------------------------------------------------------------
+    EXHAUSTED_VERDICTS = {"NO_MATCH", "IDENTITY_CORROBORATED_NO_PHONE"}
+    negative: dict = {}
+    for d in args.cascade_dir:
+        rej = Path(d).expanduser() / "_rejected.json"
+        if not rej.exists():
+            print(f"cascade dir has no _rejected.json, skipped: {d}", file=sys.stderr)
+            continue
+        for row in json.loads(rej.read_text()):
+            cid = (row.get("candidate_id") or "").strip()
+            if cid and row.get("verdict") in EXHAUSTED_VERDICTS:
+                negative.setdefault(cid, set()).add("NCSBE_PUBLIC_VOTER_FILE")
+    if args.cascade_dir:
+        print(f"negative memory: {len(negative)} candidates carry a source that was "
+              f"run and returned nothing")
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         print("DATABASE_URL is required", file=sys.stderr)
@@ -81,7 +113,8 @@ def main() -> int:
                 has_living_identity=bool(row["has_living_identity"]),
                 has_high_phone=(row["high_phone_count"] or 0) > 0,
                 tier_c_held=row["contact_resolution_state"] == "TIER_C_HELD_NOT_APPENDED",
-                attempted_sources=frozenset(row["attempted"] or ()),
+                attempted_sources=frozenset(row["attempted"] or ())
+                                  | negative.get(row["candidate_id"], set()),
                 entity_resolution_state=row["entity_state"] or "",
                 entity_principal_known=bool(row["entity_principal"]),
             )
@@ -94,6 +127,7 @@ def main() -> int:
 
         report = {"generated_at": utcnow(), "router_version": ROUTER_VERSION,
                   "scanned": len(rows), "rows_rerouted": len(changes),
+                  "negative_memory_candidates": len(negative),
                   "queues_after": dict(queues.most_common())}
         print(json.dumps(report, indent=1))
         if not args.apply:

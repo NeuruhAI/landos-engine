@@ -19,7 +19,7 @@ from __future__ import annotations
 import csv
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..contact.owner_class import owner_route_class
 from ..contact.owner_identity import parse_owner_name
@@ -284,8 +284,17 @@ def build_records(
     tier_c_certified_ids: Optional[Iterable[str]] = None,
     identity_ledger: Optional[Sequence[dict]] = None,
     official_relationships: Optional[Dict[str, List[Relationship]]] = None,
+    attempted_sources: Optional[Mapping[str, Iterable[str]]] = None,
 ) -> List[ResolutionRecord]:
+    """`attempted_sources` is candidate_id -> the sources already run against it.
+
+    The router has enforced "never recommend an automated source that already
+    returned nothing" since v3, but nothing ever handed it the memory, so a
+    candidate the voter file had already been asked about was routed straight
+    back to the voter file. Passing it here is what makes the rule bite.
+    """
     certified = set(tier_c_certified_ids or ())
+    attempted_by_cand = {k: frozenset(v) for k, v in (attempted_sources or {}).items()}
     appends_by_cand: Dict[str, List[dict]] = defaultdict(list)
     for row in append_rows:
         appends_by_cand[_s(row, "candidate_id")].append(row)
@@ -335,6 +344,7 @@ def build_records(
             has_high_phone=has_high,
             tier_c_held=(state == TIER_C_STATE),
             tier_c_certified=cid in certified,
+            attempted_sources=attempted_by_cand.get(cid),
         )
         rec = ResolutionRecord(
             candidate_id=cid,
