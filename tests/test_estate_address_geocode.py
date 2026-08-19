@@ -122,3 +122,22 @@ def test_this_path_never_emits_COARSE():
     # here may add to that class or promote them.
     out = court(row(), hit())
     assert out["coordinate_class"] != "COARSE"
+
+
+# ---- the shared-address guard ------------------------------------------------
+
+def test_the_shared_address_threshold_is_explicit():
+    from scripts.resolve_estate_address_geocode import SHARED_ADDRESS_THRESHOLD
+    assert SHARED_ADDRESS_THRESHOLD == 3, (
+        "distinct parcels cannot share a coordinate; two is a duplex, three is "
+        "an institutional address")
+
+
+def test_the_guard_rejects_a_shared_institutional_point():
+    """Reproduces the live 2026-08-19 case: 39 Cabarrus parcels all carrying
+    '61 UNION ST S CONCORD NC', the county government address."""
+    import importlib
+    mod = importlib.import_module("scripts.resolve_estate_address_geocode")
+    src = open(mod.__file__).read()
+    assert "SHARED_ADDRESS_REJECTED" in src
+    assert "by_point" in src, "the guard must group resolved rows by coordinate"
