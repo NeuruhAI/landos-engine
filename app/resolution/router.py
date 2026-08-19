@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 
 from .sources import NC_COUNTIES
 
-ROUTER_VERSION = "next_best_source.v1"
+ROUTER_VERSION = "next_best_source.v3"
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,12 @@ Q_TIER_C_REVIEW = "TIER_C_REVIEW"
 Q_FREE_EXHAUSTED = "FREE_ROUTES_EXHAUSTED"
 Q_NO_SAFE_MATCH = "NO_SAFE_MATCH"
 Q_NOT_A_SELLER = "NOT_A_SELLER_CONTACT"
+# v3. Two arrivals the entity route can now reach, because entity resolution
+# happens once per ENTITY and fans out to every parcel it owns.
+Q_ENTITY_ID_FOUND = "ENTITY_IDENTITY_FOUND_CONTACT_NEEDED"
+# v3. The route the router used to hide inside "free routes exhausted": a source
+# exists, it is legitimate, and it cannot be reached by a script.
+Q_MANUAL_SOURCE = "MANUAL_SOURCE_REQUIRED"
 
 OPERATOR_QUEUES = (
     Q_CONTACT_HIGH,
@@ -203,7 +209,7 @@ def _trust_route(state: str, has_living_identity: bool) -> NextSource:
     )
 
 
-def next_best_source(
+def _route_for(
     *,
     owner_class: str,
     owner_condition: str,
@@ -213,8 +219,25 @@ def next_best_source(
     has_high_phone: bool = False,
     tier_c_held: bool = False,
     tier_c_certified: bool = False,
+    attempted_sources: Optional[frozenset] = None,
+    entity_resolution_state: str = "",
+    entity_principal_known: bool = False,
 ) -> NextSource:
-    """The single decision. Owner condition first, failure message second."""
+    """The single decision. Owner condition first, failure message second.
+
+    v3 adds three inputs and no new vocabulary of its own:
+
+      attempted_sources        what has already been run against this candidate.
+                               A router that keeps recommending a source that
+                               has already returned nothing is not routing, it
+                               is looping, and the operator pays for it.
+      entity_resolution_state  entity research happens once per ENTITY and fans
+                               out. A parcel whose owner has already been
+                               resolved should not be sent to the SOS a second
+                               time on behalf of the same LLC.
+      entity_principal_known   whether that resolution actually named a human.
+    """
+    attempted = attempted_sources or frozenset()
 
     if has_high_phone:
         return NextSource(
@@ -265,6 +288,36 @@ def next_best_source(
 
     if owner_class == "TRUST" or owner_condition == "TRUST_HELD":
         return _trust_route(contact_resolution_state, has_living_identity)
+
+    # v3: the entity has already been researched. Say what THAT produced rather
+    # than sending the operator back to a search someone has already run.
+    if entity_resolution_state and entity_resolution_state not in {
+            "ENTITY_IDENTITY_REQUIRED", "ENTITY_REVIEW"}:
+        if entity_principal_known:
+            return NextSource(
+                next_source="OPERATOR_CONTACT_ENTITY_PRINCIPAL",
+                why="An official registry already names a principal for this entity, "
+                    "resolved once and shared by every parcel it owns.",
+                required_input="the entity record already on file",
+                cost_usd="0.00",
+                manual_or_automatic="MANUAL",
+                expected_information="a natural person to approach on behalf of the entity",
+                blocking_reason="",
+                queue=Q_ENTITY_PRINCIPAL_FOUND,
+            )
+        if entity_resolution_state == "ENTITY_OFFICIAL_ADDRESS_FOUND":
+            return NextSource(
+                next_source="NC_SOS_ENTITY_DETAIL_MANUAL",
+                why="The entity's official mailing address is known from the county "
+                    "roll; the registry record that names a human is not. That step "
+                    "is one lookup for the entity, not one per parcel.",
+                required_input="entity legal name",
+                cost_usd="0.00",
+                manual_or_automatic="MANUAL",
+                expected_information="registered agent, officers, managers, members",
+                blocking_reason="NC SOS entity search prohibits automated querying.",
+                queue=Q_ENTITY_ID_FOUND,
+            )
 
     if owner_class in {"LLC", "CORPORATION", "OTHER_ENTITY", "NONPROFIT"} or \
        owner_condition in {"ENTITY_ACTIVE", "ENTITY_STATUS_UNKNOWN"}:
@@ -330,6 +383,49 @@ def next_best_source(
     )
 
 
+# Sources that produce nothing new on a second automated pass against the same
+# candidate. A manual source is NOT here: a human reading a probate file after a
+# script failed is a different act, not a repeat of the same one.
+_EXHAUSTED_ON_REPEAT = frozenset({
+    "NCSBE_PUBLIC_VOTER_FILE",
+    "IRS_EO_BMF_NC",
+    "IRS_FORM_990_PUBLIC",
+})
+
+
+def route_with_memory(
+    route: NextSource,
+    attempted_sources: Optional[frozenset] = None,
+) -> NextSource:
+    """Never recommend an automated source that has already returned nothing.
+
+    The v1 router chose from owner condition alone, so a candidate that had been
+    through the voter file three times was told to try the voter file. That is
+    not a route, it is a loop, and the operator is the one who pays for it.
+
+    A source is only demoted when it is AUTOMATIC and in the exhausted set. A
+    manual route is left alone: "read the probate file" does not become wrong
+    because a script could not do it.
+    """
+    attempted = attempted_sources or frozenset()
+    if route.next_source not in attempted:
+        return route
+    if route.manual_or_automatic != "AUTOMATIC" or route.next_source not in _EXHAUSTED_ON_REPEAT:
+        return route
+    return NextSource(
+        next_source="MANUAL_PUBLIC_RECORD",
+        why=f"{route.next_source} has already been run against this candidate and "
+            f"returned nothing. Re-running it is not a route. {route.why}",
+        required_input=route.required_input or "operator research against an official record",
+        cost_usd="0.00",
+        manual_or_automatic="MANUAL",
+        expected_information=route.expected_information,
+        blocking_reason=f"Automated source {route.next_source} is exhausted for this "
+                        f"candidate.",
+        queue=Q_MANUAL_SOURCE,
+    )
+
+
 NEXT_SOURCE_COLUMNS = [
     "candidate_id", "county", "apn", "owner_name", "owner_class", "owner_condition",
     "qualification_state", "primary_recipe", "score", "global_rank",
@@ -338,3 +434,13 @@ NEXT_SOURCE_COLUMNS = [
     "next_source", "why", "required_input", "cost_usd", "manual_or_automatic",
     "expected_information", "blocking_reason",
 ]
+
+
+def next_best_source(**kwargs) -> NextSource:
+    """The public entry point: choose a route, then apply what has been tried.
+
+    Split from _route_for so the memory rule cannot be bypassed by a return path
+    that forgot about it -- there is exactly one place the decision leaves.
+    """
+    attempted = kwargs.get("attempted_sources")
+    return route_with_memory(_route_for(**kwargs), attempted)
