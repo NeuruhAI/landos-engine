@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""T19F — $0 NC NCSBE / heir-import / public-business phone enrichment.
+"""T20C — canonical $0 NC public-record contact pipeline.
 
-Reads the sealed T11 CURRENT estate, official NCSBE county voter files, optional
-lawfully obtained estate-case and SOS listing imports, and the IRS EO BMF +
-Form 990 XML (official, free). Writes T12-compatible append CSVs outside Git.
-Does not call paid providers, does not mutate production, does not dial, does
-not run DNC, does not script the NC SOS interactive search.
+Reads the CURRENT NC estate, official NCSBE county voter files, optional
+lawfully obtained estate-case and SOS listing imports, and the IRS EO BMF.
+Default is delta refresh: rematch only new or changed identities. Writes
+T12-compatible append CSVs, resolution ledger, and recipe/county yield
+reports outside Git.
+
+Does not call paid providers, does not mutate production, does not dial,
+does not run DNC, does not script the NC SOS interactive search.
+PHONE PRESENT ≠ CALLABLE.
 """
 from __future__ import annotations
 
@@ -13,12 +17,9 @@ import argparse
 import csv
 import hashlib
 import json
-import os
 import random
 import sys
 import time
-import urllib.request
-import zipfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,12 @@ if str(ROOT) not in sys.path:
 
 from app.contact.address_normalize import parse_address, extract_zip5
 from app.contact.confidence import score_contact
+from app.contact.delta_refresh import (
+    DeltaPartition,
+    infer_prior_estate_ids,
+    partition_delta,
+    refresh_receipt,
+)
 from app.contact.entity_public import (
     build_eo_index,
     extract_990_contact,
@@ -41,28 +48,42 @@ from app.contact.entity_public import (
     source_id,
 )
 from app.contact.estate_import import ESTATE_IMPORT_COLUMNS, load_estate_import_csv
+from app.contact.identity_tuple import estate_revision, identity_tuple_hash, master_csv_paths
 from app.contact.local_owned import sweep_local_owned
 from app.contact.ncsbe_match import MatchDecision, VoterRecord, match_person_to_voters, voter_from_ncsbe_row
+from app.contact.official_fetch import (
+    CUSTODY_FILENAME,
+    drifted_sources,
+    fetch_official_bytes,
+    load_custody,
+    sha256_file,
+    write_custody,
+)
 from app.contact.owner_class import owner_route_class, phone_role_for
 from app.contact.owner_identity import parse_owner_name
 from app.contact.phone_graph import analyze_phone_graph, fanout_for
 from app.contact.phone_normalize import normalize_us_phone
 from app.contact.product_export import write_product_suite
+from app.contact.resolution import (
+    RESOLUTION_COLUMNS,
+    build_resolution_ledger,
+    prioritize_estate,
+)
 from app.contact.t12_append import (
     COMBINED_COLUMNS,
+    CONTACT_PROVENANCE_FIELDS,
     PhoneAppendIdentity,
     evaluate_phone_append,
     source_row_id_for,
 )
-from app.contact.estate_import import ESTATE_IMPORT_COLUMNS, load_estate_import_csv
-from app.contact.ncsbe_match import MatchDecision, VoterRecord, match_person_to_voters, voter_from_ncsbe_row
-from app.contact.owner_identity import parse_owner_name
-from app.contact.phone_normalize import normalize_us_phone
-from app.contact.t12_append import (
-    COMBINED_COLUMNS,
-    PhoneAppendIdentity,
-    evaluate_phone_append,
-    source_row_id_for,
+from app.contact.yield_reports import (
+    COUNTY_YIELD_COLUMNS,
+    RECIPE_CONTACT_COLUMNS,
+    RECIPE_OWNER_CLASS_COLUMNS,
+    county_free_contact_yield,
+    recipe_contact_yield,
+    recipe_intelligence,
+    recipe_owner_class_yield,
 )
 
 NCSBE_COUNTIES = {
@@ -76,6 +97,8 @@ NCSBE_COUNTIES = {
 }
 NCSBE_BASE = "https://s3.amazonaws.com/dl.ncsbe.gov/data"
 COUNTY_ORDER = ["Mecklenburg", "Wake", "Durham", "Johnston", "Union", "Cabarrus", "Gaston"]
+T19F_PRODUCT = Path.home() / "Desktop/DEEDSONAR_FREE_PHONE_APPEND_20260818"
+CANONICAL_PRODUCT = Path.home() / "Desktop/DEEDSONAR_FREE_CONTACT_CANONICAL"
 
 
 def utcnow() -> str:
@@ -341,6 +364,14 @@ def append_record(item: dict, phone_source: str, extra: Optional[dict] = None) -
         "source_list": extra.get("source_list", phone_source),
         "source_age_days": extra.get("source_age_days", ""),
         "fanout_candidates": extra.get("fanout_candidates", ""),
+        "why_matched": extra.get("why_matched") or decision.reason or decision.tier,
+        "matched_person": extra.get("matched_person") or " ".join(
+            p for p in (getattr(person, "first", ""), getattr(person, "last", "")) if p
+        ).strip() or (row.get("owner_name") or ""),
+        "primary_recipe": row.get("primary_recipe") or "",
+        "score": row.get("score") or "",
+        "global_rank": row.get("global_rank") or "",
+        "qualification_state": row.get("qualification_state") or "",
     }
     return rec
 
@@ -420,7 +451,7 @@ def overlay_county_lists(estate: List[dict], phones_by_cand: Dict[str, List[dict
                 "phone_source": ";".join(dict.fromkeys(sources)),
                 "phone_match_confidence": "STRONG_IDENTITY" if has else "",
                 "dnc_status": dnc,
-                "callability_status": "PHONE_PRESENT_DNC_UNKNOWN" if has else "NO_PHONE",
+                "callability_status": "NOT_AUTHORIZED",
                 "phone_present": "YES" if has else "NO",
             })
         path = out_dir / "county_lists" / f"{county.upper()}.csv"
@@ -429,12 +460,36 @@ def overlay_county_lists(estate: List[dict], phones_by_cand: Dict[str, List[dict
 
 
 def fetch_bytes(url: str, timeout: int = 12) -> Optional[bytes]:
-    req = urllib.request.Request(url, headers={"User-Agent": "neuruh-t19f-public-record-research/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
-    except Exception:
-        return None
+    return fetch_official_bytes(url, timeout=timeout)
+
+
+def person_row_needs_index(row: dict, partition) -> bool:
+    cid = row.get("candidate_id") or ""
+    return cid in partition.new_ids or cid in partition.changed_ids
+
+
+def load_csv_rows(path: Path) -> List[dict]:
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+def stamp_estate_provenance(rec: dict, estate_row: dict) -> dict:
+    out = dict(rec)
+    out["primary_recipe"] = estate_row.get("primary_recipe") or out.get("primary_recipe") or ""
+    out["score"] = estate_row.get("score") or out.get("score") or ""
+    out["global_rank"] = estate_row.get("global_rank") or out.get("global_rank") or ""
+    out["qualification_state"] = estate_row.get("qualification_state") or out.get("qualification_state") or ""
+    out["owner_name"] = estate_row.get("owner_name") or out.get("owner_name") or ""
+    out["why_matched"] = out.get("why_matched") or out.get("match_tier") or ""
+    out["matched_person"] = out.get("matched_person") or out.get("owner_name") or ""
+    out["currently_assigned"] = out.get("currently_assigned") or "UNKNOWN"
+    out["right_party"] = out.get("right_party") or "UNKNOWN"
+    out["callable_claim"] = "UNKNOWN"
+    if not out.get("confidence_category"):
+        out["confidence_category"] = "HIGH"
+    return out
 
 
 def load_990_index_for_eins(index_path: Path, eins: set[str]) -> dict:
@@ -742,10 +797,15 @@ def main() -> int:
     p.add_argument("--ncsbe-dir", default=str(Path.home() / "neuruh-workspace/T19F_DEEDSONAR_FREE_PHONE_ENRICHMENT_20260818/_raw/ncsbe"))
     p.add_argument("--irs-dir", default=str(Path.home() / "neuruh-workspace/T19F_DEEDSONAR_FREE_PHONE_ENRICHMENT_20260818/_raw/irs"))
     p.add_argument("--raw-dir", default=str(Path.home() / "neuruh-workspace/T19F_DEEDSONAR_FREE_PHONE_ENRICHMENT_20260818/_raw"))
-    p.add_argument("--out-dir", default=str(Path.home() / "Desktop/DEEDSONAR_FREE_PHONE_APPEND_20260818"))
-    p.add_argument("--evidence-dir", default=str(Path.home() / "neuruh-workspace/T19F_DEEDSONAR_FREE_PHONE_ENRICHMENT_20260818"))
+    p.add_argument("--out-dir", default=str(CANONICAL_PRODUCT))
+    p.add_argument("--evidence-dir", default=str(Path.home() / "neuruh-workspace/T20C_DEEDSONAR_FREE_CONTACT_CANONICAL"))
+    p.add_argument("--prior-append", default="")
+    p.add_argument("--prior-missing", default="")
+    p.add_argument("--prior-resolution", default="")
     p.add_argument("--skip-census", action="store_true")
     p.add_argument("--skip-entities", action="store_true")
+    p.add_argument("--skip-local", action="store_true")
+    p.add_argument("--full-rematch", action="store_true")
     args = p.parse_args()
 
     estate_dir = Path(args.estate_dir)
@@ -758,13 +818,114 @@ def main() -> int:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     write_templates(raw_dir)
 
+    run_started_at = utcnow()
     print("Loading CURRENT estate…", flush=True)
     estate = load_estate(estate_dir)
     print(f"CURRENT_TOTAL={len(estate)}", flush=True)
-    if len(estate) != 20734:
-        print(f"WARNING estate_rows={len(estate)} expected 20734", flush=True)
+    revision = estate_revision(master_csv_paths(estate_dir))
+    print(f"ESTATE_REVISION={revision}", flush=True)
+
+    prior_append_path = Path(args.prior_append) if args.prior_append else (
+        out_dir / "phone_append_combined.csv" if (out_dir / "phone_append_combined.csv").exists()
+        else T19F_PRODUCT / "phone_append_combined.csv"
+    )
+    prior_missing_path = Path(args.prior_missing) if args.prior_missing else (
+        prior_append_path.parent / "CURRENT_STILL_MISSING_PHONE.csv"
+    )
+    prior_resolution_path = Path(args.prior_resolution) if args.prior_resolution else (
+        prior_append_path.parent / "CANDIDATE_CONTACT_RESOLUTION.csv"
+    )
+    prior_append = load_csv_rows(prior_append_path)
+    prior_missing = load_csv_rows(prior_missing_path)
+    prior_resolution = load_csv_rows(prior_resolution_path)
+    prior_hashes = {
+        r["candidate_id"]: r["identity_tuple_hash"]
+        for r in prior_resolution
+        if r.get("candidate_id") and r.get("identity_tuple_hash")
+    }
+    prior_reasons = {}
+    for r in prior_resolution + prior_missing:
+        cid = r.get("candidate_id") or ""
+        reason = r.get("contact_resolution_state") or r.get("unresolved_reason") or ""
+        if cid and reason:
+            prior_reasons.setdefault(cid, reason)
+    prior_estate_ids = (
+        {r["candidate_id"] for r in prior_resolution if r.get("candidate_id")}
+        or infer_prior_estate_ids(estate, prior_append, prior_missing)
+    )
+    prior_receipt_path = prior_append_path.parent / "refresh_receipt.json"
+    prior_estate_revision = ""
+    if prior_receipt_path.exists():
+        try:
+            prior_estate_revision = str(json.loads(prior_receipt_path.read_text()).get("estate_revision") or "")
+        except json.JSONDecodeError:
+            prior_estate_revision = ""
+
+    if args.full_rematch:
+        partition = DeltaPartition(
+            estate_revision=revision,
+            new_ids={r["candidate_id"] for r in estate},
+            rematch_rows=list(estate),
+        )
+    else:
+        partition = partition_delta(
+            estate,
+            estate_revision=revision,
+            prior_append=prior_append,
+            prior_hashes=prior_hashes,
+            prior_estate_ids=prior_estate_ids,
+            prior_estate_revision=prior_estate_revision,
+        )
+    print(
+        f"DELTA unchanged={len(partition.unchanged_ids)} changed={len(partition.changed_ids)} "
+        f"new={len(partition.new_ids)} dropped={len(partition.dropped_ids)} "
+        f"rematch={len(partition.rematch_rows)} keep_high={len(partition.keep_rows)}",
+        flush=True,
+    )
+
+    # Hash-pin every official free input before it is read. Cache wins; a
+    # changed digest is recorded as SOURCE_DRIFT, never silently adopted.
+    custody_path = evidence_dir / CUSTODY_FILENAME
+    source_custody = load_custody(custody_path)
+    free_sources_seen = defaultdict(int)
+    for family, folder, pattern in (
+        ("NCSBE_PUBLIC_VOTER_FILE", ncsbe_dir, "ncvoter*.zip"),
+        ("IRS_EO_ICO_NCSBE", irs_dir, "eo_nc.csv"),
+        ("IRS_FORM_990_PUBLIC", irs_dir, "*990*"),
+        ("ESTATE_IMPORT", raw_dir / "estate", "*.csv"),
+        ("SOS_IMPORT", raw_dir / "sos", "*.csv"),
+    ):
+        for path in sorted(Path(folder).glob(pattern)):
+            if not path.is_file() or path.name.lower().startswith("template"):
+                continue
+            prior = (source_custody.get(path.name) or {}).get("sha256") or ""
+            sha = sha256_file(path)
+            source_custody[path.name] = {
+                "family": family,
+                "path": str(path),
+                "url": "",
+                "sha256": sha,
+                "prior_sha256": prior,
+                "bytes": path.stat().st_size,
+                "state": "SOURCE_DRIFT" if (prior and prior != sha) else (
+                    "CACHED_UNCHANGED" if prior else "CACHED_UNPINNED"
+                ),
+                "observed_at": utcnow(),
+                "downloaded": False,
+            }
+            free_sources_seen[family] += 1
+    source_drift = drifted_sources(source_custody)
+    write_custody(custody_path, source_custody)
+    print(
+        f"FREE_SOURCE_CUSTODY files={len(source_custody)} "
+        f"families={dict(free_sources_seen)} drift={source_drift}",
+        flush=True,
+    )
 
     census_path = evidence_dir / "03_COUNTY_PHONE_CENSUS.csv"
+    t19f_census = Path.home() / "neuruh-workspace/T19F_DEEDSONAR_FREE_PHONE_ENRICHMENT_20260818/03_COUNTY_PHONE_CENSUS.csv"
+    if args.skip_census and not census_path.exists() and t19f_census.exists():
+        census_path = t19f_census
     if args.skip_census and census_path.exists():
         with census_path.open(newline="", encoding="utf-8") as fh:
             census = list(csv.DictReader(fh))
@@ -790,24 +951,26 @@ def main() -> int:
     kind_counts = defaultdict(int)
     living_count = 0
     named_heirs = 0
+    rematch_required = partition.rematch_required
     for row in estate:
         parsed = parse_owner_name(row.get("owner_name") or "")
         kind_counts[parsed.kind] += 1
         for person in parsed.living_people:
-            needed_lasts.add(person.last)
-            firsts_by_last[person.last].add(person.first)
             living_count += 1
             if person.role == "NAMED_HEIR_ON_ROLL":
                 named_heirs += 1
+            if rematch_required and person_row_needs_index(row, partition):
+                needed_lasts.add(person.last)
+                firsts_by_last[person.last].add(person.first)
     print(f"  kinds={dict(kind_counts)} living_hypotheses={living_count} unique_lasts={len(needed_lasts)} named_heirs_on_roll={named_heirs}", flush=True)
 
-    if not args.skip_entities:
+    if rematch_required and not args.skip_entities:
         eo_path = irs_dir / "eo_nc.csv"
         if eo_path.exists():
             print("Pre-indexing EO ICO last names into the NCSBE filter…", flush=True)
             eo_idx = build_eo_index(load_eo_bmf(eo_path))
             ico_added = 0
-            for row in estate:
+            for row in partition.rematch_rows:
                 parsed = parse_owner_name(row.get("owner_name") or "")
                 if parsed.kind != "ENTITY":
                     continue
@@ -828,15 +991,27 @@ def main() -> int:
                     ico_added += 1
             print(f"  ico_people_added_to_filter={ico_added} unique_lasts={len(needed_lasts)}", flush=True)
 
-    print("Scanning NCSBE into last-name index…", flush=True)
-    t0 = time.time()
-    index = scan_ncsbe_for_lasts(ncsbe_dir, needed_lasts, firsts_by_last, custody)
-    print(f"  index_seconds={time.time()-t0:.1f}", flush=True)
+    empty_matched = {
+        "identity_hits": [],
+        "phone_rows": [],
+        "held_rows": [],
+        "stats": {},
+        "per_county": {c: {"matched": 0, "phones": 0, "held": 0, "ambiguous": 0} for c in COUNTY_ORDER},
+    }
+    index: Dict[str, List[VoterRecord]] = {}
+    if rematch_required:
+        print("Scanning NCSBE into last-name index…", flush=True)
+        t0 = time.time()
+        index = scan_ncsbe_for_lasts(ncsbe_dir, needed_lasts, firsts_by_last, custody)
+        print(f"  index_seconds={time.time()-t0:.1f}", flush=True)
 
-    print("Matching…", flush=True)
-    t1 = time.time()
-    matched = match_estate_to_ncsbe(estate, index)
-    print(f"  match_seconds={time.time()-t1:.1f} stats={matched['stats']}", flush=True)
+        print("Matching rematch subset (Qualified / high-rank first)…", flush=True)
+        t1 = time.time()
+        matched = match_estate_to_ncsbe(prioritize_estate(partition.rematch_rows), index)
+        print(f"  match_seconds={time.time()-t1:.1f} stats={matched['stats']}", flush=True)
+    else:
+        print("DELTA rematch=0 — skipping NCSBE index/match; keeping prior HIGH rows.", flush=True)
+        matched = empty_matched
 
     ncsbe_rows = []
     heir_rows = []
@@ -851,6 +1026,17 @@ def main() -> int:
             heir_rows.append(append_record(item, source, extra))
         else:
             ncsbe_rows.append(append_record(item, source, extra))
+
+    estate_by_id = {r["candidate_id"]: r for r in estate}
+    for rec in partition.keep_rows:
+        src = estate_by_id.get(rec.get("candidate_id") or "")
+        if not src:
+            continue
+        stamped = stamp_estate_provenance(rec, src)
+        if stamped.get("phone_role") in {"HEIR_PERSONAL", "COOWNER_PERSONAL"} or stamped.get("person_role") == "NAMED_HEIR_ON_ROLL":
+            heir_rows.append(stamped)
+        else:
+            ncsbe_rows.append(stamped)
 
     # Lawfully obtained estate-case import (optional; empty unless operator dropped a file).
     estate_import_people = []
@@ -879,7 +1065,7 @@ def main() -> int:
 
     entity_rows = []
     entity_identities = 0
-    if not args.skip_entities:
+    if rematch_required and not args.skip_entities:
         print("Entity public-business pass (IRS EO + 990, no SOS search)…", flush=True)
         try:
             entity_rows, entity_identities = entity_phone_pass(estate, irs_dir)
@@ -909,14 +1095,23 @@ def main() -> int:
     print(f"OWNER_CLASS_COUNTS={dict(class_counts)}", flush=True)
 
     print("Local owned-data identity-safe sweep…", flush=True)
-    local = sweep_local_owned(estate, [
-        Path.home() / "Desktop/DEEDSONAR_CONTACT_EXPORT_PREVIEW_20260817",
-        Path.home() / "neuruh-workspace/T11_DEEDSONAR_CONTACT_RECOVERY_20260817",
-        Path.home() / "neuruh-workspace/T12_DEEDSONAR_BACKEND_20260817",
-        Path.home() / "neuruh-workspace/T16_DEEDSONAR_PHONE_ENRICHMENT_20260817",
-        Path.home() / "neuruh-workspace/T19F_DEEDSONAR_FREE_PHONE_ENRICHMENT_20260818",
-        ROOT / "data",
-    ])
+    if args.skip_local:
+        local = {
+            "LOCAL_PHONE_RECORDS_SEEN": 0,
+            "LOCAL_IDENTITY_SAFE_MATCHES": 0,
+            "LOCAL_REJECTED_AMBIGUOUS": 0,
+            "rows": [],
+        }
+        print("  skipped (--skip-local); identity-safe local attach remains in the rematch path", flush=True)
+    else:
+        local = sweep_local_owned(estate, [
+            Path.home() / "Desktop/DEEDSONAR_CONTACT_EXPORT_PREVIEW_20260817",
+            Path.home() / "neuruh-workspace/T11_DEEDSONAR_CONTACT_RECOVERY_20260817",
+            Path.home() / "neuruh-workspace/T12_DEEDSONAR_BACKEND_20260817",
+            Path.home() / "neuruh-workspace/T16_DEEDSONAR_PHONE_ENRICHMENT_20260817",
+            Path.home() / "neuruh-workspace/T19F_DEEDSONAR_FREE_PHONE_ENRICHMENT_20260818",
+            ROOT / "data",
+        ])
     print(
         f"  LOCAL_PHONE_RECORDS_SEEN={local['LOCAL_PHONE_RECORDS_SEEN']} "
         f"LOCAL_IDENTITY_SAFE_MATCHES={local['LOCAL_IDENTITY_SAFE_MATCHES']} "
@@ -1022,9 +1217,55 @@ def main() -> int:
     county_manifests = overlay_county_lists(estate, phones_by_cand, out_dir)
 
     identity_cands = {h[0]["candidate_id"] for h in matched["identity_hits"]}
+    identity_cands |= {
+        cid for cid, reason in prior_reasons.items()
+        if reason == "IDENTITY_MATCHED_VOTER_PHONE_ABSENT"
+    }
+    identity_cands |= set(phones_by_cand)
+    held_tier_c = {
+        item["row"]["candidate_id"]
+        for item in (matched.get("held_rows") or [])
+        if (item.get("decision") and item["decision"].tier == "TIER_C")
+        or (item.get("decision") and item["decision"].reject_class == "TIER_C_HELD")
+    }
+    held_tier_c |= {cid for cid, reason in prior_reasons.items() if reason == "TIER_C_HELD_NOT_APPENDED"}
+    ambiguous_ids = {
+        cid for cid, reason in prior_reasons.items() if reason == "AMBIGUOUS_REJECTED"
+    }
+    ledger = build_resolution_ledger(
+        estate,
+        owner_class,
+        phones_by_cand,
+        identity_tuple_hash,
+        identity_cands=identity_cands,
+        held_tier_c=held_tier_c,
+        ambiguous=ambiguous_ids,
+        prior_reasons=prior_reasons,
+    )
+    resolution_by_cand = {r["candidate_id"]: r["contact_resolution_state"] for r in ledger}
+    assert len(ledger) == len(estate), "every CURRENT candidate must be classified"
+    assert all(r.get("callability_status") == "NOT_AUTHORIZED" for r in ledger)
+    attempted_default = ";".join(sorted(free_sources_seen)) or "NCSBE_PUBLIC_VOTER_FILE"
     product_files = write_product_suite(
         estate, phones_by_cand, owner_class, identity_cands, out_dir, write_csv,
+        resolution_by_cand=resolution_by_cand,
+        attempted_default=attempted_default,
+        last_attempted_at=run_started_at,
     )
+    resolution_out = write_csv(out_dir / "CANDIDATE_CONTACT_RESOLUTION.csv", ledger, RESOLUTION_COLUMNS)
+    recipe_yield = recipe_contact_yield(ledger)
+    class_yield = recipe_owner_class_yield(ledger)
+    county_yield_rows = county_free_contact_yield(ledger)
+    recipe_intel = recipe_intelligence(recipe_yield, class_yield)
+    yield_files = {
+        "RECIPE_CONTACT_YIELD": write_csv(out_dir / "RECIPE_CONTACT_YIELD.csv", recipe_yield, RECIPE_CONTACT_COLUMNS),
+        "RECIPE_OWNER_CLASS_YIELD": write_csv(out_dir / "RECIPE_OWNER_CLASS_YIELD.csv", class_yield, RECIPE_OWNER_CLASS_COLUMNS),
+        "COUNTY_FREE_CONTACT_YIELD": write_csv(out_dir / "COUNTY_FREE_CONTACT_YIELD.csv", county_yield_rows, COUNTY_YIELD_COLUMNS),
+    }
+    for rec in t12_accepted:
+        missing_prov = [f for f in CONTACT_PROVENANCE_FIELDS if not str(rec.get(f) or "").strip()]
+        if missing_prov:
+            raise SystemExit(f"contact missing provenance {missing_prov} candidate={rec.get('candidate_id')}")
 
     sample_info = quality_sample(
         matched["phone_rows"],
@@ -1081,14 +1322,31 @@ def main() -> int:
         }
 
     waterfall = {
-        "START": {"candidates": 20734, "phones": 0},
+        "START": {"candidates": len(estate), "phones": 0},
         "LOCAL_OWNED_DATA": {"plus_candidates": len({r["candidate_id"] for r in local_rows if r["candidate_id"] in phones_by_cand and r.get("phone_source") == "LOCAL_OWNED_IDENTITY"})},
-        "NCSBE": {"plus_candidates": len({item["row"]["candidate_id"] for item in matched["phone_rows"] if item["row"]["candidate_id"] in phones_by_cand})},
+        "NCSBE": {"plus_candidates": len({r["candidate_id"] for r in t12_accepted if r.get("phone_source") == "NCSBE_PUBLIC_VOTER_FILE"})},
         "ESTATE_HEIR": {"plus_candidates": len({r["candidate_id"] for r in t12_accepted if r.get("phone_role") == "HEIR_PERSONAL"})},
         "ENTITY_BUSINESS": {"plus_candidates": len({r["candidate_id"] for r in t12_accepted if r.get("phone_source") in {"IRS_FORM_990_PUBLIC", "IRS_EO_ICO_NCSBE"}})},
         "TOTAL_UNIQUE": len(phones_by_cand),
-        "UNRESOLVED": 20734 - len(phones_by_cand),
+        "UNRESOLVED": len(estate) - len(phones_by_cand),
     }
+
+    reused_cands = {r.get("candidate_id") for r in partition.keep_rows if r.get("candidate_id")}
+    receipt = refresh_receipt(
+        partition,
+        ncsbe_zip_sha256=[c.get("zip_sha256") or "" for c in census],
+        high_appended=len(phones_by_cand),
+        held_tier_c=len(held_tier_c),
+        local_safe_matches=local["LOCAL_IDENTITY_SAFE_MATCHES"],
+        classified_total=len(ledger),
+        previous_high_reused=len(reused_cands & set(phones_by_cand)),
+        new_high_appended=len(set(phones_by_cand) - reused_cands),
+        medium_held=sum(1 for r in ledger if r.get("confidence_category") == "MEDIUM"),
+        review_held=len(held_tier_c),
+        source_drift=source_drift,
+    )
+    (out_dir / "refresh_receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    (evidence_dir / "refresh_receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
     summary = {
         "CURRENT_TOTAL": len(estate),
@@ -1097,7 +1355,7 @@ def main() -> int:
         "LOCAL_SAFE_PHONE_MATCHES": local["LOCAL_IDENTITY_SAFE_MATCHES"],
         "LOCAL_REJECTED_AMBIGUOUS": local["LOCAL_REJECTED_AMBIGUOUS"],
         "NCSBE_MATCHED_IDENTITIES": len(identity_cands),
-        "NCSBE_PHONE_PRESENT": len({item["row"]["candidate_id"] for item in matched["phone_rows"]}),
+        "NCSBE_PHONE_PRESENT": len({r["candidate_id"] for r in t12_accepted if r.get("phone_source") == "NCSBE_PUBLIC_VOTER_FILE"}),
         "NCSBE_ACCEPTED_PHONES": len({r["candidate_id"] for r in t12_accepted if r.get("phone_source") == "NCSBE_PUBLIC_VOTER_FILE"}),
         "BY_COUNTY": matched["per_county"],
         "COUNTY_YIELD": county_yield,
@@ -1129,8 +1387,15 @@ def main() -> int:
         "FILES": {
             "ncsbe": ncsbe_out, "heirs": heirs_out, "entities": ent_out, "combined": comb_out,
             "county_lists": county_manifests, "product": product_files,
+            "resolution": resolution_out, "yields": yield_files,
         },
         "QUALITY_SAMPLE": sample_info,
+        "REFRESH_RECEIPT": receipt,
+        "EVERY_CURRENT_NC_CANDIDATE_CLASSIFIED": "YES" if len(ledger) == len(estate) else "NO",
+        "RECIPE_INTELLIGENCE": recipe_intel,
+        "FREE_SOURCES_RUN": dict(free_sources_seen),
+        "FREE_SOURCE_DRIFT": source_drift,
+        "FREE_CONTACT_PIPELINE_CANONICAL": "YES",
         "PAID_PROVIDER_CALLS": 0,
         "PAID_API_CALLS": 0,
         "CREDIT_USAGE": 0,
@@ -1143,7 +1408,13 @@ def main() -> int:
         "generated_at": utcnow(),
     }
     (out_dir / "manifest.json").write_text(json.dumps(summary, indent=2) + "\n")
-    (evidence_dir / "_raw" / "run_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    (evidence_dir / "run_summary.json").write_text(json.dumps({
+        k: summary[k] for k in summary if k != "FILES"
+    }, indent=2) + "\n")
+    for name in ("RECIPE_CONTACT_YIELD.csv", "RECIPE_OWNER_CLASS_YIELD.csv", "COUNTY_FREE_CONTACT_YIELD.csv"):
+        src = out_dir / name
+        if src.exists():
+            (evidence_dir / name).write_bytes(src.read_bytes())
     print(json.dumps({k: summary[k] for k in (
         "CURRENT_TOTAL", "OWNER_CLASS_COUNTS", "NCSBE_MATCHED_IDENTITIES", "NCSBE_PHONE_PRESENT",
         "HIGH_CONFIDENCE", "MEDIUM_CONFIDENCE", "ENTITY_IDENTITIES", "ENTITY_PUBLIC_BUSINESS_PHONES",

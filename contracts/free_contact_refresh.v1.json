@@ -1,0 +1,196 @@
+{
+  "id": "free_contact_refresh.v1",
+  "title": "T20C $0 NC free-contact delta refresh",
+  "provider_spend": "$0.00",
+  "scope": "ALL_CURRENT_NC_CANDIDATES",
+  "callability": "PHONE_PRESENT_IS_NOT_CALLABLE",
+  "identity_fields": [
+    "candidate_id",
+    "owner_name",
+    "mailing_address",
+    "mailing_city",
+    "mailing_state",
+    "mailing_zip",
+    "property_address_raw",
+    "property_address_normalized",
+    "property_zip"
+  ],
+  "delta_rule": {
+    "unchanged_identity": "keep prior HIGH append; do not rematch",
+    "changed_identity": "rematch that candidate only",
+    "new_candidate_id": "match",
+    "dropped_candidate_id": "omit from new append; do not delete historical receipt"
+  },
+  "contact_provenance": [
+    "matched_person",
+    "why_matched",
+    "phone_source",
+    "observed_at",
+    "confidence_category",
+    "phone_role",
+    "candidate_id",
+    "primary_recipe",
+    "score",
+    "global_rank"
+  ],
+  "receipt_fields": [
+    "estate_revision",
+    "ncsbe_zip_sha256",
+    "candidates_total",
+    "candidates_new",
+    "candidates_changed",
+    "candidates_unchanged",
+    "high_appended",
+    "held_tier_c",
+    "local_safe_matches",
+    "classified_total",
+    "provider_spend",
+    "production_mutated",
+    "previous_high_reused",
+    "new_high_appended",
+    "medium_held",
+    "review_held",
+    "candidates_dropped",
+    "candidates_rematch",
+    "source_drift"
+  ],
+  "yield_files": [
+    "RECIPE_CONTACT_YIELD.csv",
+    "RECIPE_OWNER_CLASS_YIELD.csv",
+    "COUNTY_FREE_CONTACT_YIELD.csv",
+    "CURRENT_STILL_MISSING_PHONE.csv"
+  ],
+  "invariants": [
+    "Name-only never appends",
+    "TIER_C never auto-appends unless a later court records PRECISION >= 0.98 on n>=40",
+    "Decedent never a phone target",
+    "Entity never through voter-person match",
+    "Registered agent / attorney phones never labeled owner",
+    "libphonenumber is numbering-plan only",
+    "Product callability_status=NOT_AUTHORIZED",
+    "Append CSVs and PII exports stay outside Git",
+    "No paid Tracerfy / BatchData / Twilio Lookup / people search",
+    "No seller contact, SMS, email, or dial"
+  ],
+  "pipeline": [
+    "CURRENT_ESTATE",
+    "CANDIDATE_NORMALIZATION",
+    "OWNER_IDENTITY",
+    "OWNER_CLASS",
+    "ROUTE",
+    "FREE_SOURCE_EVIDENCE",
+    "IDENTITY_MATCH",
+    "CONTACT_MATCH",
+    "FANOUT_AMBIGUITY_CHECK",
+    "CONFIDENCE",
+    "RESOLUTION_STATE",
+    "PRODUCT_OVERLAY",
+    "RECIPE_YIELD",
+    "REFRESH_RECEIPT"
+  ],
+  "source_families": [
+    "NCSBE_PUBLIC_VOTER_FILE",
+    "IRS_FORM_990_PUBLIC",
+    "IRS_EO_ICO_NCSBE",
+    "PUBLIC_BUSINESS_WEB",
+    "LOCAL_OWNED_IDENTITY",
+    "ESTATE_IMPORT",
+    "SOS_IMPORT"
+  ],
+  "source_custody": {
+    "receipt": "free_source_custody.json",
+    "rule": "cache-first, hash-pinned; a changed digest is recorded as SOURCE_DRIFT, never silently adopted",
+    "states": [
+      "CACHED_UNCHANGED",
+      "CACHED_UNPINNED",
+      "FETCHED_NEW",
+      "SOURCE_DRIFT",
+      "SOURCE_NOT_AVAILABLE",
+      "REFUSED_NOT_OFFICIAL"
+    ],
+    "download_allowlist_prefixes": [
+      "https://s3.amazonaws.com/dl.ncsbe.gov/data/",
+      "https://www.irs.gov/pub/irs-soi/",
+      "https://apps.irs.gov/pub/epostcard/990/",
+      "https://irs-form-990.s3.amazonaws.com/"
+    ]
+  },
+  "owner_route_classes": [
+    "LIVING_PERSON",
+    "MULTI_PERSON",
+    "DECEASED",
+    "ESTATE",
+    "HEIRS",
+    "TRUST",
+    "LLC",
+    "CORPORATION",
+    "NONPROFIT",
+    "GOVERNMENT",
+    "OTHER_ENTITY",
+    "UNKNOWN"
+  ],
+  "confidence_classes": {
+    "HIGH": "auto-enters the T12 append candidate set (score >= 80)",
+    "MEDIUM": "written for manual review, never auto-appended (score 55-79)",
+    "REVIEW": "never appended; includes every TIER_C hold and every fanout block",
+    "note": "transparent scored checklist, not a model score"
+  },
+  "resolution_states": [
+    "PHONE_APPENDED_HIGH",
+    "IDENTITY_MATCHED_VOTER_PHONE_ABSENT",
+    "TIER_C_HELD_NOT_APPENDED",
+    "AMBIGUOUS_REJECTED",
+    "COMMON_NAME_REJECTED",
+    "NO_ADDRESS_CORROBORATED_NCSBE_MATCH",
+    "DECEASED_OWNER_NEEDS_HEIR_IDENTITY",
+    "HEIR_ON_ROLL_NO_ACCEPTED_PHONE",
+    "ENTITY_NEEDS_LAWFUL_SOS_IMPORT",
+    "NONPROFIT_NO_990_PHONE",
+    "TRUST_EXCLUDED_FROM_VOTER_PERSON_MATCH",
+    "GOVERNMENT_NOT_A_SELLER_CONTACT",
+    "UNRESOLVED"
+  ],
+  "recipe_provenance_fields": [
+    "primary_recipe",
+    "recipe_version",
+    "score",
+    "score_version",
+    "global_rank",
+    "qualification_state"
+  ],
+  "product_outputs": {
+    "aggregate_safe_to_publish": [
+      "RECIPE_CONTACT_YIELD.csv",
+      "RECIPE_OWNER_CLASS_YIELD.csv",
+      "COUNTY_FREE_CONTACT_YIELD.csv"
+    ],
+    "pii_never_git": [
+      "MASTER_CURRENT_WITH_FREE_CONTACTS.csv",
+      "CANDIDATE_CONTACT_RESOLUTION.csv",
+      "CURRENT_STILL_MISSING_PHONE.csv",
+      "QUALIFIED_STILL_MISSING_PHONE.csv",
+      "phone_append_combined.csv",
+      "phone_append_ncsbe.csv",
+      "phone_append_heirs.csv",
+      "phone_append_entities.csv",
+      "county_lists/",
+      "*_CURRENT_WITH_CONTACTS.csv"
+    ]
+  },
+  "compliance_boundary": {
+    "callability_status": "NOT_AUTHORIZED",
+    "phone_present_is_not_callable": true,
+    "paid_provider_calls": 0,
+    "seller_contact": "NO",
+    "sms": 0,
+    "email": 0,
+    "calls": 0,
+    "production_contact_rows_imported": "NO",
+    "dnc": "not evaluated by this pipeline"
+  },
+  "replay": {
+    "delta": "python scripts/run_nc_free_phone_enrichment.py --skip-census",
+    "full": "python scripts/run_nc_free_phone_enrichment.py --full-rematch",
+    "tests": "pytest tests/test_nc_free_contact_canonical.py tests/test_nc_free_phone_enrichment.py"
+  }
+}

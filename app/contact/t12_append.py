@@ -61,6 +61,26 @@ PROVENANCE_COLUMNS = (
     "source_list",
     "source_age_days",
     "fanout_candidates",
+    "why_matched",
+    "matched_person",
+    "primary_recipe",
+    "score",
+    "global_rank",
+    "qualification_state",
+)
+
+# WHO / WHY / SOURCE / OBSERVED_AT / CONFIDENCE / PHONE ROLE / CANDIDATE / RECIPE / SCORE/RANK
+CONTACT_PROVENANCE_FIELDS = (
+    "matched_person",
+    "why_matched",
+    "phone_source",
+    "observed_at",
+    "confidence_category",
+    "phone_role",
+    "candidate_id",
+    "primary_recipe",
+    "score",
+    "global_rank",
 )
 
 COMBINED_COLUMNS = REQUIRED_APPEND_COLUMNS + OPTIONAL_APPEND_COLUMNS + PROVENANCE_COLUMNS
