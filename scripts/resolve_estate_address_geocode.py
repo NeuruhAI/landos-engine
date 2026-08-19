@@ -61,8 +61,9 @@ sys.path.insert(0, str(REPO))
 import psycopg
 from psycopg.rows import dict_row
 
-from app.config import DATABASE_URL
-
+# app.config demands DATABASE_URL at import time. The courting functions below
+# are pure and are unit-tested without a database, so the import is deferred
+# into main() rather than making a test of split_address() need an .env.
 CENSUS_BATCH = "https://geocoding.geo.census.gov/geocoder/geographies/addressbatch"
 BENCHMARK = "Public_AR_Current"
 VINTAGE = "Current_Current"
@@ -209,6 +210,8 @@ def main() -> int:
     ap.add_argument("--fips", nargs="*", default=None, help="limit to these county FIPS")
     ap.add_argument("--limit", type=int, default=None, help="cap rows attempted")
     args = ap.parse_args()
+
+    from app.config import DATABASE_URL
 
     run_id = f"estate-geocode-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
 
