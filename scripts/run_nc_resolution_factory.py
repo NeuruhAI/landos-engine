@@ -8,8 +8,8 @@ Re-matches nothing. Calls no provider. Mutates no production row. Writes only
 outside Git.
 
     python scripts/run_nc_resolution_factory.py \
-        --estate-dir ~/Desktop/DEEDSONAR_CONTACT_EXPORT_PREVIEW_20260817 \
-        --bundle-dir ~/Desktop/DEEDSONAR_FREE_CONTACT_T20D_FINAL \
+        --estate-dir ~/neuruh-private/contact-intelligence/estate/DEEDSONAR_CONTACT_EXPORT_PREVIEW_20260817 \
+        --bundle-dir ~/neuruh-private/contact-intelligence/CANONICAL \
         --out-dir ~/neuruh-workspace/T21_NC_RESOLUTION_FACTORY_V2_20260819
 """
 from __future__ import annotations
@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.custody.locations import canonical_bundle, estate_export
 from app.contact.identity_tuple import estate_revision, master_csv_paths
 from app.resolution.factory import (
     FACTORY_VERSION,
@@ -92,8 +93,8 @@ def load_estate(estate_dir: Path):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--estate-dir", default=str(Path.home() / "Desktop/DEEDSONAR_CONTACT_EXPORT_PREVIEW_20260817"))
-    ap.add_argument("--bundle-dir", default=str(Path.home() / "Desktop/DEEDSONAR_FREE_CONTACT_T20D_FINAL"))
+    ap.add_argument("--estate-dir", default=str(estate_export()))
+    ap.add_argument("--bundle-dir", default=str(canonical_bundle()))
     ap.add_argument("--tier-c-ids", default="")
     ap.add_argument("--out-dir", required=True)
     args = ap.parse_args()

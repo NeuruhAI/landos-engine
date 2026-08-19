@@ -30,6 +30,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.contact.address_normalize import parse_address, extract_zip5
+from app.custody.locations import canonical_bundle, estate_export, run_dir
+from app.custody.sync_guard import prepare_output_dir, secure_file
 from app.contact.confidence import score_contact
 from app.contact.delta_refresh import (
     DeltaPartition,
@@ -103,8 +105,11 @@ NCSBE_COUNTIES = {
 }
 NCSBE_BASE = "https://s3.amazonaws.com/dl.ncsbe.gov/data"
 COUNTY_ORDER = ["Mecklenburg", "Wake", "Durham", "Johnston", "Union", "Cabarrus", "Gaston"]
-T19F_PRODUCT = Path.home() / "Desktop/DEEDSONAR_FREE_PHONE_APPEND_20260818"
-CANONICAL_PRODUCT = Path.home() / "Desktop/DEEDSONAR_FREE_CONTACT_CANONICAL"
+# Contact output lands in custody, never on the Desktop. ~/Desktop on this host
+# IS the iCloud Desktop -- same inodes -- so the old defaults published 922 real
+# consumer phone numbers to Apple on every run. See app/custody/sync_guard.py.
+T19F_PRODUCT = run_dir("DEEDSONAR_FREE_PHONE_APPEND_20260818")
+CANONICAL_PRODUCT = canonical_bundle()
 
 
 def utcnow() -> str:
@@ -806,7 +811,7 @@ def write_templates(raw_dir: Path) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--estate-dir", default=str(Path.home() / "Desktop/DEEDSONAR_CONTACT_EXPORT_PREVIEW_20260817"))
+    p.add_argument("--estate-dir", default=str(estate_export()))
     p.add_argument("--ncsbe-dir", default=str(Path.home() / "neuruh-workspace/T19F_DEEDSONAR_FREE_PHONE_ENRICHMENT_20260818/_raw/ncsbe"))
     p.add_argument("--irs-dir", default=str(Path.home() / "neuruh-workspace/T19F_DEEDSONAR_FREE_PHONE_ENRICHMENT_20260818/_raw/irs"))
     p.add_argument("--raw-dir", default=str(Path.home() / "neuruh-workspace/T19F_DEEDSONAR_FREE_PHONE_ENRICHMENT_20260818/_raw"))
@@ -827,8 +832,11 @@ def main() -> int:
     raw_dir = Path(args.raw_dir)
     out_dir = Path(args.out_dir)
     evidence_dir = Path(args.evidence_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    evidence_dir.mkdir(parents=True, exist_ok=True)
+    # SENSITIVE_EXPORT_TO_SYNCED_PATH = BLOCK. Both of these receive owner names,
+    # property addresses and phone numbers, so both are proven off every cloud
+    # sync root before a single byte is written.
+    out_dir = prepare_output_dir(out_dir, what="contact enrichment product")
+    evidence_dir = prepare_output_dir(evidence_dir, what="contact enrichment evidence")
     write_templates(raw_dir)
 
     run_started_at = utcnow()
@@ -1122,7 +1130,7 @@ def main() -> int:
         print("  skipped (--skip-local); identity-safe local attach remains in the rematch path", flush=True)
     else:
         local = sweep_local_owned(estate, [
-            Path.home() / "Desktop/DEEDSONAR_CONTACT_EXPORT_PREVIEW_20260817",
+            estate_export(),
             Path.home() / "neuruh-workspace/T11_DEEDSONAR_CONTACT_RECOVERY_20260817",
             Path.home() / "neuruh-workspace/T12_DEEDSONAR_BACKEND_20260817",
             Path.home() / "neuruh-workspace/T16_DEEDSONAR_PHONE_ENRICHMENT_20260817",

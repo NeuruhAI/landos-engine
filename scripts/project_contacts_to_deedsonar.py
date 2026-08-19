@@ -50,6 +50,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.custody.locations import canonical_bundle, estate_export
 from app.contact.identity_tuple import estate_revision, master_csv_paths
 from app.resolution.contract import CALLABILITY_NOT_AUTHORIZED
 from app.resolution.factory import build_records, load_csv
@@ -463,8 +464,8 @@ def resolution_row_for(rec, tenant_id: str, estate_rev: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--estate-dir", default=str(Path.home() / "Desktop/DEEDSONAR_CONTACT_EXPORT_PREVIEW_20260817"))
-    ap.add_argument("--bundle-dir", default=str(Path.home() / "Desktop/DEEDSONAR_FREE_CONTACT_T21"))
+    ap.add_argument("--estate-dir", default=str(estate_export()))
+    ap.add_argument("--bundle-dir", default=str(canonical_bundle()))
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--database-url", default=os.environ.get("DEEDSONAR_DATABASE_URL") or os.environ.get("DATABASE_URL"))
     ap.add_argument("--apply", action="store_true", help="perform the production write")
