@@ -54,6 +54,11 @@ from app.custody.locations import canonical_bundle, estate_export
 from app.contact.identity_tuple import estate_revision, master_csv_paths
 from app.resolution.contract import CALLABILITY_NOT_AUTHORIZED
 from app.resolution.factory import build_records, load_csv
+from app.resolution.official_import import (
+    entity_relationships as official_entity,
+    estate_relationships as official_estate,
+    load_import_csv as official_load,
+)
 from app.resolution.router import QUEUE_CONTACT_STATUS
 
 CANONICAL_BATCH_PREDICATE = """
@@ -67,6 +72,10 @@ CANONICAL_BATCH_PREDICATE = """
 COUNTY_ORDER = ["Mecklenburg", "Wake", "Durham", "Johnston", "Union", "Cabarrus", "Gaston"]
 
 ACTION_INSERT = "INSERT"
+# A proven person with no phone is not a failed contact projection. It is an
+# identity, and the pipeline used to throw 5,508 of them away for the crime of
+# having no number attached.
+ACTION_IDENTITY = "IDENTITY_ONLY"
 ACTION_APPEND = "APPEND"
 ACTION_NOOP = "NOOP"
 ACTION_CONFLICT_HOLD = "CONFLICT_HOLD"
@@ -194,8 +203,13 @@ def plan_candidate(rec, existing: Optional[dict]) -> dict:
                 "existing": {}, "incoming": incoming}
 
     if not incoming:
+        if rec.relationships:
+            return {"candidate_id": rec.candidate_id, "action": ACTION_IDENTITY,
+                    "reason": f"{len(rec.relationships)} proven living part"
+                              f"{'y' if len(rec.relationships) == 1 else 'ies'}, no contact point",
+                    "existing": existing, "incoming": []}
         return {"candidate_id": rec.candidate_id, "action": ACTION_REJECT,
-                "reason": "no HIGH contact to project", "existing": existing, "incoming": []}
+                "reason": "no HIGH contact and no proven party", "existing": existing, "incoming": []}
 
     ex_phones = {p["phone"]: p for p in existing["existing_phones"]}
     crm_phones = set(existing.get("crm_phones") or [])
@@ -238,7 +252,11 @@ def plan_candidate(rec, existing: Optional[dict]) -> dict:
 def build_plan(records, existing_by_id: Dict[str, dict]) -> List[dict]:
     plans = []
     for rec in records:
-        if not rec.high_phones:
+        # WAS: `if not rec.high_phones: continue`. That one line is why the
+        # party graph held 939 rows while the resolution model knew 6,295
+        # candidates had a named living party -- the projection could only see
+        # people who happened to have a phone.
+        if not rec.high_phones and not rec.relationships:
             continue
         plans.append(plan_candidate(rec, existing_by_id.get(rec.candidate_id)))
     return plans
@@ -248,7 +266,7 @@ def build_plan(records, existing_by_id: Dict[str, dict]) -> List[dict]:
 # Apply
 # ---------------------------------------------------------------------------
 
-WRITE_ACTIONS = {ACTION_INSERT, ACTION_APPEND}
+WRITE_ACTIONS = {ACTION_INSERT, ACTION_APPEND, ACTION_IDENTITY}
 
 
 def apply_plan(conn, records_by_id, plans: List[dict], tenant_id: str,
@@ -271,8 +289,8 @@ def apply_plan(conn, records_by_id, plans: List[dict], tenant_id: str,
         if plan["action"] not in WRITE_ACTIONS:
             continue
         rec = records_by_id[plan["candidate_id"]]
-        for rel, cp in rec.high_phones:
-            ed = cp.evidence[0].to_dict()
+
+        def stage_evidence(ed: dict) -> str:
             eid = ed["evidence_id"]
             if eid not in seen_ev:
                 seen_ev.add(eid)
@@ -284,19 +302,50 @@ def apply_plan(conn, records_by_id, plans: List[dict], tenant_id: str,
                     ed["observed_at"] or None, ed["retrieved_at"] or None,
                     ed["freshness_days"], ed["notes"],
                 ))
+            return eid
+
+        def stage_party(rel) -> str:
             kind = rel.party.kind.lower()
             pkey = (kind, rel.party.canonical_name)
             if pkey not in seen_party:
                 seen_party.add(pkey)
                 party_rows.append((tenant_id, kind, rel.party.canonical_name))
-            phone_rows.append((
-                tenant_id, kind, rel.party.canonical_name, cp.value,
-                ed["source_family"], cp.role, cp.confidence, cp.confidence_score,
-                cp.observed_at or None, cp.status, eid, CALLABILITY_NOT_AUTHORIZED,
-            ))
+            return kind
+
+        # EVERY proven relationship lands, with or without a contact point.
+        # Identity is the asset; a phone is one possible attribute of it.
+        for rel in rec.relationships:
+            if not rel.evidence:
+                continue
+            eid = stage_evidence(rel.evidence[0].to_dict())
+            kind = stage_party(rel)
             rel_rows.append((
                 tenant_id, rec.candidate_id, kind, rel.party.canonical_name,
                 rel.role, rel.confidence, eid, rel.notes or "",
+            ))
+
+        # Contact points come only from HIGH phones, exactly as before.
+        for rel, cp in rec.high_phones:
+            ed = cp.evidence[0].to_dict()
+            eid = stage_evidence(ed)
+            kind = stage_party(rel)
+            # provenance is jsonb since T24A: source_hash, observed_at, match
+            # method and match confidence are queryable from the phone instead
+            # of being a source-family name in a text column.
+            phone_rows.append((
+                tenant_id, kind, rel.party.canonical_name, cp.value,
+                json.dumps({
+                    "source_family": ed["source_family"],
+                    "source_name": ed["source_name"],
+                    "source_record_id": ed["source_record_id"] or None,
+                    "source_hash": ed["source_hash"] or None,
+                    "source_observed_at": ed["observed_at"] or None,
+                    "match_method": ed["match_method"],
+                    "match_confidence": ed["confidence"],
+                    "evidence_id": eid,
+                }),
+                cp.role, cp.confidence, cp.confidence_score,
+                cp.observed_at or None, cp.status, eid, CALLABILITY_NOT_AUTHORIZED,
             ))
 
     with conn.cursor() as cur:
@@ -311,7 +360,7 @@ def apply_plan(conn, records_by_id, plans: List[dict], tenant_id: str,
               tenant_id uuid, kind text, canonical_name text) on commit drop;
             create temp table _t21_phone (
               tenant_id uuid, kind text, canonical_name text, phone_e164 text,
-              provenance text, phone_role text, confidence_category text,
+              provenance jsonb, phone_role text, confidence_category text,
               confidence_score int, observed_at timestamptz, status text,
               evidence_id text, callability_status text) on commit drop;
             create temp table _t21_rel (
@@ -467,6 +516,11 @@ def main() -> int:
     ap.add_argument("--estate-dir", default=str(estate_export()))
     ap.add_argument("--bundle-dir", default=str(canonical_bundle()))
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--t22-dir", default=str(Path.home() / "neuruh-workspace"
+                                            / "T22_PUBLIC_RECORD_DATA_SUPPLY_20260819"
+                                            / "05_IMPORT_READY"),
+                    help="T22 import-ready official identity evidence (EXACT/HIGH only)")
+    ap.add_argument("--no-t22", action="store_true", help="project without T22 evidence")
     ap.add_argument("--database-url", default=os.environ.get("DEEDSONAR_DATABASE_URL") or os.environ.get("DATABASE_URL"))
     ap.add_argument("--apply", action="store_true", help="perform the production write")
     ap.add_argument("--verify-idempotent", action="store_true")
@@ -490,18 +544,45 @@ def main() -> int:
     ledger = load_csv(bundle_dir / "CANDIDATE_CONTACT_RESOLUTION.csv")
     ipath = bundle_dir / "CANDIDATE_IDENTITY_LEDGER.csv"
     identity = load_csv(ipath) if ipath.exists() else []
-    records = build_records(estate, appends, ledger, rev, identity_ledger=identity)
+
+    # T22's official county-roll and registry identities. REVIEW rows are not
+    # in these files and are never imported without a human.
+    official: dict = {}
+    t22_counts = {"ESTATE_ROWS": 0, "ENTITY_ROWS": 0, "CANDIDATES": 0, "RELATIONSHIPS": 0}
+    if not args.no_t22:
+        t22 = Path(args.t22_dir).expanduser()
+        estate_rows = official_load(t22 / "NC_ESTATE_IDENTITY_IMPORT.csv")
+        entity_rows = official_load(t22 / "NC_ENTITY_IDENTITY_IMPORT.csv")
+        t22_counts["ESTATE_ROWS"] = len(estate_rows)
+        t22_counts["ENTITY_ROWS"] = len(entity_rows)
+        for source in (official_estate(estate_rows), official_entity(entity_rows)):
+            for cid, rels in source.items():
+                official.setdefault(cid, []).extend(rels)
+        t22_counts["CANDIDATES"] = len(official)
+        t22_counts["RELATIONSHIPS"] = sum(len(v) for v in official.values())
+        print(f"T22     estate_rows={t22_counts['ESTATE_ROWS']} "
+              f"entity_rows={t22_counts['ENTITY_ROWS']} "
+              f"candidates={t22_counts['CANDIDATES']} "
+              f"relationships={t22_counts['RELATIONSHIPS']}")
+
+    records = build_records(estate, appends, ledger, rev, identity_ledger=identity,
+                            official_relationships=official)
     by_id = {r.candidate_id: r for r in records}
+    # Everything with a proven party, not only everything with a phone. The
+    # narrower set is still reported separately so the phone numbers stay
+    # auditable on their own.
     with_phone = [r for r in records if r.high_phones]
+    projectable = [r for r in records if r.high_phones or r.relationships]
 
     print(f"BUNDLE  rows={len(appends)} candidates={len({a['candidate_id'] for a in appends})} "
           f"unique_phones={len({a['phone'] for a in appends if a.get('phone')})}")
-    print(f"RECORDS {len(records)}  with HIGH phone: {len(with_phone)}")
+    print(f"RECORDS {len(records)}  with HIGH phone: {len(with_phone)}  "
+          f"with a proven party: {len(projectable)}")
 
     with psycopg.connect(args.database_url, autocommit=False) as conn:
-        existing = read_existing(conn, [r.candidate_id for r in with_phone])
+        existing = read_existing(conn, [r.candidate_id for r in projectable])
         tenant_ids = {v["tenant_id"] for v in existing.values()}
-        plans = build_plan(with_phone, existing)
+        plans = build_plan(projectable, existing)
 
         actions = Counter(p["action"] for p in plans)
         existing_overlap = sum(1 for p in plans if p["existing"] and p["existing"].get("existing_phones"))
@@ -521,6 +602,8 @@ def main() -> int:
             "EXISTING_PHONE_OVERLAP": existing_overlap,
             "EXISTING_HIGHER_CONFIDENCE": higher,
             "CONFLICTING_PHONES": conflicting,
+            "IDENTITY_ONLY": actions.get(ACTION_IDENTITY, 0),
+            "T22": t22_counts,
             "NEW_APPEND": actions.get(ACTION_INSERT, 0) + actions.get(ACTION_APPEND, 0),
             "NOOP": actions.get(ACTION_NOOP, 0),
             "HELD": actions.get(ACTION_CONFLICT_HOLD, 0),

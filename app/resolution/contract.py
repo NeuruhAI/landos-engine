@@ -148,6 +148,14 @@ SOURCE_FAMILIES: Tuple[str, ...] = (
     "NC_ONEMAP_PARCEL_FABRIC",
     "CENSUS_ZCTA_GAZETTEER",
     "OPERATOR_MANUAL_PUBLIC_RECORD",
+    # The county/state parcel rolls T22 acquired. One family because the class
+    # of authority is the same -- a government parcel roll -- while source_name
+    # carries which one (WAKE_PARCELS, DURHAM_PARCELS, MECK_CAMA_OWNERSHIP,
+    # NC_ONEMAP_PARCELS). Distinct from NC_ONEMAP_PARCEL_FABRIC, which is an
+    # ARBITER used to adjudicate geography and may never supply a contact.
+    "COUNTY_PARCEL_ROLL",
+    # The IRS Exempt Organizations Business Master File. Not a 990 filing.
+    "IRS_EXEMPT_ORG_BMF",
 )
 
 # Arbiters adjudicate a match; they never supply a contact. Keeping this

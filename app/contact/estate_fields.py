@@ -15,17 +15,19 @@ saying so lets city corroboration decide instead of a wrong ZIP forcing a miss.
 from __future__ import annotations
 
 from .address_normalize import extract_zip5, parse_address, strip_leading_house
+from .zip_state import zip_plausible_for_state
 
 
 def property_zip_for(row: dict) -> str:
     """The parcel's own ZIP, or "" when the estate does not actually carry one."""
+    state = str(row.get("property_state") or "").strip().upper()
     # Strip the house number first: a five-digit house is not a ZIP.
     line_zip = extract_zip5(
         strip_leading_house(row.get("property_address_raw")),
         strip_leading_house(row.get("property_address_normalized")),
     )
     if line_zip:
-        return line_zip
+        return line_zip if zip_plausible_for_state(line_zip, state) or not state else ""
     declared = str(row.get("property_zip") or "").strip()
     mailing = str(row.get("mailing_zip") or "").strip()
     if not declared:
@@ -35,7 +37,14 @@ def property_zip_for(row: dict) -> str:
     # the same place and the one ZIP describes both.
     if declared == mailing and not owner_occupies_property(row):
         return ""
-    return extract_zip5(declared)
+    declared5 = extract_zip5(declared)
+    # A ZIP that cannot belong to the property's state is a mailing-side value
+    # that leaked, and truncating it to five digits does not make it the
+    # parcel's. 91201-5025 on "809 MATTHEWS TOWNSHIP PY MATTHEWS NC" is
+    # Glendale, California. Refuse it; UNKNOWN is a fact.
+    if declared5 and state and not zip_plausible_for_state(declared5, state):
+        return ""
+    return declared5
 
 
 def _street_key(street: str, city: str = "") -> tuple:

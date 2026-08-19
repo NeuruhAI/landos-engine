@@ -283,6 +283,7 @@ def build_records(
     *,
     tier_c_certified_ids: Optional[Iterable[str]] = None,
     identity_ledger: Optional[Sequence[dict]] = None,
+    official_relationships: Optional[Dict[str, List[Relationship]]] = None,
 ) -> List[ResolutionRecord]:
     certified = set(tier_c_certified_ids or ())
     appends_by_cand: Dict[str, List[dict]] = defaultdict(list)
@@ -312,6 +313,14 @@ def build_records(
         for rel in identity_relationships(identity_by_cand.get(cid, [])):
             if (rel.party.canonical_name, rel.role) not in known:
                 rels.append(rel)
+                known.add((rel.party.canonical_name, rel.role))
+        # T22's official county/registry evidence. Added last and only when the
+        # same (person, role) is not already proven, so an official import can
+        # extend the graph but never restate or override what is there.
+        for rel in (official_relationships or {}).get(cid, []):
+            if (rel.party.canonical_name, rel.role) not in known:
+                rels.append(rel)
+                known.add((rel.party.canonical_name, rel.role))
         has_living = any(r.is_contactable_party for r in rels)
         has_high = any(
             cp.confidence == "HIGH" and cp.kind == "PHONE"
