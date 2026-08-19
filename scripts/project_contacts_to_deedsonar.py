@@ -252,111 +252,184 @@ WRITE_ACTIONS = {ACTION_INSERT, ACTION_APPEND}
 
 def apply_plan(conn, records_by_id, plans: List[dict], tenant_id: str,
                estate_rev: str, run_id: str, resolution_rows: List[dict]) -> dict:
+    """Set-based writes through unlogged staging tables.
+
+    A row-at-a-time loop is ~20k round trips over a pooled connection and does
+    not finish inside any sane window -- the first attempt at this ran past ten
+    minutes and was killed (cleanly: one transaction, so production stayed at
+    zero rows). Everything below stages with COPY and lands with one
+    INSERT ... SELECT ... ON CONFLICT per table, which is also where the
+    idempotence lives.
+    """
     counts = Counter()
-    with conn.cursor(row_factory=dict_row) as cur:
-        for plan in plans:
-            if plan["action"] not in WRITE_ACTIONS:
-                counts[plan["action"]] += 1
-                continue
-            rec = records_by_id[plan["candidate_id"]]
-            for rel, cp in rec.high_phones:
-                ev = cp.evidence[0]
-                ed = ev.to_dict()
-                cur.execute("""
-                    insert into public.contact_evidence (
-                      evidence_id, tenant_id, source_family, source_name, source_record_id,
-                      source_locator, source_hash, field, raw_value, normalized_value,
-                      match_method, confidence, observed_at, retrieved_at, freshness_days, notes)
-                    values (%(evidence_id)s, %(tenant)s, %(source_family)s, %(source_name)s,
-                            %(source_record_id)s, %(source_locator)s, %(source_hash)s,
-                            %(field)s, %(raw_value)s, %(normalized_value)s, %(match_method)s,
-                            %(confidence)s, nullif(%(observed_at)s,'')::timestamptz,
-                            nullif(%(retrieved_at)s,'')::timestamptz, %(freshness_days)s, %(notes)s)
-                    on conflict (evidence_id) do nothing
-                """, {**ed, "tenant": tenant_id})
+    ev_rows, party_rows, phone_rows, rel_rows = [], [], [], []
+    seen_ev, seen_party = set(), set()
 
-                cur.execute("""
-                    insert into public.parties (tenant_id, kind, canonical_name)
-                    values (%s, %s, %s)
-                    on conflict do nothing
-                    returning party_id
-                """, (tenant_id, rel.party.kind.lower(), rel.party.canonical_name))
-                got = cur.fetchone()
-                if got:
-                    party_id = got["party_id"]
-                else:
-                    cur.execute("""
-                        select party_id from public.parties
-                         where tenant_id=%s and kind=%s and canonical_name=%s limit 1
-                    """, (tenant_id, rel.party.kind.lower(), rel.party.canonical_name))
-                    party_id = cur.fetchone()["party_id"]
+    for plan in plans:
+        counts[plan["action"]] += 1
+        if plan["action"] not in WRITE_ACTIONS:
+            continue
+        rec = records_by_id[plan["candidate_id"]]
+        for rel, cp in rec.high_phones:
+            ed = cp.evidence[0].to_dict()
+            eid = ed["evidence_id"]
+            if eid not in seen_ev:
+                seen_ev.add(eid)
+                ev_rows.append((
+                    eid, tenant_id, ed["source_family"], ed["source_name"],
+                    ed["source_record_id"], ed["source_locator"], ed["source_hash"],
+                    ed["field"], ed["raw_value"], ed["normalized_value"],
+                    ed["match_method"], ed["confidence"],
+                    ed["observed_at"] or None, ed["retrieved_at"] or None,
+                    ed["freshness_days"], ed["notes"],
+                ))
+            kind = rel.party.kind.lower()
+            pkey = (kind, rel.party.canonical_name)
+            if pkey not in seen_party:
+                seen_party.add(pkey)
+                party_rows.append((tenant_id, kind, rel.party.canonical_name))
+            phone_rows.append((
+                tenant_id, kind, rel.party.canonical_name, cp.value,
+                ed["source_family"], cp.role, cp.confidence, cp.confidence_score,
+                cp.observed_at or None, cp.status, eid, CALLABILITY_NOT_AUTHORIZED,
+            ))
+            rel_rows.append((
+                tenant_id, rec.candidate_id, kind, rel.party.canonical_name,
+                rel.role, rel.confidence, eid, rel.notes or "",
+            ))
 
-                cur.execute("""
-                    insert into public.party_phones (
-                      party_id, tenant_id, phone_e164, phone_type, provenance,
-                      phone_role, confidence_category, confidence_score, observed_at,
-                      status, evidence_id, callability_status)
-                    values (%s,%s,%s,%s,%s,%s,%s,%s,nullif(%s,'')::timestamptz,%s,%s,%s)
-                    on conflict (party_id, phone_e164) do nothing
-                """, (party_id, tenant_id, cp.value, None, ed["source_family"],
-                      cp.role, cp.confidence, cp.confidence_score, cp.observed_at,
-                      cp.status, ed["evidence_id"], CALLABILITY_NOT_AUTHORIZED))
+    with conn.cursor() as cur:
+        cur.execute("""
+            create temp table _t21_ev (
+              evidence_id text, tenant_id uuid, source_family text, source_name text,
+              source_record_id text, source_locator text, source_hash text, field text,
+              raw_value text, normalized_value text, match_method text, confidence text,
+              observed_at timestamptz, retrieved_at timestamptz, freshness_days int,
+              notes text) on commit drop;
+            create temp table _t21_party (
+              tenant_id uuid, kind text, canonical_name text) on commit drop;
+            create temp table _t21_phone (
+              tenant_id uuid, kind text, canonical_name text, phone_e164 text,
+              provenance text, phone_role text, confidence_category text,
+              confidence_score int, observed_at timestamptz, status text,
+              evidence_id text, callability_status text) on commit drop;
+            create temp table _t21_rel (
+              tenant_id uuid, import_row_id uuid, kind text, canonical_name text,
+              relationship_role text, confidence text, evidence_id text, notes text)
+              on commit drop;
+            create temp table _t21_res (like public.candidate_contact_resolution
+              including defaults excluding constraints excluding indexes) on commit drop;
+        """)
 
-                cur.execute("""
-                    insert into public.candidate_parties (
-                      tenant_id, import_row_id, party_id, relationship_role,
-                      confidence, evidence_id, notes)
-                    values (%s,%s,%s,%s,%s,%s,%s)
-                    on conflict (tenant_id, import_row_id, party_id, relationship_role)
-                      do update set confidence = excluded.confidence,
-                                    evidence_id = excluded.evidence_id,
-                                    updated_at = now()
-                """, (tenant_id, rec.candidate_id, party_id, rel.role,
-                      rel.confidence, ed["evidence_id"], rel.notes or ""))
-            counts[plan["action"]] += 1
+        def copy_in(table: str, cols: str, rows):
+            if not rows:
+                return
+            with cur.copy(f"copy {table} ({cols}) from stdin") as cp:
+                for r in rows:
+                    cp.write_row(r)
 
-        # the bounded read model, for EVERY current candidate, not only the
-        # ones with a phone -- an operator queue is useless if it only contains
-        # the rows that are already solved
-        for row in resolution_rows:
-            cur.execute("""
-                insert into public.candidate_contact_resolution (
-                  import_row_id, tenant_id, estate_revision, contract_version,
-                  owner_class, owner_condition, contact_resolution_state, contact_status,
-                  operator_queue, contact_resolution_score, has_living_identity,
-                  living_party_count, phone_count, high_phone_count,
-                  primary_party_name, primary_party_role,
-                  next_source, next_source_why, next_source_manual, blocking_reason,
-                  projected_at, projection_run_id)
-                values (%(import_row_id)s,%(tenant_id)s,%(estate_revision)s,%(contract_version)s,
-                        %(owner_class)s,%(owner_condition)s,%(contact_resolution_state)s,
-                        %(contact_status)s,%(operator_queue)s,%(contact_resolution_score)s,
-                        %(has_living_identity)s,%(living_party_count)s,%(phone_count)s,
-                        %(high_phone_count)s,%(primary_party_name)s,%(primary_party_role)s,
-                        %(next_source)s,%(next_source_why)s,%(next_source_manual)s,
-                        %(blocking_reason)s, now(), %(run_id)s)
-                on conflict (import_row_id) do update set
-                  estate_revision = excluded.estate_revision,
-                  contract_version = excluded.contract_version,
-                  owner_class = excluded.owner_class,
-                  owner_condition = excluded.owner_condition,
-                  contact_resolution_state = excluded.contact_resolution_state,
-                  contact_status = excluded.contact_status,
-                  operator_queue = excluded.operator_queue,
-                  contact_resolution_score = excluded.contact_resolution_score,
-                  has_living_identity = excluded.has_living_identity,
-                  living_party_count = excluded.living_party_count,
-                  phone_count = excluded.phone_count,
-                  high_phone_count = excluded.high_phone_count,
-                  primary_party_name = excluded.primary_party_name,
-                  primary_party_role = excluded.primary_party_role,
-                  next_source = excluded.next_source,
-                  next_source_why = excluded.next_source_why,
-                  next_source_manual = excluded.next_source_manual,
-                  blocking_reason = excluded.blocking_reason,
-                  projected_at = now(),
-                  projection_run_id = excluded.projection_run_id
-            """, {**row, "run_id": run_id})
+        copy_in("_t21_ev",
+                "evidence_id, tenant_id, source_family, source_name, source_record_id, "
+                "source_locator, source_hash, field, raw_value, normalized_value, "
+                "match_method, confidence, observed_at, retrieved_at, freshness_days, notes",
+                ev_rows)
+        copy_in("_t21_party", "tenant_id, kind, canonical_name", party_rows)
+        copy_in("_t21_phone",
+                "tenant_id, kind, canonical_name, phone_e164, provenance, phone_role, "
+                "confidence_category, confidence_score, observed_at, status, evidence_id, "
+                "callability_status", phone_rows)
+        copy_in("_t21_rel",
+                "tenant_id, import_row_id, kind, canonical_name, relationship_role, "
+                "confidence, evidence_id, notes", rel_rows)
+
+        res_cols = ("import_row_id, tenant_id, estate_revision, contract_version, owner_class, "
+                    "owner_condition, contact_resolution_state, contact_status, operator_queue, "
+                    "contact_resolution_score, has_living_identity, living_party_count, "
+                    "phone_count, high_phone_count, primary_party_name, primary_party_role, "
+                    "next_source, next_source_why, next_source_manual, blocking_reason, "
+                    "projection_run_id")
+        copy_in("_t21_res", res_cols, [
+            (r["import_row_id"], r["tenant_id"], r["estate_revision"], r["contract_version"],
+             r["owner_class"], r["owner_condition"], r["contact_resolution_state"],
+             r["contact_status"], r["operator_queue"], r["contact_resolution_score"],
+             r["has_living_identity"], r["living_party_count"], r["phone_count"],
+             r["high_phone_count"], r["primary_party_name"], r["primary_party_role"],
+             r["next_source"], r["next_source_why"], r["next_source_manual"],
+             r["blocking_reason"], run_id)
+            for r in resolution_rows])
+
+        cur.execute("""
+            insert into public.contact_evidence (
+              evidence_id, tenant_id, source_family, source_name, source_record_id,
+              source_locator, source_hash, field, raw_value, normalized_value,
+              match_method, confidence, observed_at, retrieved_at, freshness_days, notes)
+            select distinct on (evidence_id) evidence_id, tenant_id, source_family,
+              source_name, source_record_id, source_locator, source_hash, field,
+              raw_value, normalized_value, match_method, confidence, observed_at,
+              retrieved_at, freshness_days, notes
+              from _t21_ev
+            on conflict (evidence_id) do nothing;
+        """)
+        # The natural key added in 1b is what makes this converge on a re-run.
+        cur.execute("""
+            insert into public.parties (tenant_id, kind, canonical_name)
+            select distinct tenant_id, kind, canonical_name from _t21_party
+            on conflict (tenant_id, kind, canonical_name) do nothing;
+        """)
+        cur.execute("""
+            insert into public.party_phones (
+              party_id, tenant_id, phone_e164, provenance, phone_role,
+              confidence_category, confidence_score, observed_at, status,
+              evidence_id, callability_status)
+            select p.party_id, t.tenant_id, t.phone_e164, t.provenance, t.phone_role,
+                   t.confidence_category, t.confidence_score, t.observed_at, t.status,
+                   t.evidence_id, t.callability_status
+              from _t21_phone t
+              join public.parties p on p.tenant_id = t.tenant_id
+                                   and p.kind = t.kind
+                                   and p.canonical_name = t.canonical_name
+            on conflict (party_id, phone_e164) do nothing;
+        """)
+        cur.execute("""
+            insert into public.candidate_parties (
+              tenant_id, import_row_id, party_id, relationship_role,
+              confidence, evidence_id, notes)
+            select t.tenant_id, t.import_row_id, p.party_id, t.relationship_role,
+                   t.confidence, t.evidence_id, t.notes
+              from _t21_rel t
+              join public.parties p on p.tenant_id = t.tenant_id
+                                   and p.kind = t.kind
+                                   and p.canonical_name = t.canonical_name
+            on conflict (tenant_id, import_row_id, party_id, relationship_role)
+              do update set confidence = excluded.confidence,
+                            evidence_id = excluded.evidence_id,
+                            updated_at = now();
+        """)
+        cur.execute(f"""
+            insert into public.candidate_contact_resolution ({res_cols}, projected_at)
+            select {res_cols}, now() from _t21_res
+            on conflict (import_row_id) do update set
+              estate_revision = excluded.estate_revision,
+              contract_version = excluded.contract_version,
+              owner_class = excluded.owner_class,
+              owner_condition = excluded.owner_condition,
+              contact_resolution_state = excluded.contact_resolution_state,
+              contact_status = excluded.contact_status,
+              operator_queue = excluded.operator_queue,
+              contact_resolution_score = excluded.contact_resolution_score,
+              has_living_identity = excluded.has_living_identity,
+              living_party_count = excluded.living_party_count,
+              phone_count = excluded.phone_count,
+              high_phone_count = excluded.high_phone_count,
+              primary_party_name = excluded.primary_party_name,
+              primary_party_role = excluded.primary_party_role,
+              next_source = excluded.next_source,
+              next_source_why = excluded.next_source_why,
+              next_source_manual = excluded.next_source_manual,
+              blocking_reason = excluded.blocking_reason,
+              projected_at = now(),
+              projection_run_id = excluded.projection_run_id;
+        """)
     return dict(counts)
 
 
