@@ -485,6 +485,11 @@ def apply_plan(conn, records_by_id, plans: List[dict], tenant_id: str,
     return dict(counts)
 
 
+#: Must stay in step with official_import._CARE_OF_PREFIX. Same three forms,
+#: and deliberately still no bare leading `CO`.
+CARE_OF_SQL_PATTERN = r'^\s*(%|C\s*/\s*O|ATTN)[:.]?\s+'
+
+
 def normalize_care_of_party_names(conn, tenant_id: str) -> dict:
     """Strip a care-of marker out of a canonical party name, in place.
 
@@ -501,16 +506,19 @@ def normalize_care_of_party_names(conn, tenant_id: str) -> dict:
 
     Idempotent by construction -- after one run no care-of name is left to match.
     """
-    report = {"CANDIDATES": [], "RENAMED": 0, "COLLISIONS": []}
+    # Bound, not inlined. A literal % inside SQL text is a psycopg placeholder
+    # the moment the query also takes parameters, and this pattern starts with
+    # one -- inlining it aborts the transaction before the first write.
+    report = {"CANDIDATES": [], "RENAMED": 0, "COLLISIONS": [],
+              "PATTERN": CARE_OF_SQL_PATTERN}
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(r"""
+        cur.execute("""
             select party_id::text, kind, canonical_name,
-                   btrim(regexp_replace(canonical_name,
-                         '^\s*(%|C\s*/\s*O|ATTN)[:.]?\s+', '', 'i')) as stripped
+                   btrim(regexp_replace(canonical_name, %s, '', 'i')) as stripped
               from public.parties
              where tenant_id = %s::uuid
-               and canonical_name ~* '^\s*(%|C\s*/\s*O|ATTN)[:.]?\s+'
-        """, (tenant_id,))
+               and canonical_name ~* %s
+        """, (CARE_OF_SQL_PATTERN, tenant_id, CARE_OF_SQL_PATTERN))
         rows = cur.fetchall()
         for r in rows:
             if not r["stripped"] or r["stripped"] == r["canonical_name"]:
@@ -584,6 +592,12 @@ def main() -> int:
     ap.add_argument("--database-url", default=os.environ.get("DEEDSONAR_DATABASE_URL") or os.environ.get("DATABASE_URL"))
     ap.add_argument("--apply", action="store_true", help="perform the production write")
     ap.add_argument("--verify-idempotent", action="store_true")
+    ap.add_argument("--statement-timeout", default="900s",
+                    help="Raised for the write transaction only. The read model is "
+                         "one COPY of ~20.7k rows and the pooler's default 2min "
+                         "cancels it mid-stream; the transaction then rolls back "
+                         "whole, which is correct but never finishes. SET LOCAL, so "
+                         "it cannot outlive the transaction.")
     args = ap.parse_args()
 
     if not args.database_url:
@@ -811,6 +825,14 @@ def main() -> int:
         (priv / "ROLLBACK_MANIFEST.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
         print(f"\nrollback manifest written: {priv / 'ROLLBACK_MANIFEST.json'} "
               f"({len(manifest['rows'])} rows)")
+
+        with conn.cursor() as cur:
+            # set_config(..., is_local => true) IS `SET LOCAL`, and unlike the
+            # SET statement it takes a bind parameter.
+            cur.execute("select set_config('statement_timeout', %s, true)",
+                        (args.statement_timeout,))
+            cur.execute("show statement_timeout")
+            print(f"write transaction statement_timeout = {cur.fetchone()[0]}")
 
         # Before the first insert: make the graph's names match the names the
         # adapter now produces, or the same human lands twice.
