@@ -5,7 +5,11 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-_PUNCT = re.compile(r"[.,#;:()\"']")
+# An apostrophe is DELETED (O'HARA -> OHARA) because the roll and the voter file
+# disagree about whether it is there at all. Every other punctuation mark becomes
+# a space, so HUNTERSVILLE-CONCORD RD and HUNTERSVILLE CONCORD RD are one street.
+_APOSTROPHE = re.compile(r"[\u2019']")
+_PUNCT = re.compile(r"[.,#;:()\"\-\u2010-\u2015]")
 _WS = re.compile(r"\s+")
 _ZIP = re.compile(r"\b(\d{5})(?:-?\d{4})?\b")
 _HOUSE = re.compile(r"^(\d+[A-Z]?)\b")
@@ -104,7 +108,8 @@ class ParsedAddress:
 
 
 def _clean(raw: str) -> str:
-    text = _PUNCT.sub(" ", (raw or "").upper())
+    text = _APOSTROPHE.sub("", (raw or "").upper())
+    text = _PUNCT.sub(" ", text)
     text = text.replace("/", " ")
     return _WS.sub(" ", text).strip()
 
@@ -121,6 +126,21 @@ def extract_zip5(*parts: Optional[str]) -> str:
     return ""
 
 
+def strip_leading_house(line: Optional[str]) -> str:
+    """Drop the house number so a 5-digit one is never read as a ZIP.
+
+    "17104 NIBLICK LN CORNELIUS NC" carries no ZIP. Scanning it whole finds the
+    house number 17104 and calls it a ZIP, which then deletes the house from the
+    address entirely. The house number is the FIRST token of a street line; a ZIP
+    never is.
+    """
+    text = _clean(line or "")
+    if not text:
+        return ""
+    m = _HOUSE.match(text)
+    return text[m.end():].strip() if m else text
+
+
 def parse_address(
     street: Optional[str],
     city: Optional[str] = None,
@@ -128,7 +148,11 @@ def parse_address(
     zipcode: Optional[str] = None,
 ) -> ParsedAddress:
     raw = " ".join(p for p in [street or "", city or "", state or "", zipcode or ""] if str(p).strip())
-    zip5 = extract_zip5(zipcode, street, city, raw)
+    # The street line is scanned with its house number removed, so a five-digit
+    # house is never mistaken for a ZIP (and then deleted from the address).
+    zip5 = extract_zip5(zipcode, strip_leading_house(street), city,
+                        " ".join(p for p in [strip_leading_house(street), city or "",
+                                             state or "", zipcode or ""] if str(p).strip()))
     city_n = _clean(city or "")
     state_n = _clean(state or "")
     if state_n in {"NORTH CAROLINA"}:

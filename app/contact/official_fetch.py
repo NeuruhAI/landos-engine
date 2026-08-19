@@ -14,9 +14,13 @@ ALLOWED_FETCH_PREFIXES = (
     "https://www.irs.gov/pub/irs-soi/",
     "https://apps.irs.gov/pub/epostcard/990/",
     "https://irs-form-990.s3.amazonaws.com/",
+    # Census ZCTA gazetteer: the ZIP-locality arbiter. It is deliberately a
+    # DIFFERENT authority from NCSBE, so a voter-file match can never be
+    # validated by the voter file itself.
+    "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/",
 )
 
-USER_AGENT = "neuruh-landos-free-contact/t20c"
+USER_AGENT = "neuruh-landos-free-contact/t20d"
 
 
 def official_url_allowed(url: str) -> bool:

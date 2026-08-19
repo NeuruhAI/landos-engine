@@ -130,7 +130,14 @@ def unresolved_reason(row: dict, owner_class: str, has_identity: bool) -> str:
     if owner_class == "NONPROFIT":
         return "NONPROFIT_NO_990_PHONE"
     if owner_class == "TRUST":
-        return "TRUST_EXCLUDED_FROM_VOTER_PERSON_MATCH"
+        # A trust whose trustee the roll names, and whom we matched on the voter
+        # file, is a different state from a trust with no identifiable trustee.
+        from .owner_identity import trustee_people_on_roll
+        if has_identity:
+            return "TRUSTEE_ON_ROLL_NO_ACCEPTED_PHONE"
+        if trustee_people_on_roll(row.get("owner_name") or ""):
+            return "TRUST_EXCLUDED_FROM_VOTER_PERSON_MATCH"
+        return "TRUST_NEEDS_TRUSTEE_IDENTITY"
     if owner_class == "GOVERNMENT":
         return "GOVERNMENT_NOT_A_SELLER_CONTACT"
     if has_identity:

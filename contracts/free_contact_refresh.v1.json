@@ -62,7 +62,6 @@
   ],
   "invariants": [
     "Name-only never appends",
-    "TIER_C never auto-appends unless a later court records PRECISION >= 0.98 on n>=40",
     "Decedent never a phone target",
     "Entity never through voter-person match",
     "Registered agent / attorney phones never labeled owner",
@@ -70,7 +69,12 @@
     "Product callability_status=NOT_AUTHORIZED",
     "Append CSVs and PII exports stay outside Git",
     "No paid Tracerfy / BatchData / Twilio Lookup / people search",
-    "No seller contact, SMS, email, or dial"
+    "No seller contact, SMS, email, or dial",
+    "TIER_C never auto-appends; tier_c_promotion_rule.v1 certifies one subcondition but is CERTIFIED_NOT_ARMED",
+    "property_zip is read through estate_fields.property_zip_for; a verbatim copy of mailing_zip is refused unless the owner occupies the property",
+    "a five-digit house number is never parsed as a ZIP",
+    "a trustee is recovered only where the roll explicitly names one; the trust's own name is never a person",
+    "a trustee phone is labelled TRUSTEE_PERSONAL, never an owner phone"
   ],
   "pipeline": [
     "CURRENT_ESTATE",
@@ -89,12 +93,14 @@
     "REFRESH_RECEIPT"
   ],
   "source_families": [
-    "NCSBE_PUBLIC_VOTER_FILE",
-    "IRS_FORM_990_PUBLIC",
-    "IRS_EO_ICO_NCSBE",
-    "PUBLIC_BUSINESS_WEB",
-    "LOCAL_OWNED_IDENTITY",
+    "CENSUS_ZCTA_GAZETTEER",
     "ESTATE_IMPORT",
+    "IRS_EO_ICO_NCSBE",
+    "IRS_FORM_990_PUBLIC",
+    "LOCAL_OWNED_IDENTITY",
+    "NCSBE_PUBLIC_VOTER_FILE",
+    "NC_ONEMAP_PARCEL_FABRIC",
+    "PUBLIC_BUSINESS_WEB",
     "SOS_IMPORT"
   ],
   "source_custody": {
@@ -112,7 +118,8 @@
       "https://s3.amazonaws.com/dl.ncsbe.gov/data/",
       "https://www.irs.gov/pub/irs-soi/",
       "https://apps.irs.gov/pub/epostcard/990/",
-      "https://irs-form-990.s3.amazonaws.com/"
+      "https://irs-form-990.s3.amazonaws.com/",
+      "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/"
     ]
   },
   "owner_route_classes": [
@@ -136,18 +143,20 @@
     "note": "transparent scored checklist, not a model score"
   },
   "resolution_states": [
-    "PHONE_APPENDED_HIGH",
-    "IDENTITY_MATCHED_VOTER_PHONE_ABSENT",
-    "TIER_C_HELD_NOT_APPENDED",
     "AMBIGUOUS_REJECTED",
     "COMMON_NAME_REJECTED",
-    "NO_ADDRESS_CORROBORATED_NCSBE_MATCH",
     "DECEASED_OWNER_NEEDS_HEIR_IDENTITY",
-    "HEIR_ON_ROLL_NO_ACCEPTED_PHONE",
     "ENTITY_NEEDS_LAWFUL_SOS_IMPORT",
-    "NONPROFIT_NO_990_PHONE",
-    "TRUST_EXCLUDED_FROM_VOTER_PERSON_MATCH",
     "GOVERNMENT_NOT_A_SELLER_CONTACT",
+    "HEIR_ON_ROLL_NO_ACCEPTED_PHONE",
+    "IDENTITY_MATCHED_VOTER_PHONE_ABSENT",
+    "NONPROFIT_NO_990_PHONE",
+    "NO_ADDRESS_CORROBORATED_NCSBE_MATCH",
+    "PHONE_APPENDED_HIGH",
+    "TIER_C_HELD_NOT_APPENDED",
+    "TRUSTEE_ON_ROLL_NO_ACCEPTED_PHONE",
+    "TRUST_EXCLUDED_FROM_VOTER_PERSON_MATCH",
+    "TRUST_NEEDS_TRUSTEE_IDENTITY",
     "UNRESOLVED"
   ],
   "recipe_provenance_fields": [
@@ -192,5 +201,71 @@
     "delta": "python scripts/run_nc_free_phone_enrichment.py --skip-census",
     "full": "python scripts/run_nc_free_phone_enrichment.py --full-rematch",
     "tests": "pytest tests/test_nc_free_contact_canonical.py tests/test_nc_free_phone_enrichment.py"
+  },
+  "tier_c_promotion_rule": {
+    "id": "tier_c_promotion_rule.v1",
+    "decided_by": "T20D precision court, 2026-08-19",
+    "contract_threshold": "PRECISION >= 0.98 on n >= 40",
+    "status": "CERTIFIED_NOT_ARMED",
+    "certified_subcondition": {
+      "name": "A2_SITUS_ZIP_UNKNOWN_CONTAMINATED",
+      "definition": [
+        "the match is property-side (owner address used was the subject parcel)",
+        "house number and street name agree exactly between owner and voter address",
+        "the estate's property_zip is a verbatim copy of mailing_zip AND the property address line carries no ZIP, so the parcel's ZIP is unknown rather than conflicting",
+        "the NC OneMap parcel fabric confirms the parcel's situs house number and street name",
+        "voter county equals property county and no city conflict exists"
+      ],
+      "population": 90,
+      "true_positive": 90,
+      "false_positive": 0,
+      "precision": 1.0,
+      "sample_n": 50,
+      "sample_precision": 1.0,
+      "with_phone": 13
+    },
+    "refused_subconditions": {
+      "A5_MAILING_ZIP_CONFLICT": {
+        "n": 19,
+        "precision": 0.4211,
+        "why": "both ZIPs are real and the ZCTA arbiter separates them"
+      },
+      "D_DIFFERENT_HOUSE_SAME_STREET": {
+        "n": 46,
+        "precision": 0.0,
+        "why": "distinct house numbers are distinct households"
+      },
+      "E_DIFFERENT_STREET_SAME_HOUSE": {
+        "n": 67,
+        "precision": 0.0,
+        "why": "distinct street names are distinct addresses"
+      },
+      "A1_SITUS_ZIP_AGREES": {
+        "n": 4,
+        "precision": 1.0,
+        "why": "perfect but n<40; the contract's power floor is not met"
+      },
+      "A4_MAILING_EXACT_HOUSE_STREET_ZIP": {
+        "n": 11,
+        "precision": 1.0,
+        "why": "perfect but n<40"
+      },
+      "B_IDENTICAL_PO_BOX": {
+        "n": 9,
+        "precision": 1.0,
+        "why": "perfect but n<40"
+      },
+      "C_STREET_ALIAS_GIS_CONFIRMED": {
+        "n": 4,
+        "precision": 1.0,
+        "why": "perfect but n<40"
+      }
+    },
+    "independent_arbiters": [
+      "NC_ONEMAP_PARCEL_FABRIC",
+      "CENSUS_ZCTA_GAZETTEER",
+      "COUNTY_ASSESSOR_ADDRESS_CORPUS"
+    ],
+    "note": "The arbiters are deliberately not NCSBE: a voter-file match is never validated by the voter file. CERTIFIED_NOT_ARMED means the rule is recorded and its population enumerated, but no TIER_C row is auto-appended; arming it would require the matcher to take a runtime dependency on the two arbiter sources."
   }
 }

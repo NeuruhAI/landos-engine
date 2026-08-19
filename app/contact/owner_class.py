@@ -70,6 +70,11 @@ def phone_role_for(person_role: str, route_class: str, source: str) -> str:
         return "ENTITY_MAIN" if source == "IRS_FORM_990_PUBLIC" else "BUSINESS_OFFICE"
     if person_role in {"DECEDENT"}:
         return "OTHER"
+    if person_role == "NAMED_TRUSTEE_ON_ROLL":
+        # The trustee is the party who can convey a trust-held parcel. Naming the
+        # role truthfully matters: this is not the trust's own line, and it is
+        # not an "owner" phone.
+        return "TRUSTEE_PERSONAL"
     if person_role == "NAMED_HEIR_ON_ROLL":
         return "HEIR_PERSONAL" if route_class in {"HEIRS", "ESTATE", "DECEASED"} else "COOWNER_PERSONAL"
     if person_role in {"LIFE_TENANT", "OWNER", "COOWNER"}:

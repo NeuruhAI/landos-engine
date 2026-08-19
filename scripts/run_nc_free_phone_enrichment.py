@@ -47,6 +47,7 @@ from app.contact.entity_public import (
     parse_ico_people,
     source_id,
 )
+from app.contact.estate_fields import property_zip_for
 from app.contact.estate_import import ESTATE_IMPORT_COLUMNS, load_estate_import_csv
 from app.contact.identity_tuple import estate_revision, identity_tuple_hash, master_csv_paths
 from app.contact.local_owned import sweep_local_owned
@@ -162,7 +163,7 @@ def ncsbe_census(ncsbe_dir: Path) -> List[dict]:
 def _estate_zips(row: dict) -> List[str]:
     zips = []
     for z in (
-        extract_zip5(row.get("property_zip"), row.get("property_address_raw"), row.get("property_address_normalized")),
+        property_zip_for(row) or extract_zip5(row.get("property_address_raw"), row.get("property_address_normalized")),
         extract_zip5(row.get("mailing_zip"), row.get("mailing_address")),
     ):
         if z and z not in zips:
@@ -260,7 +261,14 @@ def match_estate_to_ncsbe(estate: List[dict], index: Dict[str, List[VoterRecord]
             )
         parsed = parse_owner_name(row.get("owner_name") or "")
         stats[f"kind_{parsed.kind}"] += 1
-        if parsed.kind in {"ENTITY", "TRUST", "EMPTY"}:
+        # A TRUST is still not a person, but the roll may NAME its trustee — the
+        # party who can actually convey the parcel. Those named people route
+        # like any other named person; a trust with no named trustee does not.
+        if parsed.kind == "TRUST" and any(
+            p.role == "NAMED_TRUSTEE_ON_ROLL" for p in parsed.living_people
+        ):
+            stats["trust_with_named_trustee"] += 1
+        elif parsed.kind in {"ENTITY", "TRUST", "EMPTY"}:
             stats["skipped_nonperson"] += 1
             continue
         living = parsed.living_people
@@ -271,7 +279,7 @@ def match_estate_to_ncsbe(estate: List[dict], index: Dict[str, List[VoterRecord]
             row.get("property_address_raw") or row.get("property_address_normalized"),
             row.get("property_city"),
             row.get("property_state") or "NC",
-            row.get("property_zip"),
+            property_zip_for(row),
         )
         mail = parse_address(
             row.get("mailing_address"),
@@ -862,6 +870,10 @@ def main() -> int:
             prior_estate_revision = ""
 
     if args.full_rematch:
+        # A full rematch recomputes every decision from source. Inheriting the
+        # previous run's resolution reasons would let a stale reason outlive the
+        # rule that produced it, so they are dropped here rather than carried.
+        prior_reasons = {}
         partition = DeltaPartition(
             estate_revision=revision,
             new_ids={r["candidate_id"] for r in estate},
@@ -1050,7 +1062,7 @@ def main() -> int:
         src = estate_by_id.get(ep.property_candidate_id)
         if not src:
             continue
-        prop = parse_address(src.get("property_address_raw"), src.get("property_city"), src.get("property_state") or "NC", src.get("property_zip"))
+        prop = parse_address(src.get("property_address_raw"), src.get("property_city"), src.get("property_state") or "NC", property_zip_for(src))
         mail = parse_address(ep.mailing_address, ep.mailing_city, ep.mailing_state, ep.mailing_zip)
         voters = index.get(ep.person.last, [])
         decision = match_person_to_voters(ep.person, prop, mail, src.get("county") or "", voters)

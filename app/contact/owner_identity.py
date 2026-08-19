@@ -112,7 +112,7 @@ class PersonName:
     suffix: str = ""
     deceased: bool = False
     life_estate: bool = False
-    role: str = "OWNER"  # OWNER, COOWNER, LIFE_TENANT, NAMED_HEIR_ON_ROLL, DECEDENT
+    role: str = "OWNER"  # OWNER, COOWNER, LIFE_TENANT, NAMED_HEIR_ON_ROLL, NAMED_TRUSTEE_ON_ROLL, DECEDENT
     parse_method: str = ""
     raw_segment: str = ""
 
@@ -387,6 +387,79 @@ def _split_ampersand_people(name: str) -> List[str]:
     return [p.strip() for p in n.split("&") if p.strip()]
 
 
+
+# ---------------------------------------------------------------------------
+# Trustees named on the tax roll.
+#
+# The assessor roll writes a trust's controlling person into the owner string
+# itself: "TEW, B DAVID TRUSTEE & TEW, PATRICIA TRUSTEE". That is the same
+# authority, and the same shape, as the heir the roll names on an estate parcel
+# — which this module already matches. A trustee is the person with authority
+# to convey a trust-held parcel, so the roll naming one is evidence of identity,
+# not a guess about it.
+#
+# Only a segment the roll explicitly marks TRUSTEE yields a person. The trust's
+# own name never does, and neither does a segment that merely describes the
+# trust ("TRUSTEE OF THE SMITH FAMILY TRUST").
+# ---------------------------------------------------------------------------
+
+TRUSTEE_TOKEN_RE = re.compile(r"\b(?:CO[\s\-]?)?TRUSTEES?\b", re.I)
+TRUSTEE_OF_RE = re.compile(r"^\s*(?:AS\s+)?(?:CO[\s\-]?)?TRUSTEES?\s+(?:OF|FOR|UNDER)\b", re.I)
+_LEADING_DIGIT_RE = re.compile(r"^\s*\d")
+
+
+def _trustee_people_from_segment(segment: str) -> List[PersonName]:
+    seg = (segment or "").strip()
+    if not seg or not TRUSTEE_TOKEN_RE.search(seg):
+        return []
+    # "TRUSTEE OF THE ... TRUST" names the trust, not a person.
+    if TRUSTEE_OF_RE.search(seg):
+        return []
+    # "724 KING RICHARD ROAD TRUST" — an address-named trust, not a person.
+    if _LEADING_DIGIT_RE.search(seg):
+        return []
+    stripped = TRUSTEE_TOKEN_RE.sub(" ", seg)
+    stripped = re.sub(r"\s+", " ", stripped).strip(" ,-")
+    if not stripped:
+        return []
+    # Anything still carrying TRUST is the entity's own name.
+    if re.search(r"\bTRUST\w*\b", stripped, re.I):
+        return []
+    if is_entity_name(stripped):
+        return []
+    out: List[PersonName] = []
+    for person in parse_segment(stripped):
+        if person.deceased or person.life_estate:
+            continue
+        # A trustee must be named, not initialled: both parts real words.
+        if len(person.first) < 2 or len(person.last) < 2:
+            continue
+        out.append(PersonName(
+            first=person.first, last=person.last, middle=person.middle,
+            suffix=person.suffix, deceased=False, life_estate=False,
+            role="NAMED_TRUSTEE_ON_ROLL", parse_method=person.parse_method,
+            raw_segment=person.raw_segment or seg,
+        ))
+    return out
+
+
+def trustee_people_on_roll(owner_name: Optional[str]) -> List[PersonName]:
+    """Natural persons the roll explicitly names as trustee of this parcel."""
+    n = _norm(owner_name or "")
+    if not n or not TRUSTEE_TOKEN_RE.search(n):
+        return []
+    people: List[PersonName] = []
+    seen = set()
+    for seg in _split_ampersand_people(n):
+        for person in _trustee_people_from_segment(seg):
+            key = person.full_normalized
+            if key in seen:
+                continue
+            seen.add(key)
+            people.append(person)
+    return people
+
+
 def parse_owner_name(owner_name: Optional[str]) -> OwnerParse:
     raw = (owner_name or "").strip()
     if not raw:
@@ -398,6 +471,12 @@ def parse_owner_name(owner_name: Optional[str]) -> OwnerParse:
         if not (decedent_estate and not CORPORATE_TOKEN_RE.search(n)):
             return OwnerParse(raw=raw, kind="ENTITY", notes=["entity_excluded_from_voter_person_match"])
     if is_trust_name(n) and not DECEASED_RE.search(n):
+        trustees = trustee_people_on_roll(n)
+        if trustees:
+            return OwnerParse(
+                raw=raw, kind="TRUST", people=trustees,
+                notes=["named_trustee_on_roll"],
+            )
         return OwnerParse(raw=raw, kind="TRUST", notes=["trust_excluded_from_voter_person_match"])
 
     segments = _split_ampersand_people(n)
