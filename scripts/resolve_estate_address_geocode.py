@@ -50,6 +50,7 @@ import io
 import json
 import sys
 import time
+import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -65,10 +66,14 @@ from psycopg.rows import dict_row
 # are pure and are unit-tested without a database, so the import is deferred
 # into main() rather than making a test of split_address() need an .env.
 CENSUS_BATCH = "https://geocoding.geo.census.gov/geocoder/geographies/addressbatch"
+CENSUS_ONELINE = "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress"
 BENCHMARK = "Public_AR_Current"
 VINTAGE = "Current_Current"
 UA = "landos-engine/1.0 (+estate-address-geocode; contact jeramieshicks@gmail.com)"
 CHUNK = 500                     # well inside the 10k cap; keeps one failure small
+#: Distinct parcels cannot share one coordinate. Two is a duplex; this many is
+#: an institutional address (a county office, a management company).
+SHARED_ADDRESS_THRESHOLD = 3
 OUT_DIR = REPO / "data" / "estate_geocode_runs"
 
 # Census reports its own confidence only as Match/Non_Exact. 0.65 is the value
@@ -86,6 +91,32 @@ select b.batch_id
    and (b.source_context ->> 'current') = 'true'
    and (b.source_context ->> 'authoritative') = 'true'
  limit 1
+"""
+
+#: The second lane. NC rows carry their city INSIDE the address string
+#: ("6327 PARK CREEK DR CHARLOTTE NC") rather than beside it, so the comma split
+#: finds no city half and they fall out of the batch lane.
+#:
+#: They are NOT rescued with mapped.propertyCity, and that is deliberate: that
+#: field holds the OWNER'S MAILING city, not the property's. Mecklenburg parcels
+#: on Park Creek Dr carry mailing cities of Cincinnati, Nashville and Fort
+#: Washington — pairing the two would geocode a Charlotte street into Ohio.
+#: Census parses a one-line address itself, so the string is handed over whole
+#: rather than split by a rule I would have to invent.
+ONELINE_SQL = """
+select r.normalized ->> 'property_key'    as property_key,
+       r.normalized ->> 'county_fips'     as county_fips,
+       r.normalized ->> 'state'           as state,
+       r.normalized ->> 'apn'             as apn,
+       r.mapped ->> 'propertyAddress'     as property_address
+  from public.lead_import_rows r
+ where r.batch_id = %s
+   and (r.latitude is null or r.longitude is null)
+   and nullif(btrim(coalesce(r.mapped ->> 'propertyAddress', '')), '') is not null
+   -- lane 1 keys on a comma to find the city half; anything without one falls
+   -- through to here rather than being written off as address-less.
+   and position(',' in coalesce(r.normalized ->> 'propertyAddress', '')) = 0
+ order by r.normalized ->> 'county_fips', r.normalized ->> 'apn'
 """
 
 UNRESOLVED_SQL = """
@@ -159,6 +190,32 @@ def census_batch(rows):
             entry["countyfp"] = record[9]
         out[index] = entry
     return out
+
+
+def census_oneline(address: str):
+    """One address, parsed by Census itself. Returns the same entry shape the
+    batch lane produces so `court` can judge both identically."""
+    url = CENSUS_ONELINE + "?" + urllib.parse.urlencode({
+        "address": address, "benchmark": BENCHMARK,
+        "vintage": VINTAGE, "format": "json"})
+    request = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        data = json.load(response)
+    matches = data.get("result", {}).get("addressMatches", [])
+    if not matches:
+        return {"match": "No_Match", "exact": ""}
+    best = matches[0]
+    county = (best.get("geographies", {}).get("Counties") or [{}])[0]
+    return {
+        "match": "Match",
+        # The one-line endpoint does not grade exactness; treat it as the
+        # weaker of the two rather than inventing a confidence it did not give.
+        "exact": "Non_Exact",
+        "matched_address": best.get("matchedAddress"),
+        "coords": f'{best["coordinates"]["x"]},{best["coordinates"]["y"]}',
+        "statefp": str(county.get("STATE", "")),
+        "countyfp": str(county.get("COUNTY", "")),
+    }
 
 
 def court(row, entry):
@@ -258,6 +315,55 @@ def main() -> int:
         for index, row in enumerate(chunk):
             results.append(court(row, answers.get(index)))
         time.sleep(1.0)                                # polite between batches
+
+    # ---- lane 2: one-line addresses that embed their own city --------------
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        cur = conn.cursor()
+        cur.execute(CURRENT_BATCH_SQL)
+        cur.execute(ONELINE_SQL, (batch["batch_id"],))
+        oneline_rows = [r for r in cur.fetchall()
+                        if not args.fips or r["county_fips"] in set(args.fips)]
+    if args.limit:
+        oneline_rows = oneline_rows[: max(0, args.limit - len(results))]
+    if oneline_rows:
+        print(f"  one-line lane: {len(oneline_rows)} rows")
+    for row in oneline_rows:
+        address = row["property_address"].strip()
+        prepared_row = {**row, "street": address, "city": "", "state": row["state"]}
+        try:
+            entry = census_oneline(address)
+        except Exception as error:                     # noqa: BLE001
+            results.append({"property_key": row["property_key"], "apn": row["apn"],
+                            "county_fips": row["county_fips"],
+                            "outcome": "SOURCE_ACCESS_FAILURE", "detail": str(error)[:300]})
+            continue
+        verdict = court(prepared_row, entry)
+        verdict["lane"] = "oneline"
+        results.append(verdict)
+        time.sleep(0.4)                                # polite, per-row endpoint
+
+    # ---- shared-address guard ------------------------------------------------
+    # A county's own mailing address resolves perfectly and means nothing about
+    # the parcel. On 2026-08-19 thirty-nine Cabarrus rows carried
+    # "61 UNION ST S CONCORD NC" — the county government building — and all
+    # thirty-nine pinned to one point before this guard existed. They were
+    # applied, caught, and reverted; the guard is why it cannot happen twice.
+    #
+    # The tell is structural, not a blocklist: distinct parcels cannot share one
+    # coordinate. Two rows on an identical point is a duplex or a data quirk;
+    # SHARED_ADDRESS_THRESHOLD or more is an institutional address.
+    by_point = defaultdict(list)
+    for r in results:
+        if r["outcome"] == "RESOLVED":
+            by_point[(round(r["latitude"], 6), round(r["longitude"], 6))].append(r)
+    for point, rows in by_point.items():
+        if len(rows) >= SHARED_ADDRESS_THRESHOLD:
+            for r in rows:
+                r["outcome"] = "SHARED_ADDRESS_REJECTED"
+                r["detail"] = (f"{len(rows)} distinct parcels resolved to {point} — "
+                               "this is an institutional or county address, not a property")
+                r.pop("latitude", None)
+                r.pop("longitude", None)
 
     resolved = [r for r in results if r["outcome"] == "RESOLVED"]
     tally = Counter(r["outcome"] for r in results)
