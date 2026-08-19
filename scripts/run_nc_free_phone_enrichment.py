@@ -49,6 +49,11 @@ from app.contact.entity_public import (
 )
 from app.contact.estate_fields import property_zip_for
 from app.contact.estate_import import ESTATE_IMPORT_COLUMNS, load_estate_import_csv
+from app.contact.identity_ledger import (
+    IDENTITY_LEDGER_COLUMNS,
+    IDENTITY_LEDGER_VERSION,
+    identity_rows,
+)
 from app.contact.identity_tuple import estate_revision, identity_tuple_hash, master_csv_paths
 from app.contact.local_owned import sweep_local_owned
 from app.contact.ncsbe_match import MatchDecision, VoterRecord, match_person_to_voters, voter_from_ncsbe_row
@@ -1265,6 +1270,18 @@ def main() -> int:
         last_attempted_at=run_started_at,
     )
     resolution_out = write_csv(out_dir / "CANDIDATE_CONTACT_RESOLUTION.csv", ledger, RESOLUTION_COLUMNS)
+    # Every PROVEN identity, including the ones whose voter record carries no
+    # phone. Additive export only: nothing above this line is re-run, re-matched,
+    # or re-thresholded by it. On a delta run with rematch=0 there are no fresh
+    # identity_hits, so the file is written empty rather than half-populated --
+    # a partial identity ledger would be worse than an honest empty one.
+    identity_ledger = identity_rows(matched.get("identity_hits") or [])
+    identity_out = write_csv(
+        out_dir / "CANDIDATE_IDENTITY_LEDGER.csv", identity_ledger, IDENTITY_LEDGER_COLUMNS)
+    print(f"IDENTITY_LEDGER rows={len(identity_ledger)} "
+          f"with_phone={sum(1 for r in identity_ledger if r['phone_present'] == 'YES')} "
+          f"named_no_phone={sum(1 for r in identity_ledger if r['phone_present'] == 'NO')} "
+          f"-> CANDIDATE_IDENTITY_LEDGER.csv")
     recipe_yield = recipe_contact_yield(ledger)
     class_yield = recipe_owner_class_yield(ledger)
     county_yield_rows = county_free_contact_yield(ledger)
