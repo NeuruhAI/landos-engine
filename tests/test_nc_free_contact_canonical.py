@@ -408,9 +408,7 @@ def test_yield_dimensions_separate_held_from_unresolved():
     assert row["phone_fill_rate"] == "0.250000"
     assert row["high_confidence_rate"] == "0.500000"  # 1 of 2 identity-resolved
     assert row["counties"] == "Wake"
-    # Every candidate lands in exactly one terminal bucket.
-    assert row["phone_appended_high"] + row["identity_resolved"] - 1 \
-        + row["review_held"] + row["unresolved"] == row["candidates"]
+    assert row["no_identity_match"] == 0
 
 
 def test_recipe_intelligence_is_analytical_not_a_score_change():
@@ -523,3 +521,46 @@ def test_no_paid_provider_endpoint_is_reachable_from_contact_code():
         for needle in banned:
             # Named only inside the refusal allowlist test data, never as a call target.
             assert needle not in text, f"{path.name} references paid provider {needle}"
+
+
+def test_every_report_accounts_for_every_candidate():
+    """No row may fall between the buckets — a hold is not an unresolved."""
+    from app.contact.yield_reports import (
+        county_free_contact_yield,
+        recipe_contact_yield,
+        recipe_owner_class_yield,
+    )
+
+    states = [
+        (PHONE_APPENDED_HIGH, "YES", "LIVING_PERSON"),
+        ("IDENTITY_MATCHED_VOTER_PHONE_ABSENT", "NO", "LIVING_PERSON"),
+        ("TIER_C_HELD_NOT_APPENDED", "NO", "LIVING_PERSON"),
+        ("AMBIGUOUS_REJECTED", "NO", "MULTI_PERSON"),
+        ("COMMON_NAME_REJECTED", "NO", "LIVING_PERSON"),
+        ("NO_ADDRESS_CORROBORATED_NCSBE_MATCH", "NO", "LIVING_PERSON"),
+        ("DECEASED_OWNER_NEEDS_HEIR_IDENTITY", "NO", "DECEASED"),
+        ("HEIR_ON_ROLL_NO_ACCEPTED_PHONE", "NO", "HEIRS"),
+        ("ENTITY_NEEDS_LAWFUL_SOS_IMPORT", "NO", "LLC"),
+        ("NONPROFIT_NO_990_PHONE", "NO", "NONPROFIT"),
+        ("TRUST_EXCLUDED_FROM_VOTER_PERSON_MATCH", "NO", "TRUST"),
+        ("GOVERNMENT_NOT_A_SELLER_CONTACT", "NO", "GOVERNMENT"),
+        ("UNRESOLVED", "NO", "UNKNOWN"),
+    ]
+    ledger = [
+        {
+            "candidate_id": f"c{i}", "county": "Wake", "fips": "37183",
+            "owner_class": oc, "primary_recipe": "r1",
+            "qualification_state": "QUALIFIED_CANDIDATE",
+            "contact_resolution_state": state, "phone_present": present,
+        }
+        for i, (state, present, oc) in enumerate(states)
+    ]
+    buckets = ("identity_resolved", "medium_review", "review_held",
+               "no_identity_match", "unresolved")
+    for report in (recipe_contact_yield(ledger),
+                   recipe_owner_class_yield(ledger),
+                   county_free_contact_yield(ledger)):
+        assert sum(r["candidates"] for r in report) == len(ledger)
+        for row in report:
+            assert sum(row[b] for b in buckets) == row["candidates"], row
+            assert row["phone_appended_high"] + row["still_missing"] == row["candidates"]
