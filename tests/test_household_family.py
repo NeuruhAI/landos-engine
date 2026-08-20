@@ -32,15 +32,16 @@ class SurnameExtraction(unittest.TestCase):
     def test_both_county_formats_yield_the_same_surname(self):
         """Union writes no comma, Wake writes one. The surname must not depend
         on which county typed the row."""
-        a = parse_owner_name("CHAMBERS EDNA MAE HEIRS")
-        b = parse_owner_name("CHAMBERS, EDNA MAE HEIRS")
+        a = parse_owner_name("HALVORSEN ELSPETH MAE HEIRS")
+        b = parse_owner_name("HALVORSEN, ELSPETH MAE HEIRS")
         self.assertEqual(decedent_surnames(a.people), decedent_surnames(b.people))
-        self.assertEqual(decedent_surnames(a.people), {"CHAMBERS"})
+        self.assertEqual(decedent_surnames(a.people), {"HALVORSEN"})
 
     def test_the_second_reading_of_an_ambiguous_line_is_not_a_surname(self):
-        """`CHAMBERS EDNA MAE HEIRS` might be western order, so MAE is kept --
+        """`SURNAME FIRST MIDDLE HEIRS` might be western order, so the middle
+        token is kept --
         but as an alternate, never as an equal."""
-        op = parse_owner_name("CHAMBERS EDNA MAE HEIRS")
+        op = parse_owner_name("HALVORSEN ELSPETH MAE HEIRS")
         self.assertEqual(alternate_surnames(op.people), {"MAE"})
         self.assertNotIn("MAE", decedent_surnames(op.people))
 

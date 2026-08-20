@@ -172,12 +172,14 @@ def _by_segment(people: Sequence[PersonName]) -> Dict[str, List[PersonName]]:
 def decedent_surnames(people: Sequence[PersonName]) -> Set[str]:
     """The surnames the roll most likely attributes to the parcel's dead owners.
 
-    A county that writes `CHAMBERS, EDNA MAE HEIRS` has told us the surname. A
-    county that writes `CHAMBERS EDNA MAE HEIRS` has not, and the owner parser
-    is honest about it: it returns BOTH readings, `last_first` (CHAMBERS) and
-    `western` (MAE). Treating that ambiguity as two equally good surnames would
-    let a neighbour called MAE corroborate as family, which is precisely the
-    false link this whole lane exists to avoid.
+    A county that writes `SURNAME, FIRST MIDDLE HEIRS` has told us the surname.
+    A county that writes `SURNAME FIRST MIDDLE HEIRS` has not, and the owner
+    parser is honest about it: it returns BOTH readings, `last_first` (SURNAME)
+    and `western` (MIDDLE). Treating that ambiguity as two equally good surnames
+    would let a neighbour who happens to carry the middle name as a SURNAME
+    corroborate as family, which is precisely the false link this module exists
+    to avoid. Real owner strings are not used as examples here: the parcel roll
+    names real people, and a docstring is not the place for them.
 
     So the PRIMARY set is one surname per raw segment -- the parser's own first
     reading, which is `last_first`, the order the NC rolls overwhelmingly use
