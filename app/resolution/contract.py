@@ -54,6 +54,93 @@ RELATIONSHIP_ROLES: Tuple[str, ...] = (
     "OTHER_VERIFIED_RELATION",
 )
 
+# ---------------------------------------------------------------------------
+# FAMILY is not AUTHORITY (T30)
+# ---------------------------------------------------------------------------
+# A role answers "what is this person to the parcel". It does not answer "how
+# do we know", and those are different questions with different consequences.
+# An obituary naming a daughter is FAMILY evidence; it does not make her the
+# personal representative. A tax roll printing "SMITH JOHN W EXECUTOR" states a
+# role, but a tax roll is not the court -- it is repeating what someone told the
+# assessor. Only the estate file adjudicates.
+#
+# Before this class existed the graph could only say EXECUTOR, so a roll-stated
+# executor and a court-appointed one were the same fact. They are not, and the
+# operator who calls one of them needs to know which he has.
+RELATIONSHIP_CLASSES: Tuple[str, ...] = (
+    # Named on an official property instrument or roll as holding an interest.
+    "PROPERTY_INTEREST",
+    # Kinship or household. Evidence of a relationship between PEOPLE. Carries
+    # no authority over the parcel and never will on its own.
+    "FAMILY",
+    # An official record STATES the role, but the record is not the adjudicating
+    # one. A tax roll's "EXECUTOR" line lives here, honestly, forever -- until an
+    # estate file corroborates it and it is re-asserted as LEGAL_AUTHORITY.
+    "ROLE_STATED_ON_RECORD",
+    # The adjudicating record itself names this person as holding legal power
+    # over the estate or the parcel. This is the only class that may be shown to
+    # an operator as authority to transact.
+    "LEGAL_AUTHORITY",
+    # The subject of the estate. Never contactable, never an authority.
+    "DECEDENT_SUBJECT",
+)
+
+# Which source families are ALLOWED to establish LEGAL_AUTHORITY. This is the
+# structural guard: not a naming convention, a refusal. A parcel roll cannot
+# appoint an executor no matter what its owner-name column says, and the
+# voter file cannot adjudicate an heir.
+LEGAL_AUTHORITY_SOURCE_FAMILIES = frozenset({
+    "ESTATE_IMPORT",
+    "PROBATE_INDEX",
+    "OPERATOR_MANUAL_PUBLIC_RECORD",
+})
+
+# The roles that assert legal power. Each one needs an adjudicating source.
+AUTHORITY_ROLES = frozenset({
+    "PERSONAL_REPRESENTATIVE",
+    "EXECUTOR",
+    "ADMINISTRATOR",
+    "HEIR",
+})
+
+# The class a role defaults to when nothing better is asserted. A role that can
+# be adjudicated defaults to ROLE_STATED_ON_RECORD, never to LEGAL_AUTHORITY:
+# authority is earned from the evidence, not granted by the name of the role.
+DEFAULT_CLASS_BY_ROLE: Dict[str, str] = {
+    "RECORDED_OWNER": "PROPERTY_INTEREST",
+    "COOWNER": "PROPERTY_INTEREST",
+    "LIFE_TENANT": "PROPERTY_INTEREST",
+    "TRUSTEE": "PROPERTY_INTEREST",
+    "HEIR": "ROLE_STATED_ON_RECORD",
+    "PERSONAL_REPRESENTATIVE": "ROLE_STATED_ON_RECORD",
+    "EXECUTOR": "ROLE_STATED_ON_RECORD",
+    "ADMINISTRATOR": "ROLE_STATED_ON_RECORD",
+    "ENTITY_OFFICER": "ROLE_STATED_ON_RECORD",
+    "ENTITY_MANAGER": "ROLE_STATED_ON_RECORD",
+    "ENTITY_PRINCIPAL": "ROLE_STATED_ON_RECORD",
+    "ENTITY_MAIN_CONTACT": "ROLE_STATED_ON_RECORD",
+    "REGISTERED_AGENT": "ROLE_STATED_ON_RECORD",
+    "DECEDENT": "DECEDENT_SUBJECT",
+    "OTHER_VERIFIED_RELATION": "FAMILY",
+}
+
+# How a FAMILY relationship is specified when the evidence names the kinship.
+# Separate from the role vocabulary on purpose: "daughter" is not a thing you
+# are to a parcel, it is a thing you are to a person.
+FAMILY_RELATIONS: Tuple[str, ...] = (
+    "SPOUSE",
+    "CHILD",
+    "PARENT",
+    "SIBLING",
+    "GRANDCHILD",
+    "IN_LAW",
+    "HOUSEHOLD_CO_RESIDENT",
+    "SURNAME_CORROBORATED_RELATIVE",
+    "NAMED_SURVIVOR",
+    "UNSPECIFIED_RELATIVE",
+)
+
+
 # A decedent is never a contactable party. A registered agent is a service
 # address, not the seller. Both are modelled so the graph stays honest, and
 # both are excluded from the operator's "who do I talk to" set.
@@ -340,6 +427,14 @@ class Relationship:
     evidence: List[Evidence] = field(default_factory=list)
     confidence: str = "HIGH"
     notes: str = ""
+    #: Empty means "take the honest default for this role". It is never inferred
+    #: upward: a caller must ASK for LEGAL_AUTHORITY, and asking is refused
+    #: unless an adjudicating source is among the evidence.
+    relationship_class: str = ""
+    #: Only meaningful when relationship_class == FAMILY. What the evidence
+    #: actually said the kinship was -- never a guess from a shared surname
+    #: alone (that has its own value, SURNAME_CORROBORATED_RELATIVE).
+    family_relation: str = ""
 
     def __post_init__(self) -> None:
         if self.role not in RELATIONSHIP_ROLES:
@@ -350,6 +445,31 @@ class Relationship:
             raise ContractViolation(
                 f"relationship {self.role} for {self.party.canonical_name!r} has no evidence"
             )
+        if not self.relationship_class:
+            object.__setattr__(self, "relationship_class",
+                               DEFAULT_CLASS_BY_ROLE.get(self.role, "ROLE_STATED_ON_RECORD"))
+        if self.relationship_class not in RELATIONSHIP_CLASSES:
+            raise ContractViolation(
+                f"unknown relationship class {self.relationship_class!r}")
+        # THE GUARD. A role that asserts legal power must be able to name the
+        # record that conferred it. Without this the class is decoration: any
+        # caller could label a tax-roll line LEGAL_AUTHORITY and the graph would
+        # agree. Refusing here means the only way to get authority into the
+        # graph is to have read the adjudicating record.
+        if self.relationship_class == "LEGAL_AUTHORITY":
+            families = {e.source_family for e in self.evidence}
+            if not (families & LEGAL_AUTHORITY_SOURCE_FAMILIES):
+                raise ContractViolation(
+                    f"{self.role} for {self.party.canonical_name!r} claims LEGAL_AUTHORITY "
+                    f"but its evidence is {sorted(families)}; only "
+                    f"{sorted(LEGAL_AUTHORITY_SOURCE_FAMILIES)} adjudicate authority"
+                )
+        if self.family_relation and self.family_relation not in FAMILY_RELATIONS:
+            raise ContractViolation(f"unknown family relation {self.family_relation!r}")
+        if self.family_relation and self.relationship_class != "FAMILY":
+            raise ContractViolation(
+                f"family_relation {self.family_relation!r} is only meaningful on a "
+                f"FAMILY relationship, not {self.relationship_class}")
         allowed = ROLE_CONTACT_MATRIX[self.role]
         for cp in self.party.contact_points:
             if cp.role not in allowed:
@@ -367,13 +487,27 @@ class Relationship:
         """A registered agent or a formation service is not the seller."""
         return self.is_contactable_party and self.role not in NOT_THE_SELLER_ROLES
 
+    @property
+    def is_legal_authority(self) -> bool:
+        """May this person be shown as holding power over the estate/parcel?
+
+        The question the operator is really asking before he picks up the phone.
+        A daughter named in an obituary answers NO here and that is not a defect
+        -- it is the truth, and it is what stops the call being made on a
+        premise the record does not support.
+        """
+        return self.relationship_class == "LEGAL_AUTHORITY"
+
     def to_dict(self) -> dict:
         return {
             "role": self.role,
+            "relationship_class": self.relationship_class,
+            "family_relation": self.family_relation,
             "confidence": self.confidence,
             "notes": self.notes,
             "is_contactable_party": self.is_contactable_party,
             "is_seller_side": self.is_seller_side,
+            "is_legal_authority": self.is_legal_authority,
             "party": self.party.to_dict(),
             "evidence": [e.to_dict() for e in self.evidence],
         }

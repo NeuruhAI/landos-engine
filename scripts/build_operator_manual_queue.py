@@ -164,6 +164,17 @@ def qualified_queue(cur, negative_memory: dict) -> list:
                c.owner_class, c.owner_condition, c.operator_queue,
                c.contact_resolution_state, c.living_party_count, c.high_phone_count,
                c.primary_party_role, c.next_source, c.next_source_manual,
+               -- T30. HOW the parties on this candidate were established. The
+               -- row used to say every living party was "named by an official
+               -- roll", which was true when the roll was the only supply and
+               -- became false the moment household evidence arrived. An
+               -- operator told the wrong source cannot judge the fact.
+               (select string_agg(distinct cp.relationship_class, ',')
+                  from public.candidate_parties cp
+                 where cp.import_row_id = c.import_row_id) as party_classes,
+               (select count(*) from public.candidate_parties cp
+                 where cp.import_row_id = c.import_row_id
+                   and cp.relationship_class = 'LEGAL_AUTHORITY') as authority_count,
                coalesce(c.blocking_reason, '') as blocking_reason,
                coalesce(c.callability_status, 'NOT_AUTHORIZED') as callability,
                e.normalized_name as entity_name,
@@ -181,12 +192,27 @@ def qualified_queue(cur, negative_memory: dict) -> list:
         pb = PLAYBOOK_BY_QUEUE.get(r["operator_queue"], UNKNOWN_PLAYBOOK)
         ran = sorted(negative_memory.get(r["candidate_id"], set()))
         known = []
+        classes = set((r["party_classes"] or "").split(",")) - {""}
         if (r["living_party_count"] or 0) > 0:
+            # Name the class of evidence, not a source that may not be the one.
+            if classes & {"PROPERTY_INTEREST"}:
+                how = "named on the property record"
+            elif classes & {"ROLE_STATED_ON_RECORD"}:
+                how = "a role stated on a record, not adjudicated"
+            elif classes & {"FAMILY"}:
+                how = "family evidence only -- no authority over the property"
+            else:
+                how = "established on corroborated evidence"
             known.append(f"{r['living_party_count']} living part"
-                         f"{'y' if r['living_party_count'] == 1 else 'ies'} named by an "
-                         f"official roll, as {r['primary_party_role'] or 'a related party'}")
+                         f"{'y' if r['living_party_count'] == 1 else 'ies'} known "
+                         f"({how}), as {r['primary_party_role'] or 'a related party'}")
         else:
             known.append("no living party named yet")
+        # The whole point of the estate route, said as a number: nobody has
+        # legal authority here until the file is read.
+        known.append(f"{r['authority_count'] or 0} party with adjudicated legal authority"
+                     if (r["authority_count"] or 0) == 1 else
+                     f"{r['authority_count'] or 0} parties with adjudicated legal authority")
         known.append(f"resolution state {r['contact_resolution_state']}")
         if r["entity_name"] and (r["entity_parcels"] or 0) > 1:
             known.append(f"owner entity {r['entity_name']} holds {r['entity_parcels']} parcels")
