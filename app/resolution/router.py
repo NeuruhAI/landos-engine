@@ -44,6 +44,11 @@ NOT_A_SELLER = "NOT_A_SELLER"
 Q_CONTACT_HIGH = "CONTACT_FOUND_HIGH"
 Q_ESTATE_ID_REQUIRED = "ESTATE_IDENTITY_REQUIRED"
 Q_ESTATE_ID_FOUND = "ESTATE_IDENTITY_FOUND_CONTACT_NEEDED"
+#: The public estate index was actually SEARCHED and the case is not in it.
+#: This is not the same desk as "nobody has fetched the estate file yet", and
+#: sending it to that desk wastes the trip -- the operator arrives to collect a
+#: file the statewide index says does not exist.
+Q_ESTATE_NO_PUBLIC_CASE = "ESTATE_NO_PUBLIC_CASE_FOUND"
 Q_SOS_ID_REQUIRED = "SOS_ENTITY_IDENTITY_REQUIRED"
 Q_ENTITY_PRINCIPAL_FOUND = "ENTITY_PRINCIPAL_FOUND_CONTACT_NEEDED"
 Q_TRUSTEE_REQUIRED = "TRUSTEE_REQUIRED"
@@ -78,6 +83,7 @@ OPERATOR_QUEUES = (
 QUEUE_CONTACT_STATUS = {
     Q_CONTACT_HIGH: "HIGH-CONFIDENCE CONTACT FOUND",
     Q_ESTATE_ID_REQUIRED: "NEEDS ESTATE IDENTITY",
+    Q_ESTATE_NO_PUBLIC_CASE: "NO PUBLIC ESTATE CASE FOUND",
     Q_ESTATE_ID_FOUND: "IDENTITY RESOLVED — NO PHONE",
     Q_SOS_ID_REQUIRED: "NEEDS SOS / ENTITY IDENTITY",
     Q_ENTITY_PRINCIPAL_FOUND: "IDENTITY RESOLVED — NO PHONE",
@@ -90,11 +96,41 @@ QUEUE_CONTACT_STATUS = {
 }
 
 
-def _estate_route(county: str, has_living_identity: bool) -> NextSource:
+def _estate_route(county: str, has_living_identity: bool,
+                  estate_public_index_searched: bool = False) -> NextSource:
     office = ("Mecklenburg County Clerk of Superior Court - Estates Division "
               "(Mecklenburg.Estates@nccourts.org for filings before 2023-10-09)"
               if county == "Mecklenburg"
               else f"{county} County Clerk of Superior Court - Estates Division")
+    if not has_living_identity and estate_public_index_searched:
+        # Somebody has already put this decedent through the public eCourts
+        # index and it came back with no matching estate case. "Go and fetch
+        # the estate file" is then the wrong instruction: the operator would
+        # travel to collect a file the statewide index says is not there.
+        #
+        # What this does NOT assert: that no estate exists. eCourts coverage is
+        # not complete for older filings, and the index cannot see a file that
+        # was never opened. Both remain possible and the route says so rather
+        # than choosing one.
+        return NextSource(
+            next_source="COUNTY_ESTATE_INDEX_OFFLINE / RECORDED_DEED",
+            why="The public eCourts index was searched for this decedent under the "
+                "tested identity variants and returned no matching estate case. "
+                "That rules out the fastest route, not the estate: eCourts does "
+                "not carry every older filing, and an estate may never have been "
+                "opened at all. Reading the county's own estate index and the "
+                "recorded deed chain is what separates those two.",
+            required_input=f"decedent name + APN, taken to {office} for the county's "
+                           f"own estate index, and to the Register of Deeds for the "
+                           f"chain of title",
+            cost_usd="0.00 (copy fees may apply)",
+            manual_or_automatic="MANUAL",
+            expected_information="whether an estate file exists in the county index "
+                                 "but not in eCourts; and the last recorded "
+                                 "instrument with its named grantees",
+            blocking_reason="",
+            queue=Q_ESTATE_NO_PUBLIC_CASE,
+        )
     if has_living_identity:
         return NextSource(
             next_source="NCSBE_PUBLIC_VOTER_FILE",
@@ -118,9 +154,12 @@ def _estate_route(county: str, has_living_identity: bool) -> NextSource:
         manual_or_automatic="MANUAL",
         expected_information="estate case number; applicant; personal representative / "
                              "executor / administrator; named heirs; mailing addresses",
-        blocking_reason="No operator estate file has been supplied yet; "
-                        "www.nccourts.gov and the eCourts Portal both refuse "
-                        "programmatic clients, so this cannot be automated.",
+        blocking_reason="No operator estate file has been supplied yet. "
+                        "www.nccourts.gov and the eCourts Portal refuse scripted "
+                        "clients, and the Portal's public search additionally sits "
+                        "behind a human-verification challenge that re-arms every "
+                        "ten minutes -- so the lookup is a person's job in a "
+                        "browser, not an automated one.",
         queue=Q_ESTATE_ID_REQUIRED,
     )
 
@@ -222,6 +261,7 @@ def _route_for(
     attempted_sources: Optional[frozenset] = None,
     entity_resolution_state: str = "",
     entity_principal_known: bool = False,
+    estate_public_index_searched: bool = False,
 ) -> NextSource:
     """The single decision. Owner condition first, failure message second.
 
@@ -236,6 +276,14 @@ def _route_for(
                                resolved should not be sent to the SOS a second
                                time on behalf of the same LLC.
       entity_principal_known   whether that resolution actually named a human.
+
+    T30A adds one more, for the same reason attempted_sources exists:
+
+      estate_public_index_searched
+                               whether a person has already put this decedent
+                               through the public eCourts index. A no-match
+                               there is a RESULT, and it sends the candidate to
+                               a different desk than one nobody has looked up.
     """
     attempted = attempted_sources or frozenset()
 
@@ -284,7 +332,8 @@ def _route_for(
 
     if owner_condition in {"DECEASED", "ESTATE_OPEN", "HEIRS_UNRESOLVED"} or \
        owner_class in {"DECEASED", "ESTATE", "HEIRS"}:
-        return _estate_route(county or "the", has_living_identity)
+        return _estate_route(county or "the", has_living_identity,
+                             estate_public_index_searched)
 
     if owner_class == "TRUST" or owner_condition == "TRUST_HELD":
         return _trust_route(contact_resolution_state, has_living_identity)

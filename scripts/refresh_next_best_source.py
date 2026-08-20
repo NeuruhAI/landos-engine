@@ -86,7 +86,7 @@ def main() -> int:
                 select c.import_row_id::text as candidate_id,
                        c.owner_class, c.owner_condition, c.contact_resolution_state,
                        c.operator_queue, c.next_source, c.high_phone_count,
-                       c.has_living_identity,
+                       c.has_living_identity, c.estate_resolution_state,
                        coalesce(r.normalized ->> 'county', '') as county,
                        e.resolution_state as entity_state,
                        coalesce(e.principal_name, '') as entity_principal,
@@ -111,6 +111,11 @@ def main() -> int:
                 contact_resolution_state=row["contact_resolution_state"],
                 county=row["county"],
                 has_living_identity=bool(row["has_living_identity"]),
+                # T30A. A recorded public-index no-match is a RESULT, and it
+                # sends the candidate to a different desk than one nobody has
+                # looked up. Read from the state the search itself wrote.
+                estate_public_index_searched=(
+                    row["estate_resolution_state"] == "ESTATE_NO_PUBLIC_CASE_FOUND"),
                 has_high_phone=(row["high_phone_count"] or 0) > 0,
                 tier_c_held=row["contact_resolution_state"] == "TIER_C_HELD_NOT_APPENDED",
                 attempted_sources=frozenset(row["attempted"] or ())

@@ -20,8 +20,14 @@ DISCOVERY LOG (2026-08-19, this lane, live checks)
                                  tried, including via an independent fetcher.
                                  The statewide judicial site is not automatable
                                  at all. Recorded as fact, not as "untried".
-  portal-nc.tylertech.cloud   -> HTTP 403. The eCourts Portal is the statewide
-                                 estate index and it is access-controlled.
+  portal-nc.tylertech.cloud   -> HTTP 403 to scripted clients. CORRECTED BY T30A
+                                 (2026-08-20): the Portal LOADS in an ordinary
+                                 browser and its Smart Search returns estate
+                                 cases. The 403 was evidence about scripts, and
+                                 reading it as "the source is unavailable" cost
+                                 this engine the statewide estate index. What is
+                                 true: it is MANUAL, gated by a human-verification
+                                 challenge that re-arms about every ten minutes.
   www.sosnc.gov               -> HTTP 200 at root. Business Registration search
                                  path 403s, and the SOS states scripted or
                                  automated searching is not permitted.
@@ -96,27 +102,36 @@ CHECKED = "2026-08-19"
 # Estate / probate
 # ---------------------------------------------------------------------------
 
+#: T30A CORRECTION (2026-08-20). This entry read acquisition="BLOCKED" on the
+#: strength of an HTTP 403 to a scripted client. T30A drove the Portal in a real
+#: browser and the home page, Smart Search, and the Register of Actions all
+#: loaded. A programmatic 403 is evidence about SCRIPTS, not about the source.
+#: Recording it as BLOCKED told the router the estate index was unreachable when
+#: it was merely not automatable -- and that is the difference between "no route"
+#: and "an operator's route".
 _ECOURTS = SourceEntry(
     county="",
     source_family="PROBATE_INDEX",
-    official_source="NC Judicial Branch eCourts Portal (Odyssey)",
+    official_source="NC Judicial Branch eCourts Portal (Odyssey) - Smart Search",
     source_type="OFFICIAL_INTERACTIVE_INDEX",
     locator="https://portal-nc.tylertech.cloud/Portal/",
-    acquisition="BLOCKED",
+    acquisition="MANUAL",
     fmt="HTML (interactive)",
-    fields="case number; case type; party names; filing dates; documents where public",
-    coverage="statewide; estate cases filed on/after the county's eCourts go-live",
+    fields="case number; case type; party names and party ROLES; filing date; "
+           "case status; microfilm number; case events / docket; documents where public",
+    coverage="statewide; estate cases filed on/after the county's eCourts go-live. "
+             "Older filings may exist only in the county's own index.",
     cost_usd="0.00",
-    terms="Public case information. Access is controlled; the site refuses "
-          "non-browser clients (HTTP 403 observed this lane).",
-    last_checked=CHECKED,
-    blocking_reason="Access control returns 403 to programmatic clients. "
-                    "Scripting it would mean defeating that control, which this "
-                    "lane forbids. Operator-in-browser use is unaffected.",
-    operator_steps="Operator opens Portal in a browser, searches the decedent by "
-                   "name and county, and transcribes the estate case number, "
-                   "applicant / personal representative, and any named heir into "
-                   "the estate import template.",
+    terms="Public case information, reachable in an ordinary browser. Scripted "
+          "clients receive HTTP 403, and Smart Search additionally sits behind a "
+          "human-verification challenge that Tyler documents as re-arming every "
+          "ten minutes. Neither control may be defeated.",
+    last_checked="2026-08-20",
+    blocking_reason="",
+    operator_steps="See NC_ECOURTS_ESTATE_SMART_SEARCH_V1 in "
+                   "app/resolution/source_procedure.py -- the procedure T30A "
+                   "measured, including the name-variant order, the county-scope "
+                   "trap, and the four result states.",
 )
 
 _ESTATE_COUNTER = {
