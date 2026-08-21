@@ -8,8 +8,25 @@ index was searched and holds no such case" from "nobody has looked", and the
 candidate goes back to a courthouse counter for a file that is not there.
 
 WHAT IT WRITES
-  candidate_contact_resolution.estate_resolution_state = ESTATE_NO_PUBLIC_CASE_FOUND
-  ...for PUBLIC_INDEX_NO_MATCH only.
+  candidate_contact_resolution.estate_resolution_state:
+    PUBLIC_INDEX_NO_MATCH        -> ESTATE_NO_PUBLIC_CASE_FOUND
+    OFFICIAL_ESTATE_CASE_FOUND   -> ESTATE_OFFICIAL_CASE_FOUND   (T50A)
+
+  ...and, for BOTH, one row of public.case_source_attempt: who looked at what
+  source, for which decedent, with which query, and what came back.
+
+T50A CLOSED THE OTHER HALF. This script originally wrote the negative only,
+because the negative was the only one that had a state to be written as. The
+positive -- an official estate case actually located, with a file number -- had
+nowhere to go, so the most expensive result this lane produced was the one it
+could not record, and the next lane to work the candidate would search the
+index again. Migration 20260821110000 added the state; app.case.CaseSourceAttempt
+added the durable record of the look itself.
+
+A LOCATED CASE IS NOT AUTHORITY. ESTATE_OFFICIAL_CASE_FOUND says the index holds
+a case. It does not say who may act: an index entry is not letters, and the
+appointment is in the file. Nothing here writes a party, a relationship or a
+relationship_class, so the product still refuses to call anyone a signatory.
 
 WHAT IT REFUSES TO WRITE
   * A result state that is about the INSTRUMENT rather than the record.
@@ -40,9 +57,18 @@ from app.resolution.source_procedure import (
     NC_ECOURTS_ESTATE_SMART_SEARCH_V1 as PROC,
     supports_replay_suppression,
 )
+from app.case import CaseSourceAttempt, is_positive
+from app.case.attempt import INSERT_SQL, insert_params
 
 PRIVATE = Path.home() / ".neuruh/private/deedsonar/wake-estates"
-STATE = "ESTATE_NO_PUBLIC_CASE_FOUND"
+
+#: The verdict -> resolution state map. Only these two verdicts change the
+#: candidate's estate state; everything else is recorded as an attempt and
+#: changes nothing, which is the point of the refusal list above.
+STATE_FOR_VERDICT = {
+    "PUBLIC_INDEX_NO_MATCH": "ESTATE_NO_PUBLIC_CASE_FOUND",
+    "OFFICIAL_ESTATE_CASE_FOUND": "ESTATE_OFFICIAL_CASE_FOUND",
+}
 
 
 def load():
@@ -74,7 +100,17 @@ def plan(by_rank, decedents):
                 "observed_at": "2026-08-20",
                 "procedure": f"{PROC.name} v{PROC.version}",
             }
-            if supports_replay_suppression(verdict):
+            state = STATE_FOR_VERDICT.get(verdict)
+            if state:
+                item["state"] = state
+                item["positive"] = is_positive(verdict)
+                write.append(item)
+            elif supports_replay_suppression(verdict):
+                # A verdict that suppresses a replay but has no estate state is
+                # still worth an attempt row; it just does not move the
+                # candidate's estate position.
+                item["state"] = None
+                item["positive"] = False
                 write.append(item)
             else:
                 item["refused_because"] = (
@@ -85,18 +121,60 @@ def plan(by_rank, decedents):
     return write, refuse
 
 
+def attempt_for(r):
+    """The durable record of the look itself, positive or negative.
+
+    Constructed through app.case.CaseSourceAttempt so the vocabulary check, the
+    subject requirement and the cost/currency rule all run here rather than at
+    the database. The SUBJECT is the DECEDENT, not the candidate: one decedent
+    can own several parcels -- T30A's nine candidates were eight decedents, two
+    pairs sharing an estate -- so a person searched once must be findable from
+    every case that person touches.
+    """
+    return CaseSourceAttempt(
+        candidate_id=r["candidate_id"],
+        subject_kind="PERSON",
+        subject_ref=r["decedent_query"],
+        subject_label=r["decedent_query"],
+        domain="AUTHORITY",
+        source_id=PROC.name,
+        source_name="NC eCourts Portal — estates index",
+        source_family=PROC.source_family,
+        procedure=PROC.name,
+        procedure_version=PROC.version,
+        query=r["decedent_query"],
+        actor_type="ENGINE",
+        started_at=f"{r['observed_at']}T00:00:00+00:00",
+        completed_at=f"{r['observed_at']}T00:00:00+00:00",
+        result_state=r["verdict"],
+        notes=(
+            f"Scope: {r.get('scope') or 'not recorded'}. "
+            f"County: {r.get('county') or 'not recorded'}."
+        ),
+    )
+
+
 def apply(conn, rows):
+    """Write the estate state and the attempt. Both idempotent."""
     written = 0
+    attempts = 0
     with conn.cursor() as cur:
         for r in rows:
-            cur.execute("""
-                update public.candidate_contact_resolution
-                   set estate_resolution_state = %s
-                 where import_row_id = %s
-                   and estate_resolution_state is distinct from %s
-            """, (STATE, r["candidate_id"], STATE))
-            written += cur.rowcount
-    return written
+            state = r.get("state")
+            if state:
+                cur.execute("""
+                    update public.candidate_contact_resolution
+                       set estate_resolution_state = %s
+                     where import_row_id = %s
+                       and estate_resolution_state is distinct from %s
+                """, (state, r["candidate_id"], state))
+                written += cur.rowcount
+            # The attempt row is what stops the next lane re-running this
+            # search. `on conflict do nothing` makes a second pass a no-op.
+            cur.execute(INSERT_SQL, insert_params(attempt_for(r)))
+            if cur.fetchone():
+                attempts += 1
+    return written, attempts
 
 
 def main() -> int:
@@ -111,6 +189,10 @@ def main() -> int:
         "procedure": f"{PROC.name} v{PROC.version}",
         "decedents_completed": len(decedents),
         "candidates_to_mark": len(write),
+        # T50A: both halves are now countable. Before this the positives were
+        # invisible because they had nowhere to be written.
+        "positives": sum(1 for r in write if r.get("positive")),
+        "negatives": sum(1 for r in write if r.get("state") == "ESTATE_NO_PUBLIC_CASE_FOUND"),
         "candidates_refused": len(refuse),
         "refusals": [{k: v for k, v in r.items() if k in
                       ("rank", "verdict", "refused_because")} for r in refuse],
@@ -118,12 +200,14 @@ def main() -> int:
     }
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         if args.apply:
-            report["rows_written"] = apply(conn, write)
+            report["rows_written"], report["attempts_written"] = apply(conn, write)
             conn.commit()
             report["applied"] = True
-            report["second_pass_rows"] = apply(conn, write)
+            second_rows, second_attempts = apply(conn, write)
             conn.commit()
-            report["second_pass_noop"] = report["second_pass_rows"] == 0
+            report["second_pass_rows"] = second_rows
+            report["second_pass_attempts"] = second_attempts
+            report["second_pass_noop"] = second_rows == 0 and second_attempts == 0
         with conn.cursor() as cur:
             cur.execute("select estate_resolution_state s, count(*) n "
                         "from public.candidate_contact_resolution "
