@@ -37,6 +37,7 @@ from .models import (
 )
 from .models import HuntRequest, ComposeRequest, DecideRequest, ComplianceCertBatchRequest
 from .models import FieldPinCaptureRequest
+from .models import OpportunityIntelligenceRequest
 from . import field_pins as field_pins_mod
 from .scoring import score_parcel, DEFAULT_WEIGHTS, EDGE_PROFILE
 from . import nve_land
@@ -48,6 +49,7 @@ from . import recipe_core
 from .insight import service as insight_service
 from . import valuation as valuation_mod
 from .fips import resolve_county
+from . import opportunity_intelligence as opportunity_intelligence_mod
 
 app = FastAPI(title="LandOS Engine", version="1.0.0")
 
@@ -105,6 +107,24 @@ def health():
     except Exception as e:  # noqa: BLE001 - report any DB failure plainly
         db = f"down: {e.__class__.__name__}"
     return {"status": "ok", "service": "landos-engine", "db": db}
+
+
+@app.post("/v1/opportunity-intelligence/evaluate")
+def opportunity_intelligence(
+    req: OpportunityIntelligenceRequest,
+    _=Depends(auth_land_dd),
+):
+    """Evaluate a versioned Recipe Engine opportunity contract, read-only.
+
+    This endpoint performs no seller contact, offer execution, database write,
+    or recipe mutation.  It returns the full explanation and deterministic
+    receipt produced by the pure evaluator.
+    """
+    try:
+        payload = req.model_dump(exclude_none=True)
+        return opportunity_intelligence_mod.evaluate_opportunity(payload)
+    except opportunity_intelligence_mod.OpportunityIntelligenceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/land-dd")
