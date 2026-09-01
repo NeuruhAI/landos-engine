@@ -3,14 +3,34 @@
 Does not scrape eCourts. Operators (or a later lawful bulk extract) drop a CSV
 matching ESTATE_IMPORT_COLUMNS. Living applicant / PR / heir people are emitted
 for the same NCSBE matcher. The decedent is never a phone target.
+
+Exact file contract (enforced by `estate_import_validate`, consumed by
+`load_estate_import_csv` / `scripts/run_nc_free_phone_enrichment.py`):
+
+- Path: `{raw_dir}/estate/` where `--raw-dir` is the enrichment `_raw`
+  directory. Canonical drop:
+  `_raw/estate/{county_slug}_estate_{YYYY-MM-DD}.csv`
+- Filename: `{county_slug}_estate_{YYYY-MM-DD}.csv` (lowercase county slug).
+  The runner glob-loads every `*.csv` here except names ending `template.csv`.
+  `estate_import_template.csv` is the empty header the runner may write; it is
+  never a data file.
+- Encoding: UTF-8, no BOM. Delimiter: comma. Header: first row, exact names
+  in `ESTATE_IMPORT_COLUMNS`. `source_date`: ISO-8601 calendar date `YYYY-MM-DD`
+  stored as text — this loader does not parse it.
+- Living people come only from `applicant_name` / `co_applicant_name` /
+  `personal_representative_name` / `heir_name`. `attorney_name` is provenance
+  only. `decedent_name` is never a phone target.
+- This module does not write LEGAL_AUTHORITY, mutate DNC, or set a phone
+  callable. Family labels without a court case number are not heirship.
 """
 from __future__ import annotations
 
 import csv
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List
 
 from .owner_identity import PersonName, parse_owner_name
 
@@ -35,8 +55,46 @@ ESTATE_IMPORT_COLUMNS = (
     "source_date",
 )
 
+ESTATE_IMPORT_ENCODING = "utf-8"
+ESTATE_IMPORT_DELIMITER = ","
+ESTATE_IMPORT_HEADER_IS_FIRST_ROW = True
+ESTATE_IMPORT_DATE_FORMAT = "%Y-%m-%d"
+ESTATE_IMPORT_DIRNAME = "estate"
+ESTATE_IMPORT_PATH_MARKER = "_raw/estate"
+ESTATE_IMPORT_TEMPLATE_NAME = "estate_import_template.csv"
+ESTATE_IMPORT_FILENAME_RE = re.compile(
+    r"^(?P<county>[a-z]+)_estate_(?P<date>\d{4}-\d{2}-\d{2})\.csv$"
+)
+
+# Seven CURRENT NC counties. FIPS matches the estate master files.
+ESTATE_IMPORT_COUNTY_FIPS = {
+    "Cabarrus": "37025",
+    "Durham": "37063",
+    "Gaston": "37071",
+    "Johnston": "37101",
+    "Mecklenburg": "37119",
+    "Union": "37179",
+    "Wake": "37183",
+}
+
 # Attorney phones are never accepted as owner/heir phones.
 FORBIDDEN_RELATIONSHIPS = {"ATTORNEY", "COUNSEL", "LAWYER", "ESQ"}
+
+# This importer is identity-only. LEGAL_AUTHORITY is a graph
+# relationship_class on a different contract (import_packages/estate) and
+# must never be written here. EXECUTOR / ADMINISTRATOR as a court-stated
+# *role* are allowed only when estate_case_number is present.
+LEGAL_AUTHORITY_RELATIONSHIP = "LEGAL_AUTHORITY"
+COURT_ROLE_REQUIRES_CASE = {
+    "HEIR", "APPLICANT", "CO_APPLICANT", "PERSONAL_REPRESENTATIVE",
+    "EXECUTOR", "ADMINISTRATOR",
+}
+
+FAMILY_RELATIONSHIPS = {
+    "DAUGHTER", "SON", "CHILD", "SPOUSE", "WIDOW", "WIDOWER", "HUSBAND", "WIFE",
+    "SIBLING", "BROTHER", "SISTER", "PARENT", "MOTHER", "FATHER",
+    "GRANDCHILD", "NIECE", "NEPHEW", "FAMILY",
+}
 
 ROLE_BY_FIELD = {
     "applicant_name": "APPLICANT",
@@ -44,6 +102,8 @@ ROLE_BY_FIELD = {
     "personal_representative_name": "PERSONAL_REPRESENTATIVE",
     "heir_name": "HEIR",
 }
+
+LIVING_PERSON_FIELDS = tuple(ROLE_BY_FIELD.keys())
 
 
 @dataclass(frozen=True)
