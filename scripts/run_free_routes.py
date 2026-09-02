@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 
 from app.custody.locations import canonical_bundle, estate_export, run_dir  # noqa: E402
 from app.custody.sync_guard import prepare_output_dir  # noqa: E402
-from app.free_routes.attempts import write_attempts  # noqa: E402
+from app.free_routes.attempts import Attempt, write_attempts  # noqa: E402
 from app.free_routes.estate_rows import load_estate_rows, is_entity_owner, is_probate  # noqa: E402
 from app.free_routes.human_routes import (t2_notice_search, t3_special_proceedings_search, t4_obituary_search,  # noqa: E402
                                           t5_sos_search, t7_rod_search, t10_people_search, write_worklist)
@@ -121,6 +121,12 @@ def main() -> int:
         with open(os.path.join(signals_dir, "T8_wake_delinquent_signals.csv"), "w", newline="") as fh:
             if w["signals"]:
                 wr = csv.DictWriter(fh, fieldnames=list(w["signals"][0].keys())); wr.writeheader(); wr.writerows(w["signals"])
+        # counties with no free open-data source published: the route was considered and does not apply
+        covered = {"37183", "37119"}
+        for r in estate:
+            if (r.get("fips") or "") not in covered:
+                all_attempts.append(Attempt(r["candidate_id"], "T8", run_id, "NO_HIT", "COUNTY_OPEN_DATA", None, ts, index.get("T8:wake"),
+                                            {"reason": "no free county open-data source published for this county (T8 covers Wake tax delinquency and Charlotte code enforcement)"}))
         if not a.skip_charlotte:
             c = t8_open_data.match_charlotte_code(estate, run_id=run_id, now_iso=ts, receipt_path=None)
             index["T8:charlotte"] = write_receipt(c["receipt"], receipts_dir); all_attempts += c["attempts"]
@@ -151,6 +157,11 @@ def main() -> int:
             from app.free_routes.attempts import Attempt as _A
             for r in targets:
                 all_attempts.append(_A(r["candidate_id"], "T9", run_id, "HALTED", usps.SOURCE, None, ts, index["T9"], {"halt": "H-12", "reason": "no USPS credentials in the engine env"}))
+            # a row with no mailing address has nothing for USPS to validate: that is an outcome, not a gap
+            for r in estate:
+                if not (r.get("mailing_address") or "").strip():
+                    all_attempts.append(_A(r["candidate_id"], "T9", run_id, "NO_HIT", usps.SOURCE, None, ts, index["T9"],
+                                           {"reason": "no mailing address on the row: USPS validation has nothing to validate"}))
     if "T10" in routes:
         human_route("T10", person_rows, lambda r: t10_people_search(r.get("owner_name", ""), r.get("property_city", ""))["truepeoplesearch"],
                     lambda r: t10_people_search(r.get("owner_name", ""), r.get("property_city", ""))["google"], "phones / relatives as read (confidence = operator_web)")
