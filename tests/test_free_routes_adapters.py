@@ -74,3 +74,16 @@ def test_invented_routes():
     assert "candidate_parties" in I2_COLLAPSE_SQL
     assert is_out_of_state(estate[0]) and is_entity_owner(estate[1]) and is_probate(estate[0])
     assert norm_pin("0648-08-0648.990") == "0648080648" and list(index_by_pin([{"apn": "0648080648"}]).keys()) == ["0648080648"]
+
+
+def test_estate_rows_take_owner_class_from_the_resolution_ledger(tmp_path):
+    from pathlib import Path
+    from app.free_routes.estate_rows import load_estate_rows
+    (tmp_path / "Wake" / "master").mkdir(parents=True)
+    (tmp_path / "Wake" / "master" / "wake_master_0001.csv").write_text("candidate_id,owner_name,apn,global_rank\nc1,SMITH JOHN,0648080648,1\nc2,ACME LLC,0648080649,2\nc3,DOE JANE,0648080650,3\n")
+    (tmp_path / "bundle").mkdir()
+    (tmp_path / "bundle" / "CANDIDATE_CONTACT_RESOLUTION.csv").write_text("candidate_id,owner_class,contact_resolution_state\nc1,DECEASED,DECEASED_OWNER_NEEDS_HEIR_IDENTITY\nc2,LLC,ENTITY_NEEDS_LAWFUL_SOS_IMPORT\nc3,LIVING_PERSON,PHONE_APPENDED_HIGH\n")
+    rows = load_estate_rows(tmp_path, ["Wake"], tmp_path / "bundle")
+    assert [is_probate(r) for r in rows] == [True, False, False]
+    assert [is_entity_owner(r) for r in rows] == [False, True, False]
+    assert rows[0]["res_owner_class"] == "DECEASED" and rows[0]["fips"] == "37183"

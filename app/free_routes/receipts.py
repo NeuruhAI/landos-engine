@@ -54,7 +54,8 @@ def write_receipt(receipt: RouteReceipt, out_dir: str) -> str:
     file's sha256 is echoed in a sibling SHA256SUMS line so the court can chain it."""
     os.makedirs(out_dir, exist_ok=True)
     stamp = receipt.observed_at.replace(":", "").replace("-", "")
-    path = os.path.join(out_dir, f"{receipt.route_id}_{stamp}.receipt.json")
+    slug = "".join(ch if ch.isalnum() else "-" for ch in receipt.route_name.lower()).strip("-")[:40]
+    path = os.path.join(out_dir, f"{receipt.route_id}_{slug}_{stamp}.receipt.json")
     payload = json.dumps(receipt.to_dict(), indent=2, sort_keys=True, default=str)
     with open(path, "w") as f:
         f.write(payload)

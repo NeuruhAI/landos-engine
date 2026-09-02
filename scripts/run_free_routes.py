@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.custody.locations import estate_export, run_dir  # noqa: E402
+from app.custody.locations import canonical_bundle, estate_export, run_dir  # noqa: E402
 from app.custody.sync_guard import prepare_output_dir  # noqa: E402
 from app.free_routes.attempts import write_attempts  # noqa: E402
 from app.free_routes.estate_rows import load_estate_rows, is_entity_owner, is_probate  # noqa: E402
@@ -50,6 +50,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-name", default=f"FREE_ROUTES_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
     ap.add_argument("--estate-dir", default=str(estate_export()))
+    ap.add_argument("--bundle-dir", default=str(canonical_bundle()), help="the canonical bundle holding CANDIDATE_CONTACT_RESOLUTION.csv (owner_class per candidate)")
     ap.add_argument("--routes", default=",".join(DEFAULT_ROUTES))
     ap.add_argument("--counties", default="")
     ap.add_argument("--cap", type=int, default=40, help="worklist cap per county for the human routes")
@@ -66,7 +67,8 @@ def main() -> int:
         os.makedirs(d, exist_ok=True)
     run_id = str(uuid.uuid4()); ts = now_iso()
     counties = [c for c in a.counties.split(",") if c] or None
-    estate = load_estate_rows(Path(a.estate_dir), counties)
+    estate = load_estate_rows(Path(a.estate_dir), counties, Path(a.bundle_dir) if a.bundle_dir else None)
+    print(f"owner_class from the ledger: {sum(1 for r in estate if r.get('res_owner_class'))} of {len(estate)} rows; probate {sum(1 for r in estate if is_probate(r))}; entity {sum(1 for r in estate if is_entity_owner(r))}")
     routes = [r for r in a.routes.split(",") if r]
     print(f"run_id={run_id} estate_rows={len(estate)} routes={routes} apply={a.apply}")
     all_attempts = []; index = {}

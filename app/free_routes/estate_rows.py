@@ -10,13 +10,35 @@ COUNTY_ORDER = ["Mecklenburg", "Wake", "Durham", "Johnston", "Union", "Cabarrus"
 FIPS = {"Cabarrus": "37025", "Durham": "37063", "Gaston": "37071", "Johnston": "37101", "Mecklenburg": "37119", "Union": "37179", "Wake": "37183"}
 
 
-def load_estate_rows(estate_dir: Path, counties: Optional[Iterable[str]] = None) -> List[dict]:
+RESOLUTION_COLUMNS = ("owner_class", "contact_resolution_state", "phone_present", "phone_source", "observed_at", "confidence_category", "dnc_status")
+ENTITY_CLASSES = ("LLC", "CORPORATION", "OTHER_ENTITY", "TRUST", "NONPROFIT")
+
+
+def load_resolution(bundle_dir: Optional[Path]) -> Dict[str, dict]:
+    """The canonical resolution ledger (CANDIDATE_CONTACT_RESOLUTION.csv): owner_class and
+    the contact state per candidate — the estate export itself carries neither."""
+    if not bundle_dir:
+        return {}
+    path = Path(bundle_dir) / "CANDIDATE_CONTACT_RESOLUTION.csv"
+    if not path.exists():
+        return {}
+    with path.open(newline="", encoding="utf-8") as fh:
+        return {r["candidate_id"]: r for r in csv.DictReader(fh)}
+
+
+def load_estate_rows(estate_dir: Path, counties: Optional[Iterable[str]] = None, bundle_dir: Optional[Path] = None) -> List[dict]:
+    res = load_resolution(bundle_dir)
     rows: List[dict] = []
     for county in (list(counties) if counties else COUNTY_ORDER):
         for path in sorted((estate_dir / county / "master").glob(f"{county.lower()}_master_*.csv")):
             with path.open(newline="", encoding="utf-8") as fh:
                 for r in csv.DictReader(fh):
                     r.setdefault("county", county); r.setdefault("fips", FIPS.get(county, ""))
+                    lr = res.get(r.get("candidate_id", ""))
+                    if lr:
+                        for c in RESOLUTION_COLUMNS:
+                            if lr.get(c) is not None:
+                                r[f"res_{c}"] = lr[c]
                     rows.append(r)
     return rows
 
@@ -37,11 +59,14 @@ def index_by_pin(rows: Iterable[dict]) -> Dict[str, List[dict]]:
 
 
 def is_probate(row: dict) -> bool:
-    cond = (row.get("owner_condition") or row.get("qualification_state") or "").upper()
+    cond = " ".join(str(row.get(k) or "") for k in ("res_owner_class", "res_contact_resolution_state", "owner_condition", "qualification_state")).upper()
     return any(t in cond for t in ("DECEASED", "HEIR", "ESTATE", "PROBATE"))
 
 
 def is_entity_owner(row: dict) -> bool:
+    cls = (row.get("res_owner_class") or "").upper()
+    if cls:
+        return cls in ENTITY_CLASSES
     name = (row.get("owner_name") or "").upper()
     return any(t in name.split() or t in name for t in ("LLC", "L.L.C.", "INC", "CORP", "TRUST", "TRUSTEE", "COMPANY", "HOLDINGS", "PROPERTIES", "PARTNERSHIP", "ASSOCIATION", "CHURCH", "BANK", " LP", " LLP"))
 
