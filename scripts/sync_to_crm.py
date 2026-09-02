@@ -8,10 +8,9 @@ Reads landos.owner_leads (the engine's source of truth — READ-ONLY here) and
 projects onto public.acquisition_leads, matched on
 acquisition_leads.source_lead_id = owner_leads.lead_id. UPDATE-only for the curated set
 (never deletes), so the CRM's row set and its RLS/assignment workflow stay untouched. The
-ONE exception is the 'discovered' intake tier: leads minted from county tax-sale signals
+ONE exception is the intake tier: leads minted from county tax-sale signals
 (provenance='discovered_taxsale') that have no acquisition_leads row yet are INSERTED here
-with status='discovered' — so the single-writer rule holds (this is the only writer of
-acquisition_leads). Every other unmatched owner_lead is still left to the CRM's own intake.
+with status='new_lead' — canonical CRM first-stage key (084). The single-writer rule holds.
 Idempotent: re-running converges to the same state.
 
 Two layers, different gates:
@@ -280,8 +279,8 @@ def assert_source_allowed(source):
 # The discovered-tier INSERT (single-writer rule: this is the ONLY path that creates an
 # acquisition_leads row). Named once so the --check-constraints probe (JOB 3) exercises
 # the EXACT SQL the sync runs — a dry-run that never touches the DB cannot validate DB
-# acceptance, so the probe must round-trip THIS statement. status='discovered' is a
-# literal; 26 placeholders follow. Contact fields and the tri-state DNC verdict
+# acceptance, so the probe must round-trip THIS statement. status='new_lead' is a
+# literal (canonical 084 first stage); 26 placeholders follow. Contact fields and the tri-state DNC verdict
 # are bound together so a new row never transiently claims clean without its phone.
 DISCOVERED_INSERT_SQL = """
     insert into public.acquisition_leads
@@ -291,7 +290,7 @@ DISCOVERED_INSERT_SQL = """
        market_value_est, equity_pct, taxes_annual,
        score_signals, signal_tags, source,
        phone_1, phone_1_type, phone_2, contact_confidence, dnc)
-    values (%s, %s, 'discovered', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    values (%s, %s, 'new_lead', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 # The columns DISCOVERED_INSERT_SQL binds, in VALUES order ('status' is a literal, so it
@@ -623,11 +622,10 @@ def main(dry_run: bool = False, lead_ids=None) -> None:
                  sig_tags, lead_source,
                  Jsonb(brief), r["lead_id"]))
             if cur.rowcount == 0:
-                # The curated set stays UPDATE-only. The ONE exception: the 'discovered' intake
-                # tier — leads minted from county tax-sale signals (provenance='discovered_taxsale')
-                # are INSERTED here (single-writer rule). status='discovered' keeps them visibly
-                # separate from the curated set; every other unmatched owner_lead is still left to
-                # the CRM's own intake (warn + skip).
+                # The curated set stays UPDATE-only. The ONE exception: intake from county
+                # tax-sale signals (provenance='discovered_taxsale') is INSERTED here
+                # (single-writer rule). status='new_lead' is the CRM first-stage key; every
+                # other unmatched owner_lead is still left to the CRM's own intake (warn + skip).
                 if (r.get("provenance") or "").startswith("discovered"):
                     insert_values = (
                         r["lead_id"], TENANT, r["owner_name"], r["parcel_apn"], r["county_fips"],

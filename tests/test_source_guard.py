@@ -67,7 +67,7 @@ def test_discovered_insert_lists_source_contact_and_has_26_placeholders():
     assert "insert into public.acquisition_leads" in s
     assert "signal_tags, source, phone_1" in s              # source + gated contact bound together
     assert "contact_confidence, dnc)" in s                  # tri-state verdict is explicit
-    assert "'discovered'" in s                              # status literal, not a placeholder
+    assert "'new_lead'" in s                              # status literal, not a placeholder
     assert s.count("%s") == 26                              # the value-tuple contract
 
 
