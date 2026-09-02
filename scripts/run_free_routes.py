@@ -142,9 +142,15 @@ def main() -> int:
             for v in vals:
                 all_attempts.append(Attempt(v.input_key, "T9", run_id, "HIT" if v.deliverable is not None else "ERROR", usps.SOURCE, ts[:10], ts, index["T9"], {"dpv": v.dpv_confirmation, "error": v.error}))
         else:
+            targets = [r for r in estate if (r.get("mailing_address") or "").strip()]
             rec = halted_receipt("T9", reg.name, mode="AUTOMATED", source=reg.source, license=reg.license, provenance_url=reg.provenance_url, halt_code="H-12",
-                                 human_step=usps.HUMAN_STEP, rows_tried=sum(1 for r in estate if (r.get("mailing_address") or "").strip()))
+                                 human_step=usps.HUMAN_STEP, rows_tried=len(targets))
             index["T9"] = write_receipt(rec, receipts_dir)
+            # a halted route still records that it was TRIED on each row: FREE_ROUTES_EXHAUSTED may only be set
+            # where every automated route has an attempt, and "we could not run it yet" is an attempt with a reason.
+            from app.free_routes.attempts import Attempt as _A
+            for r in targets:
+                all_attempts.append(_A(r["candidate_id"], "T9", run_id, "HALTED", usps.SOURCE, None, ts, index["T9"], {"halt": "H-12", "reason": "no USPS credentials in the engine env"}))
     if "T10" in routes:
         human_route("T10", person_rows, lambda r: t10_people_search(r.get("owner_name", ""), r.get("property_city", ""))["truepeoplesearch"],
                     lambda r: t10_people_search(r.get("owner_name", ""), r.get("property_city", ""))["google"], "phones / relatives as read (confidence = operator_web)")

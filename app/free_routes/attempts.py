@@ -57,9 +57,14 @@ def write_attempts(attempts: Iterable[Attempt], *, database_url: Optional[str], 
         connect = psycopg.connect
     else:
         Jsonb = lambda v: json.dumps(v)  # noqa: E731 — test transport
+    # executemany, not a per-row execute: 40k single round trips over a pooler is minutes of latency,
+    # and a killed run loses the whole batch. psycopg3 pipelines this into few round trips.
+    params = [{"tenant": TENANT, **{k: r[k] for k in ("import_row_id", "route_id", "run_id", "outcome", "source", "source_as_of", "observed_at", "receipt_path")}, "detail": Jsonb(r["detail"])} for r in rows]
     with connect(database_url) as conn, conn.cursor() as cur:
-        for r in rows:
-            cur.execute(INSERT_SQL, {"tenant": TENANT, **{k: r[k] for k in ("import_row_id", "route_id", "run_id", "outcome", "source", "source_as_of", "observed_at", "receipt_path")}, "detail": Jsonb(r["detail"])})
-            summary["written"] += 1
-        conn.commit()
+        for i in range(0, len(params), 2000):
+            chunk = params[i:i + 2000]
+            cur.executemany(INSERT_SQL, chunk)
+            conn.commit()                      # a batch at a time: an interrupted load keeps what it wrote
+            summary["written"] += len(chunk)
+            print(f"  attempts written: {summary['written']}/{len(params)}", flush=True)
     return summary
