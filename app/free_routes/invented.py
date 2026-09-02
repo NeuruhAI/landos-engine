@@ -66,6 +66,51 @@ def i3_heir_cross_match(estate_rows: List[dict], heir_parties: List[dict], *, ru
     return {"worklist": worklist, "attempts": attempts, "receipt": receipt}
 
 
+def i2_identity_collapse(conn, *, now_iso: str, receipt_path: Optional[str]) -> Dict:
+    """I2: how far one phone reaches through the party graph. Read-only."""
+    from .receipts import RouteReceipt
+    with conn.cursor() as cur:
+        cur.execute(I2_COLLAPSE_SQL)
+        row = cur.fetchone()
+    many, reached, with_phone = (row[0] or 0, row[1] or 0, row[2] or 0) if row else (0, 0, 0)
+    return {"receipt": RouteReceipt("I2", "Identity graph collapse (same person across parcels)", "AUTOMATED",
+                                    "public.candidate_parties / party_phones", "Internal data.", "migration 104 party model",
+                                    rows_tried=int(many), hits=int(with_phone), new_contacts=int(reached), new_heirs=0,
+                                    source_as_of=None, observed_at=now_iso,
+                                    evidence={"parties_on_many_parcels": int(many), "parcels_reached_by_a_shared_phone": int(reached),
+                                              "parties_with_phone_and_many_parcels": int(with_phone)})}
+
+
+HEIR_PARTIES_SQL = """
+select cp.import_row_id::text, p.canonical_name, cp.relationship_role
+  from public.candidate_parties cp join public.parties p on p.party_id = cp.party_id
+ where cp.relationship_role in ('HEIR','PERSONAL_REPRESENTATIVE','EXECUTOR','ADMINISTRATOR','TRUSTEE')
+"""
+
+WATCHES_SQL = "select count(*) from public.deedsonar_watches where coalesce(state, 'active') not in ('archived', 'deleted')"
+
+
+def i3_heir_parties_from_db(conn, estate_rows: List[dict]) -> List[dict]:
+    """The heir / PR parties already linked to a candidate, keyed by the estate's candidate_id."""
+    ids = {r["candidate_id"] for r in estate_rows}
+    with conn.cursor() as cur:
+        cur.execute(HEIR_PARTIES_SQL)
+        rows = cur.fetchall()
+    return [{"candidate_id": r[0], "party_name": r[1], "role": r[2]} for r in rows if r[0] in ids]
+
+
+def i5_refire_watches(conn, *, now_iso: str, receipt_path: Optional[str]) -> Dict:
+    """I5: every route run re-fires the delta engine; the receipt records how many watches will see it."""
+    from .receipts import RouteReceipt
+    with conn.cursor() as cur:
+        cur.execute(WATCHES_SQL)
+        n = (cur.fetchone() or [0])[0] or 0
+    return {"receipt": RouteReceipt("I5", "Watches / deltas re-fire after every route run", "AUTOMATED",
+                                    "public.deedsonar_watches (delta engine)", "Internal.", "/api/cron/watches",
+                                    rows_tried=int(n), hits=int(n), new_contacts=0, new_heirs=0, source_as_of=None,
+                                    observed_at=now_iso, notes=["the next /api/cron/watches tick re-evaluates these watches against the new data"])}
+
+
 def i4_route_orders(estate_rows: List[dict]) -> Dict[str, List[str]]:
     out = {}
     for r in estate_rows:

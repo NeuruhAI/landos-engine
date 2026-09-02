@@ -30,12 +30,13 @@ from app.free_routes.attempts import write_attempts  # noqa: E402
 from app.free_routes.estate_rows import load_estate_rows, is_entity_owner, is_probate  # noqa: E402
 from app.free_routes.human_routes import (t2_notice_search, t3_special_proceedings_search, t4_obituary_search,  # noqa: E402
                                           t5_sos_search, t7_rod_search, t10_people_search, write_worklist)
-from app.free_routes.invented import i1_out_of_state, i4_route_orders  # noqa: E402
+from app.free_routes.invented import (i1_out_of_state, i2_identity_collapse, i3_heir_cross_match,  # noqa: E402
+                                      i3_heir_parties_from_db, i4_route_orders, i5_refire_watches)
 from app.free_routes.receipts import halted_receipt, write_receipt  # noqa: E402
 from app.free_routes.registry import ROUTES  # noqa: E402
-from app.free_routes import t1_ecourts_pdf, t8_open_data, usps  # noqa: E402
+from app.free_routes import t1_ecourts_pdf, t6_ncsbe, t8_open_data, usps  # noqa: E402
 
-DEFAULT_ROUTES = ["T1", "T2", "T3", "T4", "T5", "T7", "T8", "T9", "T10", "I1", "I4"]   # T6 / I2 / I3 / I5 have their own runners (spine)
+DEFAULT_ROUTES = ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "I1", "I2", "I3", "I4", "I5"]
 
 
 def now_iso() -> str:
@@ -58,6 +59,8 @@ def main() -> int:
     ap.add_argument("--database-url", default=os.environ.get("DATABASE_URL"))
     ap.add_argument("--wake-extract", default="", help="a local real_estate_delq853_*.zip (else downloaded)")
     ap.add_argument("--skip-charlotte", action="store_true")
+    ap.add_argument("--t6-run", default="", help="a completed NCSBE lane run dir; T6's receipt and attempts are read from it")
+    ap.add_argument("--t6-as-of", default="", help="the date the NCSBE snapshot says its values are true (the file Last-Modified)")
     a = ap.parse_args()
     if (os.environ.get("ALLOW_SPEND") or "0") != "0":
         sys.exit("ALLOW_SPEND must be 0: the free routes never pay")
@@ -145,6 +148,36 @@ def main() -> int:
     if "T10" in routes:
         human_route("T10", person_rows, lambda r: t10_people_search(r.get("owner_name", ""), r.get("property_city", ""))["truepeoplesearch"],
                     lambda r: t10_people_search(r.get("owner_name", ""), r.get("property_city", ""))["google"], "phones / relatives as read (confidence = operator_web)")
+    if "T6" in routes:
+        if a.t6_run:
+            res = t6_ncsbe.receipt_from_run(a.t6_run, estate, run_id=run_id, now_iso=ts, receipt_path=None, source_as_of=a.t6_as_of or None)
+            index["T6"] = write_receipt(res["receipt"], receipts_dir); all_attempts += res["attempts"]
+        else:
+            reg = by_id["T6"]
+            index["T6"] = write_receipt(halted_receipt("T6", reg.name, mode="AUTOMATED", source=reg.source, license=reg.license,
+                                                       provenance_url=reg.provenance_url, halt_code="H-12",
+                                                       human_step="Run scripts/run_nc_free_phone_enrichment.py over the current NCSBE county files, then pass its run dir as --t6-run (with --t6-as-of = the files' Last-Modified date).",
+                                                       rows_tried=len(estate)), receipts_dir)
+    if "I2" in routes or "I3" in routes or "I5" in routes:
+        if a.database_url:
+            import psycopg
+            with psycopg.connect(a.database_url) as conn:
+                if "I2" in routes:
+                    index["I2"] = write_receipt(i2_identity_collapse(conn, now_iso=ts, receipt_path=None)["receipt"], receipts_dir)
+                if "I3" in routes:
+                    heirs = i3_heir_parties_from_db(conn, estate)
+                    res = i3_heir_cross_match(estate, heirs, run_id=run_id, now_iso=ts, receipt_path=None)
+                    index["I3"] = write_receipt(res["receipt"], receipts_dir); all_attempts += res["attempts"]
+                    _worklist(os.path.join(worklists_dir, f"I3_HEIR_CROSS_MATCH_{ts[:10].replace('-', '')}.csv"), res["worklist"])
+                if "I5" in routes:
+                    index["I5"] = write_receipt(i5_refire_watches(conn, now_iso=ts, receipt_path=None)["receipt"], receipts_dir)
+        else:
+            for rid in [r for r in ("I2", "I3", "I5") if r in routes]:
+                reg = by_id[rid]
+                index[rid] = write_receipt(halted_receipt(rid, reg.name, mode="AUTOMATED", source=reg.source, license=reg.license,
+                                                          provenance_url=reg.provenance_url, halt_code="H-12",
+                                                          human_step="Needs the spine: re-run with DATABASE_URL set (read-only for I2/I5; I3 reads candidate_parties).",
+                                                          rows_tried=len(estate)), receipts_dir)
     if "I1" in routes:
         res = i1_out_of_state(estate, run_id=run_id, now_iso=ts, receipt_path=None)
         index["I1"] = write_receipt(res["receipt"], receipts_dir); all_attempts += res["attempts"]
