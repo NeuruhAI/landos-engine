@@ -63,6 +63,9 @@ from app.resolution.official_import import (
 )
 from app.resolution.router import QUEUE_CONTACT_STATUS
 
+#: set from --source-as-of in main(); None = unknown (never a default date)
+SOURCE_AS_OF = None
+
 CANONICAL_BATCH_PREDICATE = """
   b.import_kind = 'data_estate'
   and b.is_test is false and b.is_synthetic is false
@@ -342,6 +345,10 @@ def apply_plan(conn, records_by_id, plans: List[dict], tenant_id: str,
                     "source_record_id": ed["source_record_id"] or None,
                     "source_hash": ed["source_hash"] or None,
                     "source_observed_at": ed["observed_at"] or None,
+                    # B1 (2026-09-02): the date the SOURCE says the value is true (the NCSBE
+                    # snapshot's Last-Modified), distinct from when we read it. None = unknown.
+                    "source_as_of": SOURCE_AS_OF,
+                    "source_locator": ed.get("source_locator") or None,
                     "match_method": ed["match_method"],
                     "match_confidence": ed["confidence"],
                     "evidence_id": eid,
@@ -591,6 +598,7 @@ def main() -> int:
                          "recommending it to them. Repeatable.")
     ap.add_argument("--database-url", default=os.environ.get("DEEDSONAR_DATABASE_URL") or os.environ.get("DATABASE_URL"))
     ap.add_argument("--apply", action="store_true", help="perform the production write")
+    ap.add_argument("--source-as-of", default=None, help="ISO date the source snapshot says its values are true (e.g. the NCSBE file Last-Modified); stamped into party_phones.provenance.source_as_of; unknown stays unknown")
     ap.add_argument("--verify-idempotent", action="store_true")
     ap.add_argument("--statement-timeout", default="900s",
                     help="Raised for the write transaction only. The read model is "
@@ -599,6 +607,8 @@ def main() -> int:
                          "whole, which is correct but never finishes. SET LOCAL, so "
                          "it cannot outlive the transaction.")
     args = ap.parse_args()
+    global SOURCE_AS_OF
+    SOURCE_AS_OF = args.source_as_of or None
 
     if not args.database_url:
         print("no database url", file=sys.stderr)

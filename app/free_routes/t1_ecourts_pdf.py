@@ -26,7 +26,8 @@ def pdfs_for(county: str) -> List[str]:
 
 
 def worklist_rows(estate_rows: List[dict], county: str, cap: int = 40) -> List[dict]:
-    rows = [r for r in estate_rows if (r.get("county") or "") == county and is_probate(r) and (r.get("priority_tier") or "").upper() in ("A", "TIER_A")]
+    # the CURRENT export predates the A5 tiers, so rank is the order: top `cap` probate rows by global_rank
+    rows = [r for r in estate_rows if (r.get("county") or "") == county and is_probate(r)]
     rows.sort(key=lambda r: int(r.get("global_rank") or 10**9))
     out = []
     for r in rows[:cap]:
