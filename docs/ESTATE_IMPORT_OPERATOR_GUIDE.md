@@ -194,6 +194,32 @@ from this lane. Those are later, and they still do not authorize calling.
 
 ---
 
+## 4b. PDF drop (AOC-E-201 / AOC-E-505) — added 2026-09-02
+
+You do not have to transcribe by hand. Drop the court's PDF into
+`_raw/estate/pdf/<county>/` (for Wake: `~/.neuruh/private/deedsonar/_raw/estate/pdf/wake/`,
+mode 700). On the next run — `scripts/intake_estate_pdfs.py --raw-dir <_raw> --worklist <worklist.csv>`
+or the enrichment runner, which calls it first — each PDF is parsed with
+`pdftotext -layout` (poppler) into the importer CSV for that county and date
+(`_raw/estate/<county>_estate_<YYYY-MM-DD>.csv`, exactly `ESTATE_IMPORT_COLUMNS`,
+also written as `_raw/estate/TEMPLATE.csv`):
+
+| Form | What is read | Rows written |
+|---|---|---|
+| AOC-E-201 Application for Probate and Letters | decedent, file no., applicant (name + mailing), the Devisees/Heirs table (name, age, relationship, address) | one row per applicant / personal representative / heir |
+| AOC-E-505 Affidavit for Collection of Personal Property | decedent, file no., affiant, the Heirs/Devisees names and addresses | one row per affiant / heir |
+
+Every PDF gets a receipt beside it (`<name>.pdf.receipt.json`): sha256, form,
+fields found / missing, rows written, attorney names ignored, phones seen and
+refused. A PDF with no text layer (a scan) gets `PARSE_TEXT_EMPTY` and no rows —
+transcribe that one by hand. A second run skips PDFs whose receipt already
+carries the same sha256. The worklist (`~/neuruh-workspace/ESTATE_WORKLIST_WAKE_<date>.csv`)
+binds the decedent name to `property_candidate_id` / `apn`; without it the row
+is written unbound and the receipt says `ROWS_WRITTEN_CANDIDATE_UNBOUND`.
+
+Never: an attorney or counsel as a person, any phone number (the contract has no
+phone column and the validator refuses one), LEGAL_AUTHORITY, a court fetch.
+
 ## 5. Downstream flow (documented, not executed)
 
 This lane does not run the chain. When an operator later drops a passing
