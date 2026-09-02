@@ -51,6 +51,7 @@ from app.contact.entity_public import (
 )
 from app.contact.estate_fields import property_zip_for
 from app.contact.estate_import import ESTATE_IMPORT_COLUMNS, load_estate_import_csv
+from app.contact.estate_pdf_intake import intake_estate_pdfs
 from app.contact.identity_ledger import (
     IDENTITY_LEDGER_COLUMNS,
     IDENTITY_LEDGER_VERSION,
@@ -1064,9 +1065,16 @@ def main() -> int:
             ncsbe_rows.append(stamped)
 
     # Lawfully obtained estate-case import (optional; empty unless operator dropped a file).
+    # 2026-09-02: AOC-E-201 / AOC-E-505 PDFs dropped under _raw/estate/pdf/<county>/ are
+    # parsed into the importer CSV first, with a receipt per PDF (never a phone).
+    try:
+        pdf_receipts = intake_estate_pdfs(raw_dir)
+        print(f"ESTATE_PDF_INTAKE={len(pdf_receipts)} rows_written={sum(r.people_written for r in pdf_receipts)}", flush=True)
+    except Exception as exc:  # the intake never blocks the run
+        print(f"ESTATE_PDF_INTAKE=ERROR {exc!r}", flush=True)
     estate_import_people = []
     for csv_path in (raw_dir / "estate").glob("*.csv"):
-        if csv_path.name.endswith("template.csv"):
+        if csv_path.name.lower().endswith("template.csv"):
             continue
         estate_import_people.extend(load_estate_import_csv(csv_path))
     print(f"ESTATE_IMPORT_PEOPLE={len(estate_import_people)}", flush=True)
