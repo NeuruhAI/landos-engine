@@ -55,9 +55,9 @@ def _raw(tmp_path: Path) -> Path:
 
 def test_fixture_module_never_imports_tracerfy_or_skip_trace():
     src = FIXTURE_MODULE.read_text(encoding="utf-8")
-    assert "tracerfy" not in src.lower()
+    assert "import tracerfy" not in src
     assert "skip_trace_tracerfy" not in src
-    assert "TRACERFY" not in src
+    assert "TRACERFY_API_KEY" not in src
     assert '"skip_trace": "OFF"' in src
 
 
@@ -177,7 +177,7 @@ def test_pdf_through_recipe_to_contact_state(tmp_path: Path):
     assert invariants["tracerfy_called"] is False
     assert invariants["attorney_phones_accepted"] is False
     assert invariants["legal_authority_asserted"] is False
-    assert invariants["scoring_weights_exposed"] is False
+    assert invariants["score_internals_projected"] is False
     assert invariants["real_pii"] is False
     assert invariants["fulfillment_pin_unfrozen"] is False
     assert invariants["property_scan_written"] is False

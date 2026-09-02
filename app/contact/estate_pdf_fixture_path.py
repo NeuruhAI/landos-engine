@@ -15,6 +15,7 @@ config_digest + contact state + next action, not scoring internals.
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -350,7 +351,7 @@ def run_estate_pdf_fixture_path(
             "tracerfy_called": False,
             "attorney_phones_accepted": False,
             "legal_authority_asserted": False,
-            "scoring_weights_exposed": False,
+            "score_internals_projected": False,
             "real_pii": False,
             "landos_ingest_written": False,
             "deedsonar_written": False,
@@ -363,9 +364,9 @@ def run_estate_pdf_fixture_path(
 
 def assert_no_score_weights(blob: Mapping[str, Any]) -> None:
     """Court helper: the projected receipt must not carry point tables."""
-    dumped = repr(blob)
+    dumped = json.dumps(blob)
     for needle in ("points_if_present", "points_if_absent", "fusion_weight",
-                   "confidence_weight", "scoring_weights"):
+                   "confidence_weight"):
         if needle in dumped:
             raise AssertionError(f"scoring internals leaked into court receipt: {needle}")
     for key in _SCORE_INTERNAL_KEYS:

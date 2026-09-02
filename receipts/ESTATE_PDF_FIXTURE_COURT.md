@@ -49,6 +49,7 @@ is byte-identical to fulfillment pin `1779abf2`.
 - execution_authority: NONE
 
 Court: `pytest tests/test_estate_pdf_fixture_path.py tests/test_estate_pdf_intake.py`
+→ **12 passed** (poppler 24.02.0). Related suite with import-readiness + opportunity-intelligence + public-index route → **67 passed**.
 
 ## NEXT_CHILD_MISSION_ID
 

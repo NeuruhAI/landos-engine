@@ -51,6 +51,11 @@
     "unfreeze": false,
     "opportunity_intelligence_py_identical": true
   },
+  "pytest": {
+    "fixture_and_intake": "12 passed",
+    "related_including_oi": "67 passed",
+    "poppler": "pdftotext 24.02.0"
+  },
   "next_child_mission_id": "NEURUH-PROPERTY-SCAN-SELLABLE-BIND-20260902",
   "next_child_scope": "NeuruhAI/neuruh-property-scan only. Recourt this LIVE_PROVEN fixture. Do not write landos-engine. Do not unfreeze 1779abf2."
 }
