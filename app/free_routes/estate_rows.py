@@ -6,7 +6,7 @@ import csv
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional
 
-from app.projection.estate_query import project_onto_estate_row
+from app.projection.estate_query import project_estate_query
 
 COUNTY_ORDER = ["Mecklenburg", "Wake", "Durham", "Johnston", "Union", "Cabarrus", "Gaston"]
 FIPS = {"Cabarrus": "37025", "Durham": "37063", "Gaston": "37071", "Johnston": "37101", "Mecklenburg": "37119", "Union": "37179", "Wake": "37183"}
@@ -46,8 +46,8 @@ def load_estate_rows(
                         for c in RESOLUTION_COLUMNS:
                             if lr.get(c) is not None:
                                 r[f"res_{c}"] = lr[c]
-                    rows.append(project_onto_estate_row(r, ingested_parcels))
-    return rows
+                    rows.append(r)
+    return project_estate_query(rows, ingested_parcels)
 
 
 def norm_pin(v: str) -> str:
