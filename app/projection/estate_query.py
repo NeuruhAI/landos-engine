@@ -1,11 +1,13 @@
-"""Project VALUATION + PARCEL + CODE_VACANCY + TAX_YEARS facts onto estate rows.
+"""Project VALUATION + PARCEL + CODE_VACANCY + TAX_YEARS + PARCEL_GRAPH facts.
 
 The CURRENT estate export is the query surface free-routes and opportunity
 evaluation read. assessed_value is already on ~18k NC rows; acreage/land-use
 are ingested on the parcel roll and were not exposed here. NC CODE/VACANCY
 tags already land on the DPS ingest writers and were not bound for recipes.
 tax_years_due_count already exists on the scrub overlay (~20,734 rows) and
-was not projected as tax.delinquent_years. This is a projection / promotion
+was not projected as tax.delinquent_years. Parcel adjacency already exists
+as ST_Touches on landos.parcel_geom (fn_parcel_plat / same-owner mine) and
+was not a normalized query ingredient. This is a projection / derivation
 job, not a source acquisition.
 """
 from __future__ import annotations
@@ -17,13 +19,17 @@ from typing import Any, Iterable, Mapping, Optional
 from .classes import (
     FAMILY_CODE_VACANCY,
     FAMILY_PARCEL,
+    FAMILY_PARCEL_GRAPH,
     FAMILY_TAX_YEARS_THRESHOLD,
     FAMILY_VALUATION,
     INGREDIENT_ACREAGE,
+    INGREDIENT_ADJACENT_APNS,
     INGREDIENT_CODE_VIOLATION,
     INGREDIENT_IMPROVEMENT_VALUE,
     INGREDIENT_LAND_USE,
     INGREDIENT_LAND_VALUE,
+    INGREDIENT_SAME_OWNER_ADJACENT,
+    INGREDIENT_SHARED_BOUNDARY,
     INGREDIENT_TAX_DELINQUENT_YEARS,
     INGREDIENT_VACANCY,
     NOT_RAW_SOURCE_MISSING,
@@ -32,6 +38,7 @@ from .code_vacancy import project_code_vacancy_facts
 from .equity import derive_equity_estimated_pct
 from .numbers import apn_keys, row_apn
 from .parcel import project_parcel_facts
+from .parcel_graph import build_geom_corpus, project_parcel_graph_facts
 from .tax_years import project_tax_years_facts
 
 PROJECTED_KEY = "projected"
@@ -72,34 +79,45 @@ def _lookup_ingested(
 def project_onto_estate_row(
     row: Mapping[str, Any],
     ingested_parcels: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    geom_corpus: Optional[Iterable[Mapping[str, Any]]] = None,
 ) -> dict[str, Any]:
-    """Copy an estate row and attach projected VALUATION + PARCEL + CODE_VACANCY + TAX."""
+    """Copy an estate row and attach projected VALUATION + PARCEL + CODE + TAX + GRAPH."""
     out = dict(row)
     ingested = _lookup_ingested(out, ingested_parcels)
     equity = derive_equity_estimated_pct(out)
     parcel = project_parcel_facts(out, ingested)
     code_vacancy = project_code_vacancy_facts(out, ingested)
     tax_years = project_tax_years_facts(out, ingested)
+    corpus = (
+        list(geom_corpus)
+        if geom_corpus is not None
+        else build_geom_corpus([out], ingested_parcels)
+    )
+    parcel_graph = project_parcel_graph_facts(out, ingested, corpus)
     parcel_facts = parcel["facts"]
     code_facts = code_vacancy["facts"]
     tax_facts = tax_years["facts"]
+    graph_facts = parcel_graph["facts"]
 
     out[PROJECTED_KEY] = {
         "valuation": equity,
         "parcel": parcel,
         "code_vacancy": code_vacancy,
         "tax": tax_years,
+        "parcel_graph": parcel_graph,
         "supabase_mutated": False,
         "scraper": False,
         "deed_tenure_projected": False,
         "invented_tags": [],
         "invented_years": [],
+        "invented_neighbors": [],
         "not_class": NOT_RAW_SOURCE_MISSING,
         "families": [
             FAMILY_VALUATION,
             FAMILY_PARCEL,
             FAMILY_CODE_VACANCY,
             FAMILY_TAX_YEARS_THRESHOLD,
+            FAMILY_PARCEL_GRAPH,
         ],
     }
 
@@ -143,6 +161,17 @@ def project_onto_estate_row(
     year_list = tax_years.get("year_list") or []
     if year_list and not str(out.get("tax_years_due") or "").strip():
         out["tax_years_due"] = "|".join(str(year) for year in year_list)
+    # PARCEL_GRAPH: never fabricate false adjacency. Only fill when the
+    # corpus-scoped ST_Touches relation is KNOWN and the estate column is empty.
+    adjacent = graph_facts[INGREDIENT_ADJACENT_APNS]
+    if adjacent["state"] == "KNOWN" and not str(out.get("adjacent_apns") or "").strip():
+        out["adjacent_apns"] = list(adjacent["value"] or [])
+    shared = graph_facts[INGREDIENT_SHARED_BOUNDARY]
+    if shared["state"] == "KNOWN" and not str(out.get("shared_boundary") or "").strip():
+        out["shared_boundary"] = bool(shared["value"])
+    same_owner = graph_facts[INGREDIENT_SAME_OWNER_ADJACENT]
+    if same_owner["state"] == "KNOWN" and not str(out.get("same_owner_adjacent") or "").strip():
+        out["same_owner_adjacent"] = list(same_owner["value"] or [])
     return out
 
 
@@ -151,4 +180,9 @@ def project_estate_query(
     ingested_parcels: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Project every estate-query row. Pure: no DB, no network."""
-    return [project_onto_estate_row(row, ingested_parcels) for row in rows]
+    materialized = [dict(row) for row in rows]
+    corpus = build_geom_corpus(materialized, ingested_parcels)
+    return [
+        project_onto_estate_row(row, ingested_parcels, geom_corpus=corpus)
+        for row in materialized
+    ]

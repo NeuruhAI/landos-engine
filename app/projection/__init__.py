@@ -16,6 +16,11 @@ TAX_YEARS_THRESHOLD (PROJECTION_MISSING / EXPOSE_EXISTING_PLUS_CONFIG)
     tax_years lists, plus NC/MI/IN threshold config for tax_threshold_watch.
     Not LIVE.
 
+PARCEL_GRAPH (NORMALIZED_FACT_MISSING / DERIVED_FROM_GEOMETRY)
+    parcel.adjacent_apns / parcel.shared_boundary / parcel.same_owner_adjacent
+    from ST_Touches on polygons already in custody (the fn_parcel_plat /
+    v_mine_same_owner_adjacent relation). Corpus-scoped. Not LIVE.
+
 DEED_TENURE is a separate ingest lane and is not projected here.
 """
 from .code_vacancy import (
@@ -32,6 +37,11 @@ from .estate_query import (
     project_onto_estate_row,
 )
 from .parcel import project_parcel_facts
+from .parcel_graph import (
+    classify_touch,
+    field_census as parcel_graph_field_census,
+    project_parcel_graph_facts,
+)
 from .tax_years import (
     PROCESS_CLOCK_REGISTRY,
     TAX_YEAR_THRESHOLDS,
@@ -51,7 +61,10 @@ __all__ = [
     "PROCESS_CLOCK_REGISTRY",
     "TAX_YEAR_THRESHOLDS",
     "compare_tax_years_to_threshold",
+    "classify_touch",
+    "parcel_graph_field_census",
     "project_parcel_facts",
+    "project_parcel_graph_facts",
     "project_tax_years_facts",
     "tag_census",
 ]
