@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Mapping, Optional
+
+from app.projection.estate_query import project_onto_estate_row
 
 COUNTY_ORDER = ["Mecklenburg", "Wake", "Durham", "Johnston", "Union", "Cabarrus", "Gaston"]
 FIPS = {"Cabarrus": "37025", "Durham": "37063", "Gaston": "37071", "Johnston": "37101", "Mecklenburg": "37119", "Union": "37179", "Wake": "37183"}
@@ -26,7 +28,12 @@ def load_resolution(bundle_dir: Optional[Path]) -> Dict[str, dict]:
         return {r["candidate_id"]: r for r in csv.DictReader(fh)}
 
 
-def load_estate_rows(estate_dir: Path, counties: Optional[Iterable[str]] = None, bundle_dir: Optional[Path] = None) -> List[dict]:
+def load_estate_rows(
+    estate_dir: Path,
+    counties: Optional[Iterable[str]] = None,
+    bundle_dir: Optional[Path] = None,
+    ingested_parcels: Optional[Mapping[str, Mapping]] = None,
+) -> List[dict]:
     res = load_resolution(bundle_dir)
     rows: List[dict] = []
     for county in (list(counties) if counties else COUNTY_ORDER):
@@ -39,7 +46,7 @@ def load_estate_rows(estate_dir: Path, counties: Optional[Iterable[str]] = None,
                         for c in RESOLUTION_COLUMNS:
                             if lr.get(c) is not None:
                                 r[f"res_{c}"] = lr[c]
-                    rows.append(r)
+                    rows.append(project_onto_estate_row(r, ingested_parcels))
     return rows
 
 
