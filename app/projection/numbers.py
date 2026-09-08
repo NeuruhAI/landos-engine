@@ -36,9 +36,24 @@ def first_present(row: dict, keys: Iterable[str]) -> Any:
     return None
 
 
+def as_int(value: Any) -> Optional[int]:
+    """Whole-number parse. Fractional / negative counts stay UNKNOWN."""
+    n = as_number(value)
+    if n is None or n < 0:
+        return None
+    if n != int(n):
+        return None
+    return int(n)
+
+
 def first_number(row: dict, keys: Iterable[str]) -> Optional[float]:
     raw = first_present(row, keys)
     return as_number(raw)
+
+
+def first_int(row: dict, keys: Iterable[str]) -> Optional[int]:
+    raw = first_present(row, keys)
+    return as_int(raw)
 
 
 def first_text(row: dict, keys: Iterable[str]) -> Optional[str]:

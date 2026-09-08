@@ -12,6 +12,7 @@ from app.projection.classes import (
     GAP_RECIPE_BINDING_MISSING,
     NOT_RAW_SOURCE_MISSING,
     UNLOCK_DERIVED_FROM_EXISTING,
+    UNLOCK_EXPOSE_EXISTING_PLUS_CONFIG,
     UNLOCK_PROJECTION_OF_INGESTED,
     UNLOCK_PROMOTION_THEN_ACQUISITION_FREE,
     unlock_classes,
@@ -37,6 +38,9 @@ def test_unlock_classes_are_derive_and_project_never_raw_source():
     gap, mode = unlock_classes("CODE_VACANCY")
     assert gap == GAP_RECIPE_BINDING_MISSING
     assert mode == UNLOCK_PROMOTION_THEN_ACQUISITION_FREE
+    gap, mode = unlock_classes("TAX_YEARS_THRESHOLD")
+    assert gap == GAP_PROJECTION_MISSING
+    assert mode == UNLOCK_EXPOSE_EXISTING_PLUS_CONFIG
 
 
 def test_unhandled_family_fails_closed():
