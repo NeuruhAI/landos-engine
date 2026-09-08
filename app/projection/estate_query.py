@@ -1,9 +1,10 @@
-"""Project VALUATION + PARCEL facts onto estate-query rows.
+"""Project VALUATION + PARCEL + CODE_VACANCY facts onto estate-query rows.
 
 The CURRENT estate export is the query surface free-routes and opportunity
 evaluation read. assessed_value is already on ~18k NC rows; acreage/land-use
-are ingested on the parcel roll and were not exposed here. This is a
-projection job, not a source acquisition.
+are ingested on the parcel roll and were not exposed here. NC CODE/VACANCY
+tags already land on the DPS ingest writers and were not bound for recipes.
+This is a projection / promotion job, not a source acquisition.
 """
 from __future__ import annotations
 
@@ -12,14 +13,18 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
 from .classes import (
+    FAMILY_CODE_VACANCY,
     FAMILY_PARCEL,
     FAMILY_VALUATION,
     INGREDIENT_ACREAGE,
+    INGREDIENT_CODE_VIOLATION,
     INGREDIENT_IMPROVEMENT_VALUE,
     INGREDIENT_LAND_USE,
     INGREDIENT_LAND_VALUE,
+    INGREDIENT_VACANCY,
     NOT_RAW_SOURCE_MISSING,
 )
+from .code_vacancy import project_code_vacancy_facts
 from .equity import derive_equity_estimated_pct
 from .numbers import apn_keys, row_apn
 from .parcel import project_parcel_facts
@@ -63,21 +68,25 @@ def project_onto_estate_row(
     row: Mapping[str, Any],
     ingested_parcels: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> dict[str, Any]:
-    """Copy an estate row and attach projected VALUATION + PARCEL facts."""
+    """Copy an estate row and attach projected VALUATION + PARCEL + CODE_VACANCY."""
     out = dict(row)
     ingested = _lookup_ingested(out, ingested_parcels)
     equity = derive_equity_estimated_pct(out)
     parcel = project_parcel_facts(out, ingested)
+    code_vacancy = project_code_vacancy_facts(out, ingested)
     parcel_facts = parcel["facts"]
+    code_facts = code_vacancy["facts"]
 
     out[PROJECTED_KEY] = {
         "valuation": equity,
         "parcel": parcel,
+        "code_vacancy": code_vacancy,
         "supabase_mutated": False,
         "scraper": False,
         "deed_tenure_projected": False,
+        "invented_tags": [],
         "not_class": NOT_RAW_SOURCE_MISSING,
-        "families": [FAMILY_VALUATION, FAMILY_PARCEL],
+        "families": [FAMILY_VALUATION, FAMILY_PARCEL, FAMILY_CODE_VACANCY],
     }
 
     # Flat convenience keys for query consumers. Never overwrite a populated
@@ -99,6 +108,16 @@ def project_onto_estate_row(
     improv = parcel_facts[INGREDIENT_IMPROVEMENT_VALUE]
     if improv["state"] == "KNOWN" and not str(out.get("improvement_value") or "").strip():
         out["improvement_value"] = improv["value"]
+    # CODE/VACANCY: never fabricate false. Only fill when a tagged fact is known
+    # and the estate column is empty.
+    code = code_facts[INGREDIENT_CODE_VIOLATION]
+    if code["state"] == "KNOWN" and not str(out.get("code_violation") or "").strip():
+        out["code_violation"] = True
+    vacant = code_facts[INGREDIENT_VACANCY]
+    if vacant["state"] == "KNOWN" and not str(out.get("vacancy") or "").strip():
+        out["vacancy"] = True
+    if code_vacancy["recipe_tokens"] and not out.get("code_vacancy_tokens"):
+        out["code_vacancy_tokens"] = list(code_vacancy["recipe_tokens"])
     return out
 
 
