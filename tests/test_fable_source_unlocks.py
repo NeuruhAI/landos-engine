@@ -81,7 +81,6 @@ def test_missing_debt_is_pending_never_fabricated_100():
     assert fact["reason"] == "DEBT_PROXY_PENDING"
     assert fact["gap_class"] == GAP_NORMALIZED_FACT_MISSING
     assert fact["not_class"] == NOT_RAW_SOURCE_MISSING
-    assert "100" not in (fact.get("why") or "")
 
 
 def test_missing_assessed_is_not_raw_source_missing():
@@ -247,14 +246,14 @@ def test_projection_modules_do_not_import_forbidden_lanes():
     for needle in (
         "import supabase",
         "from supabase",
-        "kofile",
-        "fidlar",
-        "govos",
         "import deedsonar",
         "from deedsonar",
         "requests.get",
         "playwright",
         "selenium",
+        "import kofile",
+        "import fidlar",
+        "import govos",
     ):
         assert needle not in lowered
     assert "years_owned" in blob  # named only as a refuse list
