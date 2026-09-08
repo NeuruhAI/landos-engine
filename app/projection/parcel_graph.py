@@ -30,7 +30,7 @@ from .classes import (
     STATE_UNKNOWN,
     unlock_classes,
 )
-from .numbers import apn_keys, first_present, first_text, row_apn
+from .numbers import first_present, first_text, row_apn
 
 # Existing geometry spellings already written by load_parcel_geom, county REST,
 # fn_parcel_plat, and ArcGIS feature rows. Do not add a key unless a writer
@@ -291,9 +291,23 @@ def _same_county(subject: dict, other: dict) -> bool:
 
 
 def _same_parcel(subject: dict, other: dict) -> bool:
-    sub_keys = set(apn_keys(row_apn(subject)))
-    other_keys = set(apn_keys(row_apn(other)))
-    return bool(sub_keys and other_keys and sub_keys & other_keys)
+    """Identity for graph self-skip. Do not use short digit keys from apn_keys
+    — R-EAST-1 and L-WEST-1 both collapse to '1' and would false-merge."""
+    a = row_apn(subject)
+    b = row_apn(other)
+    if not a or not b:
+        return False
+    if a.strip().upper() == b.strip().upper():
+        return True
+    a_alnum = "".join(ch for ch in a.upper() if ch.isalnum())
+    b_alnum = "".join(ch for ch in b.upper() if ch.isalnum())
+    if a_alnum and a_alnum == b_alnum:
+        return True
+    a_digits = "".join(ch for ch in a if ch.isdigit())
+    b_digits = "".join(ch for ch in b if ch.isdigit())
+    if len(a_digits) >= 6 and a_digits == b_digits:
+        return True
+    return False
 
 
 def _bbox(ring: list[tuple[float, float]]) -> tuple[float, float, float, float]:

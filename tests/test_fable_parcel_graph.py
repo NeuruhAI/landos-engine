@@ -29,6 +29,7 @@ from app.projection.estate_query import (
 from app.projection.parcel_graph import (
     KIND_EDGE,
     KIND_VERTEX,
+    _same_parcel,
     classify_touch,
     field_census,
     project_parcel_graph_facts,
@@ -86,6 +87,12 @@ def test_classify_touch_matches_field_pin_shared_edge():
     assert classify_touch(b, a) == KIND_EDGE
     assert classify_touch(a, west) is None
     assert classify_touch(a, a) is None  # interiors overlap; self is not adjacent
+
+
+def test_short_digit_suffix_does_not_make_two_apns_the_same_parcel():
+    assert _same_parcel({"apn": "R-EAST-1"}, {"apn": "L-WEST-1"}) is False
+    assert _same_parcel({"apn": "0648-08-0648"}, {"apn": "0648080648"}) is True
+    assert _same_parcel({"apn": "R-EAST-1"}, {"apn": "R-EAST-1"}) is True
 
 
 def test_overlapping_polygons_are_not_adjacent():
