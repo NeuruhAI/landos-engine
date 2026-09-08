@@ -21,6 +21,11 @@ PARCEL_GRAPH (NORMALIZED_FACT_MISSING / DERIVED_FROM_GEOMETRY)
     from ST_Touches on polygons already in custody (the fn_parcel_plat /
     v_mine_same_owner_adjacent relation). Corpus-scoped. Not LIVE.
 
+TAX_SALE_CALENDAR (NORMALIZED_FACT_MISSING / PERSIST_FROM_EXISTING_NORMALIZER)
+    Process-clock rows from TaxSaleInfoNormalizer outputs already in custody
+    (min_bid, county/MI). sale_date / redemption_deadline stay UNKNOWN unless
+    already on the artifact. In-process persist. Not LIVE.
+
 DEED_TENURE is a separate ingest lane and is not projected here.
 """
 from .code_vacancy import (
@@ -41,6 +46,11 @@ from .parcel_graph import (
     classify_touch,
     field_census as parcel_graph_field_census,
     project_parcel_graph_facts,
+)
+from .tax_sale_calendar import (
+    persist_from_existing_normalizer,
+    persist_process_clock_rows,
+    project_tax_sale_calendar_facts,
 )
 from .tax_years import (
     PROCESS_CLOCK_REGISTRY,
@@ -64,7 +74,10 @@ __all__ = [
     "classify_touch",
     "parcel_graph_field_census",
     "project_parcel_facts",
+    "persist_from_existing_normalizer",
+    "persist_process_clock_rows",
     "project_parcel_graph_facts",
+    "project_tax_sale_calendar_facts",
     "project_tax_years_facts",
     "tag_census",
 ]

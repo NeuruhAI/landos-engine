@@ -14,6 +14,7 @@ from app.projection.classes import (
     UNLOCK_DERIVED_FROM_EXISTING,
     UNLOCK_DERIVED_FROM_GEOMETRY,
     UNLOCK_EXPOSE_EXISTING_PLUS_CONFIG,
+    UNLOCK_PERSIST_FROM_EXISTING_NORMALIZER,
     UNLOCK_PROJECTION_OF_INGESTED,
     UNLOCK_PROMOTION_THEN_ACQUISITION_FREE,
     unlock_classes,
@@ -45,6 +46,9 @@ def test_unlock_classes_are_derive_and_project_never_raw_source():
     gap, mode = unlock_classes("PARCEL_GRAPH")
     assert gap == GAP_NORMALIZED_FACT_MISSING
     assert mode == UNLOCK_DERIVED_FROM_GEOMETRY
+    gap, mode = unlock_classes("TAX_SALE_CALENDAR")
+    assert gap == GAP_NORMALIZED_FACT_MISSING
+    assert mode == UNLOCK_PERSIST_FROM_EXISTING_NORMALIZER
 
 
 def test_unhandled_family_fails_closed():
