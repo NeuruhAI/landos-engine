@@ -34,6 +34,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from .projection.code_vacancy import (
+    LOGAN_CODE_VIOLATION_EVIDENCE,
+    LOGAN_VACANT_BOARDED_EVIDENCE,
+)
 from .receipt import canonical_json, section_hash
 
 RECIPE_NAME = "logan_high_priority"
@@ -57,8 +61,8 @@ LOGAN_DEFAULT_WEIGHTS: Dict[str, float] = {
 # 'obituary' is intentionally NOT here (review-only lane — see module docstring).
 FACTOR_SIGNALS: Dict[str, Set[str]] = {
     "tax_delinquency_lien": {"tax_delinquent", "taxsale", "lien"},
-    "code_violation": {"code_violation"},
-    "vacant_boarded": {"vacancy", "vacant", "boarded"},
+    "code_violation": {"code_violation"} | set(LOGAN_CODE_VIOLATION_EVIDENCE),
+    "vacant_boarded": {"vacancy", "vacant", "boarded"} | set(LOGAN_VACANT_BOARDED_EVIDENCE),
     "physical_distress": {"physical_distress", "condemned", "fire_damage",
                           "demolition_order", "field_pin"},
     "probate_title": {"probate", "probate_in", "heirs_of_tangled_title",

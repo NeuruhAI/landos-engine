@@ -9,9 +9,11 @@ from pathlib import Path
 from app.projection.classes import (
     GAP_NORMALIZED_FACT_MISSING,
     GAP_PROJECTION_MISSING,
+    GAP_RECIPE_BINDING_MISSING,
     NOT_RAW_SOURCE_MISSING,
     UNLOCK_DERIVED_FROM_EXISTING,
     UNLOCK_PROJECTION_OF_INGESTED,
+    UNLOCK_PROMOTION_THEN_ACQUISITION_FREE,
     unlock_classes,
 )
 from app.projection.equity import FORBIDDEN_BASIS_KEYS, derive_equity_estimated_pct
@@ -32,6 +34,9 @@ def test_unlock_classes_are_derive_and_project_never_raw_source():
     gap, mode = unlock_classes("PARCEL")
     assert gap == GAP_PROJECTION_MISSING
     assert mode == UNLOCK_PROJECTION_OF_INGESTED
+    gap, mode = unlock_classes("CODE_VACANCY")
+    assert gap == GAP_RECIPE_BINDING_MISSING
+    assert mode == UNLOCK_PROMOTION_THEN_ACQUISITION_FREE
 
 
 def test_unhandled_family_fails_closed():
