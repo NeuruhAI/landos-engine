@@ -52,6 +52,9 @@ FIPS_PREFIX_TO_STATE = {
 
 # Process-clock id already named in recipe-engine RECIPE_PROCESS_CLOCK_COVERAGE.
 CLOCK_TAX_DELINQUENCY = "tax_delinquency_clock"
+# TAX_SALE_CALENDAR persists TaxSaleInfoNormalizer outputs onto this clock.
+# Extend this registry — do not invent a parallel clock bus.
+CLOCK_TAX_SALE_CALENDAR = "tax_sale_calendar_clock"
 
 # Board alias + existing recipe-engine id. Neither is promoted LIVE here.
 RECIPE_TAX_THRESHOLD_WATCH = "tax_threshold_watch"
@@ -76,6 +79,31 @@ PROCESS_CLOCK_REGISTRY: dict[str, dict[str, Any]] = {
         "source": (
             "recipe-engine RECIPE_PROCESS_CLOCK_COVERAGE.csv "
             "(tax_delinquency_clock); landos-engine projection"
+        ),
+    },
+    CLOCK_TAX_SALE_CALENDAR: {
+        "clock_id": CLOCK_TAX_SALE_CALENDAR,
+        "input_ingredient": "tax.sale_date",
+        "input_ingredients": (
+            "tax.sale_date",
+            "tax.redemption_deadline",
+            "tax.min_bid",
+            "tax.jurisdiction",
+        ),
+        "jurisdictions": ("MI",),
+        "recipes": (
+            RECIPE_PUBLISHED_TAX_DISTRESS,
+            RECIPE_STALLED_TAX_FORECLOSURE_HEIRSHIP,
+        ),
+        "related_clock": CLOCK_TAX_DELINQUENCY,
+        "live": False,
+        "county_schedule_state": "NOT_NORMALIZED",
+        "persist_mode": "IN_PROCESS_FROM_EXISTING_NORMALIZER",
+        "storage": "IN_PROCESS_PROJECTION",
+        "source": (
+            "app.normalizers.tax_sale_info.TaxSaleInfoNormalizer "
+            "(minimum_bid / county already parsed; sale_date and "
+            "redemption_deadline stay UNKNOWN unless already on the artifact)"
         ),
     },
 }
