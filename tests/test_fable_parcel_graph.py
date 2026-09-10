@@ -313,7 +313,7 @@ def test_load_estate_rows_still_projects_without_geometry(tmp_path):
         encoding="utf-8",
     )
     rows = load_estate_rows(tmp_path, ["Wake"])
-    assert rows[0]["equity_estimated_pct"] == 99.0
+    assert rows[0]["equity_ceiling_pct"] == 99.0
     graph = rows[0]["projected"]["parcel_graph"]
     assert graph["facts"][INGREDIENT_ADJACENT_APNS]["state"] == "UNKNOWN"
     assert graph["gap_class"] == GAP_NORMALIZED_FACT_MISSING

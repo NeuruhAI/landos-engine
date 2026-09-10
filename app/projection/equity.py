@@ -7,6 +7,13 @@ Never RAW_SOURCE_MISSING. Never a scraper.
 Honesty: unknown debt is PENDING, not zero. A missing tax-balance / amount_owed
 must not read as 100% equity. The debt side is the tax-balance proxy already
 marked proxy in the recipe-engine score vector — not a mortgage search.
+
+A tax balance is not the whole debt. On a delinquent-list row the mortgage is
+unknown (NC: equity_status UNKNOWN_NEEDS_DEBT_SEARCH on all 20,734 rows), so
+(assessed - tax balance) / assessed is an UPPER BOUND on equity, labelled
+``bound: "UPPER"``. Only a tax-sale amount owed / minimum bid — whose foreclosure
+extinguishes junior liens (DeedSonar migration 065 contract) — yields equity
+itself (``bound: None``).
 """
 from __future__ import annotations
 
@@ -35,6 +42,10 @@ DEBT_PROXY_KEYS = (
     "min_bid",
     "minimum_bid",
 )
+
+# Debt kinds whose foreclosure extinguishes junior liens: the result is equity.
+# Every other debt proxy leaves the mortgage unknown: the result is a ceiling.
+TAX_SALE_DEBT_KINDS = ("amount_owed", "min_bid", "minimum_bid")
 
 # DEED_TENURE / mortgage search stay out of this derivation.
 FORBIDDEN_BASIS_KEYS = (
@@ -91,6 +102,7 @@ def derive_equity_estimated_pct(
         "unit": "percent",
         "formula": "(assessed_value - debt_proxy) / assessed_value * 100",
         "debt_proxy_kind": debt_kind,
+        "bound": None if debt_kind in TAX_SALE_DEBT_KINDS else "UPPER",
         "basis": {
             "assessed_value": assessed,
             "debt_proxy": debt,

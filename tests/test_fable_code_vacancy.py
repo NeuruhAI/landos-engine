@@ -104,9 +104,31 @@ def test_qualified_writer_tag_promotes_both_recipe_tokens():
     assert fact["not_class"] == NOT_RAW_SOURCE_MISSING
     assert fact["tags_found"] == [TAG_NC_VACANCY_OR_CODE]
     assert set(fact["recipe_tokens"]) == {"code_violation", "vacancy"}
-    assert fact["facts"]["code_violation"]["state"] == "KNOWN"
-    assert fact["facts"]["vacancy"]["state"] == "KNOWN"
-    assert fact["facts"]["code_violation"]["source_field"] == TAG_NC_VACANCY_OR_CODE
+
+
+def test_disjunctive_tag_is_one_fact_not_two():
+    # vacancy OR code proves the disjunction, never vacancy and never code.
+    fact = project_code_vacancy_facts({
+        "raw_meta": {"signal_tags": ["nc_dps", "nc_dps:vacancy_or_code"]},
+    })["facts"]
+    assert fact["code_vacancy.either"]["state"] == "KNOWN"
+    assert fact["code_vacancy.either"]["source_field"] == TAG_NC_VACANCY_OR_CODE
+    for single in ("code_violation", "vacancy"):
+        assert fact[single]["state"] == "UNKNOWN"
+        assert fact[single]["value"] is None
+        assert fact[single]["reason"] == "DISJUNCTIVE_TAG_ONLY"
+    row = project_onto_estate_row({"apn": "D1", "signal_tags": [TAG_NC_VACANCY_OR_CODE]})
+    assert row["code_or_vacancy"] is True
+    assert "code_violation" not in row
+    assert "vacancy" not in row
+
+
+def test_single_meaning_tag_beside_the_disjunction_still_decides():
+    fact = project_code_vacancy_facts({"signal_tags": [TAG_NC_VACANCY_OR_CODE, TAG_NC_VACANCY]})["facts"]
+    assert fact["vacancy"]["state"] == "KNOWN"
+    assert fact["vacancy"]["source_field"] == TAG_NC_VACANCY
+    assert fact["code_violation"]["reason"] == "DISJUNCTIVE_TAG_ONLY"
+    assert fact["code_vacancy.either"]["state"] == "KNOWN"
 
 
 def test_raw_writer_tags_promote_one_token_each():

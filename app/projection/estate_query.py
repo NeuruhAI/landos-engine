@@ -26,6 +26,7 @@ from .classes import (
     FAMILY_VALUATION,
     INGREDIENT_ACREAGE,
     INGREDIENT_ADJACENT_APNS,
+    INGREDIENT_CODE_OR_VACANCY,
     INGREDIENT_CODE_VIOLATION,
     INGREDIENT_IMPROVEMENT_VALUE,
     INGREDIENT_LAND_USE,
@@ -146,8 +147,13 @@ def project_onto_estate_row(
 
     # Flat convenience keys for query consumers. Never overwrite a populated
     # estate column — projection fills the hole, it does not clobber custody.
-    if equity.get("state") == "KNOWN" and not str(out.get("equity_estimated_pct") or "").strip():
-        out["equity_estimated_pct"] = equity["value"]
+    # A tax-balance proxy is an equity CEILING (mortgage unknown). It fills the
+    # ceiling column, never equity_estimated_pct: an equity >= 65 filter would
+    # otherwise match nearly every delinquent row on a tax bill alone.
+    if equity.get("state") == "KNOWN":
+        column = "equity_ceiling_pct" if equity.get("bound") == "UPPER" else "equity_estimated_pct"
+        if not str(out.get(column) or "").strip():
+            out[column] = equity["value"]
     acres = parcel_facts[INGREDIENT_ACREAGE]
     if acres["state"] == "KNOWN" and not str(out.get("acreage") or "").strip():
         out["acreage"] = acres["value"]
@@ -171,6 +177,9 @@ def project_onto_estate_row(
     vacant = code_facts[INGREDIENT_VACANCY]
     if vacant["state"] == "KNOWN" and not str(out.get("vacancy") or "").strip():
         out["vacancy"] = True
+    either = code_facts[INGREDIENT_CODE_OR_VACANCY]
+    if either["state"] == "KNOWN" and not str(out.get("code_or_vacancy") or "").strip():
+        out["code_or_vacancy"] = True
     if code_vacancy["recipe_tokens"] and not out.get("code_vacancy_tokens"):
         out["code_vacancy_tokens"] = list(code_vacancy["recipe_tokens"])
     # TAX_YEARS: never fabricate 0. Only fill when a stored count is known

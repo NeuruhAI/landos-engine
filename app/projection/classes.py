@@ -33,6 +33,8 @@ INGREDIENT_LAND_VALUE = "parcel.land_value"
 INGREDIENT_IMPROVEMENT_VALUE = "parcel.improvement_value"
 INGREDIENT_CODE_VIOLATION = "code_violation"
 INGREDIENT_VACANCY = "vacancy"
+# One disjunctive fact (nc_dps:vacancy_or_code): vacancy OR code, never either one.
+INGREDIENT_CODE_OR_VACANCY = "code_vacancy.either"
 INGREDIENT_TAX_DELINQUENT_YEARS = "tax.delinquent_years"
 INGREDIENT_ADJACENT_APNS = "parcel.adjacent_apns"
 INGREDIENT_SHARED_BOUNDARY = "parcel.shared_boundary"

@@ -78,6 +78,23 @@ def test_equity_accepts_amount_owed_alias():
     fact = derive_equity_estimated_pct(assessed_value=200_000, amount_owed=50_000)
     assert fact["value"] == 75.0
     assert fact["debt_proxy_kind"] == "amount_owed"
+    assert fact["bound"] is None
+
+
+def test_tax_balance_equity_is_a_ceiling_not_equity():
+    # Mortgage debt is unknown on a delinquent-list row: tax balance bounds equity from above.
+    fact = derive_equity_estimated_pct(assessed_value=100_000, tax_balance=1_500)
+    assert fact["state"] == "KNOWN"
+    assert fact["bound"] == "UPPER"
+    row = project_onto_estate_row({"apn": "X9", "assessed_value": 100000, "tax_balance": 1500})
+    assert row["equity_ceiling_pct"] == 98.5
+    assert "equity_estimated_pct" not in row
+
+
+def test_tax_sale_amount_owed_fills_equity_itself():
+    row = project_onto_estate_row({"apn": "X8", "assessed_value": 100000, "amount_owed": 30000})
+    assert row["equity_estimated_pct"] == 70.0
+    assert "equity_ceiling_pct" not in row
 
 
 def test_equity_known_zero_tax_is_100_percent_proxy_not_unknown():
@@ -191,7 +208,8 @@ def test_estate_query_attaches_both_unlocks():
     projected = row["projected"]
     assert projected["valuation"]["value"] == 95.0
     assert projected["parcel"]["facts"]["acreage.acres"]["value"] == 8.0
-    assert row["equity_estimated_pct"] == 95.0
+    assert row["equity_ceiling_pct"] == 95.0
+    assert "equity_estimated_pct" not in row
     assert row["acreage"] == 8.0
     assert row["land_use"] == "401"
     assert row["land_use_class"] == "401"
@@ -231,7 +249,8 @@ def test_load_estate_rows_projects_assessed_and_ingested_parcel(tmp_path):
     ])
     rows = load_estate_rows(tmp_path, ["Wake"], tmp_path / "bundle", ingested)
     assert rows[0]["res_owner_class"] == "DECEASED"
-    assert rows[0]["equity_estimated_pct"] == 99.0
+    assert rows[0]["equity_ceiling_pct"] == 99.0
+    assert "equity_estimated_pct" not in rows[0]
     assert rows[0]["acreage"] == 2.5
     assert rows[0]["land_use"] == "RESIDENTIAL"
     assert rows[0]["projected"]["valuation"]["not_class"] == NOT_RAW_SOURCE_MISSING
@@ -253,7 +272,7 @@ def test_load_ingested_parcels_from_derive_shaped_csv(tmp_path):
     )
     assert rows[0]["acreage"] == 4.75
     assert rows[0]["land_use_class"] == "AG"
-    assert rows[0]["equity_estimated_pct"] == 99.0
+    assert rows[0]["equity_ceiling_pct"] == 99.0
 
 
 def test_projection_modules_do_not_import_forbidden_lanes():
