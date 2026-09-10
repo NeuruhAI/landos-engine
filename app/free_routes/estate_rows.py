@@ -6,6 +6,7 @@ import csv
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional
 
+from app.contact.owner_class import owner_route_class
 from app.projection.estate_query import project_estate_query
 
 COUNTY_ORDER = ["Mecklenburg", "Wake", "Durham", "Johnston", "Union", "Cabarrus", "Gaston"]
@@ -71,11 +72,13 @@ def is_probate(row: dict) -> bool:
 
 
 def is_entity_owner(row: dict) -> bool:
+    """Entity when the resolution ledger says so; otherwise classify the roll name with
+    the same owner_route_class that writes that ledger (word-boundary rules, so VINCENT
+    is not INC, BANKS is not BANK and CORPENING is not CORP)."""
     cls = (row.get("res_owner_class") or "").upper()
     if cls:
         return cls in ENTITY_CLASSES
-    name = (row.get("owner_name") or "").upper()
-    return any(t in name.split() or t in name for t in ("LLC", "L.L.C.", "INC", "CORP", "TRUST", "TRUSTEE", "COMPANY", "HOLDINGS", "PROPERTIES", "PARTNERSHIP", "ASSOCIATION", "CHURCH", "BANK", " LP", " LLP"))
+    return owner_route_class(row.get("owner_name")) in ENTITY_CLASSES
 
 
 def is_out_of_state(row: dict) -> bool:

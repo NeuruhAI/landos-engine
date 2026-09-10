@@ -8,7 +8,7 @@ DeedSonar source (read-only inspection 2026-08-12, repo NeuruhAI/deedsonar):
     required fields   src/lib/imports/county-normalize.ts:217-227
     aliases           src/lib/imports/county-normalize.ts:12-42
     apn normalizer    src/lib/imports/county-normalize.ts:78-81
-    address key       src/lib/imports/county-normalize.ts:83-97
+    address key       src/lib/imports/county-normalize.ts:102-116 (normalizeAddress)
     phone rule        src/lib/imports/county-normalize.ts:99-103,186-188 (10 digits or REJECT)
     number rule       src/lib/imports/county-normalize.ts:122-135 (blank->null, never 0)
     dedupe cascade    src/lib/imports/county-dedup.ts:75-117 (apn -> address -> source_row_id -> phone)
@@ -46,13 +46,21 @@ def norm_apn(v: str) -> str:
     return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKC", v or "").lower()).upper()
 
 
+_ADDR_SUFFIXES = tuple(
+    (re.compile(rf"\b({long}|{short}\.)\b", re.ASCII), short)
+    for long, short in (("street", "st"), ("road", "rd"), ("avenue", "ave"),
+                        ("drive", "dr"), ("lane", "ln"), ("highway", "hwy"))
+)
+
+
 def norm_addr_key(v: str) -> str:
-    s = (v or "").lower()
-    for a, b in (("street", "st"), ("st.", "st"), ("road", "rd"), ("rd.", "rd"),
-                 ("avenue", "ave"), ("ave.", "ave"), ("drive", "dr"), ("dr.", "dr"),
-                 ("lane", "ln"), ("ln.", "ln"), ("highway", "hwy"), ("hwy.", "hwy")):
-        s = s.replace(a, b)
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9#]", " ", s)).strip()
+    """normalizeAddress, regex-for-regex: NFKC, lowercase, whole-word suffix folds
+    (JS \\b is ASCII-only, hence re.ASCII), then [^a-z0-9#]+ -> space. A plain
+    str.replace here turned BROADWAY into "brdway" and PLANET into "plnt"."""
+    s = unicodedata.normalize("NFKC", v or "").lower()
+    for rx, short in _ADDR_SUFFIXES:
+        s = rx.sub(short, s)
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9#]+", " ", s)).strip()
 
 
 def parse_number_ok(v: str) -> bool:

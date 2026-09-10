@@ -88,3 +88,15 @@ def test_estate_rows_take_owner_class_from_the_resolution_ledger(tmp_path):
     assert [is_probate(r) for r in rows] == [True, False, False]
     assert [is_entity_owner(r) for r in rows] == [False, True, False]
     assert rows[0]["res_owner_class"] == "DECEASED" and rows[0]["fips"] == "37183"
+
+
+def test_entity_fallback_uses_word_boundaries_not_substrings():
+    # without a resolution-ledger class the roll name is classified by owner_route_class;
+    # the old substring test called these people entities (VINCENT~INC, BANKS~BANK, CORPENING~CORP)
+    people = ["VINCENT MARY", "BANKS ROBERT L", "CORPENING JAMES", "LINCOLN SARAH", "TRUSTY ANN"]
+    assert [is_entity_owner({"owner_name": n}) for n in people] == [False] * len(people)
+    entities = ["ACME HOLDINGS LLC", "SMITH FAMILY TRUST", "FIRST BAPTIST CHURCH", "WELLS FARGO BANK NA", "OAK PROPERTIES INC"]
+    assert [is_entity_owner({"owner_name": n}) for n in entities] == [True] * len(entities)
+    assert is_entity_owner({"owner_name": ""}) is False and is_entity_owner({}) is False
+    # the ledger class still wins over the name
+    assert is_entity_owner({"owner_name": "ACME LLC", "res_owner_class": "LIVING_PERSON"}) is False
