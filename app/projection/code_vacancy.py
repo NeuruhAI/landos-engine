@@ -26,6 +26,7 @@ from typing import Any, Iterable, Optional
 
 from .classes import (
     FAMILY_CODE_VACANCY,
+    INGREDIENT_CODE_OR_VACANCY,
     INGREDIENT_CODE_VIOLATION,
     INGREDIENT_VACANCY,
     NOT_RAW_SOURCE_MISSING,
@@ -229,6 +230,31 @@ def expand_recipe_tokens(tokens: Iterable[str]) -> list[str]:
     return out
 
 
+# A disjunctive source proves "vacancy OR code". Promoting it to both facts
+# would assert two things custody never said. Recipe tokens (scoring) are a
+# separate binding and are not decided here.
+DISJUNCTIVE_SOURCES = frozenset({TAG_NC_VACANCY_OR_CODE, TRIGGER_VACANCY_OR_CODE})
+
+
+def _single_meaning_sources(items: Iterable[str], token: str) -> list[str]:
+    return [
+        item for item in items
+        if item not in DISJUNCTIVE_SOURCES
+        and token in TAG_TO_TOKENS.get(item, FACT_TO_TOKENS.get(item, ()))
+    ]
+
+
+def _disjunctive_fact(ingredient_id: str, disjunctive: list[str]) -> dict[str, Any]:
+    """UNKNOWN: the only evidence is a vacancy-or-code source."""
+    fact = _fact(ingredient_id, known=False, source=disjunctive[0])
+    fact["reason"] = "DISJUNCTIVE_TAG_ONLY"
+    fact["why"] = (
+        f"{disjunctive[0]} means vacancy OR code; it proves neither {ingredient_id} "
+        "nor its absence. See code_vacancy.either."
+    )
+    return fact
+
+
 def _fact(ingredient_id: str, *, known: bool, source: Optional[str]) -> dict[str, Any]:
     gap, mode = unlock_classes(FAMILY_CODE_VACANCY)
     return {
@@ -275,25 +301,26 @@ def project_code_vacancy_facts(
             if token not in promoted:
                 promoted.append(token)
 
-    code_sources = [
-        item for item in (*tags, *facts)
-        if TOKEN_CODE_VIOLATION in TAG_TO_TOKENS.get(item, FACT_TO_TOKENS.get(item, ()))
-    ]
-    vacancy_sources = [
-        item for item in (*tags, *facts)
-        if TOKEN_VACANCY in TAG_TO_TOKENS.get(item, FACT_TO_TOKENS.get(item, ()))
-    ]
+    found = [*tags, *facts]
+    code_sources = _single_meaning_sources(found, TOKEN_CODE_VIOLATION)
+    vacancy_sources = _single_meaning_sources(found, TOKEN_VACANCY)
+    disjunctive = [item for item in found if item in DISJUNCTIVE_SOURCES]
 
+    def _specific(ingredient_id: str, sources: list[str]) -> dict[str, Any]:
+        if sources:
+            return _fact(ingredient_id, known=True, source=sources[0])
+        if disjunctive:
+            return _disjunctive_fact(ingredient_id, disjunctive)
+        return _fact(ingredient_id, known=False, source=None)
+
+    either_sources = [*code_sources, *vacancy_sources, *disjunctive]
     block = {
-        INGREDIENT_CODE_VIOLATION: _fact(
-            INGREDIENT_CODE_VIOLATION,
-            known=TOKEN_CODE_VIOLATION in promoted,
-            source=code_sources[0] if code_sources else None,
-        ),
-        INGREDIENT_VACANCY: _fact(
-            INGREDIENT_VACANCY,
-            known=TOKEN_VACANCY in promoted,
-            source=vacancy_sources[0] if vacancy_sources else None,
+        INGREDIENT_CODE_VIOLATION: _specific(INGREDIENT_CODE_VIOLATION, code_sources),
+        INGREDIENT_VACANCY: _specific(INGREDIENT_VACANCY, vacancy_sources),
+        INGREDIENT_CODE_OR_VACANCY: _fact(
+            INGREDIENT_CODE_OR_VACANCY,
+            known=bool(either_sources),
+            source=either_sources[0] if either_sources else None,
         ),
     }
     gap, mode = unlock_classes(FAMILY_CODE_VACANCY)
