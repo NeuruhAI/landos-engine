@@ -17,7 +17,8 @@ ENTITY_SUFFIX_RE = re.compile(
     r"\b(LLC|L\.?L\.?C\.?|INC|INCORPORATED|CORP|CORPORATION|LTD|LIMITED|"
     r"LLP|PLLC|PLLP|LP|PC|P\.C\.|CO|COMPANY|HOLDINGS|PROPERTIES|PROPERTY|"
     r"ENTERPRISES?|INVESTMENTS?|INVESTMENT GROUP|DEVELOPMENT|DEVELOPERS?|"
-    r"REALTY|PARTNERS(?:HIP)?|PARTNER|ASSOC(?:IATION|IATES)?|ASSN|"
+    r"REALTY|PARTNERS(?:HIP)?|PARTNER|ASSOC\w*|ASSN|COMMUNITY|FOUNDATION|"
+    r"SUBDIVISION|CENTER|"
     r"HOMEOWNERS|HOA|CONDOMINIUM|AUTHORITY|COMMISSION|DISTRICT|"
     r"DEPARTMENT|DEPT|BANK|CREDIT UNION|UNIVERSITY|COLLEGE|HOSPITAL|"
     r"HOUSING|PROPCO|GROUP LLC)\b",
@@ -470,7 +471,9 @@ def parse_owner_name(owner_name: Optional[str]) -> OwnerParse:
         decedent_estate = bool(DECEASED_RE.search(n)) and not REAL_ESTATE_RE.search(n)
         if not (decedent_estate and not CORPORATE_TOKEN_RE.search(n)):
             return OwnerParse(raw=raw, kind="ENTITY", notes=["entity_excluded_from_voter_person_match"])
-    if is_trust_name(n) and not DECEASED_RE.search(n):
+    # REAL ESTATE is not a decedent's estate ("VESTA REAL ESTATE TRUST").
+    decedent_marker = bool(DECEASED_RE.search(n)) and not REAL_ESTATE_RE.search(n)
+    if is_trust_name(n) and not decedent_marker:
         trustees = trustee_people_on_roll(n)
         if trustees:
             return OwnerParse(
@@ -498,18 +501,27 @@ def parse_owner_name(owner_name: Optional[str]) -> OwnerParse:
             seen.add(key)
             people.append(p)
 
+    # A decedent named by surname alone ("SMITH HEIRS", "HEIRS OF SMITH") yields
+    # no PersonName, but the roll still says the title passed through a death.
+    decedent_segments = [seg for seg in segments if _segment_flags(seg)[0]]
+
     if not people:
+        if decedent_segments:
+            return OwnerParse(raw=raw, kind="DECEASED", notes=["decedent_named_by_surname_only"])
         kind = "ENTITY" if is_entity_name(n) else "UNKNOWN"
         return OwnerParse(raw=raw, kind=kind, notes=["unparsed"])
 
     living = [p for p in people if p.living_matchable]
     decedents = [p for p in people if p.deceased or p.role == "DECEDENT"]
     life = [p for p in people if p.life_estate]
-    if life and not decedents:
+    unparsed_decedent = bool(decedent_segments) and not decedents
+    if unparsed_decedent:
+        notes.append("decedent_named_by_surname_only")
+    if life and not decedents and not unparsed_decedent:
         kind = "LIFE_ESTATE"
-    elif decedents and living:
+    elif (decedents or unparsed_decedent) and living:
         kind = "MIXED"
-    elif decedents:
+    elif decedents or unparsed_decedent:
         kind = "DECEASED"
     else:
         kind = "INDIVIDUAL"
