@@ -26,8 +26,27 @@ def _require(name: str) -> str:
     return v
 
 
-# The full Postgres connection string for your Supabase database.
-DATABASE_URL = _require("DATABASE_URL")
+def _require_canonical_database() -> str:
+    """Resolve the engine DB from the canonical DeedSonar DSN first.
+
+    Since the 2026-09-10 production cutover, efxowqudmsfqjmbeidjc is the
+    single production authority for both the DeedSonar CRM tables and the
+    LandOS schema used by sync_to_crm. Prefer DEEDSONAR_DATABASE_URL so a
+    stale legacy DATABASE_URL cannot silently keep the engine on lvdi.
+    The legacy value remains a backwards-compatible fallback only when the
+    canonical variable is genuinely absent; the runtime write guards still
+    refuse the retired lvdi project.
+    """
+    canonical = os.environ.get("DEEDSONAR_DATABASE_URL")
+    if canonical and not canonical.startswith("replace") and "[YOUR-PASSWORD]" not in canonical:
+        return canonical
+    return _require("DATABASE_URL")
+
+
+# The ONE canonical production Postgres connection string.
+# DEEDSONAR_DATABASE_URL wins over the historical DATABASE_URL so the engine,
+# sync_to_crm, and contact tooling converge on the same efxo production authority.
+DATABASE_URL = _require_canonical_database()
 
 # The shared secret APG must send in the X-LANDOS-SECRET header to call us.
 LANDOS_SECRET = _require("LANDOS_SECRET")
