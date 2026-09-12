@@ -36,6 +36,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.contact_authority import contact_dsn_or_exit  # noqa: E402
+
 from app.contact.address_normalize import extract_zip5, strip_leading_house
 from app.contact.estate_fields import owner_occupies_property
 from app.contact.zip_state import zip_plausible_for_state
@@ -94,10 +96,8 @@ def main() -> int:
     ap.add_argument("--out-dir", default=str(Path.home() / "neuruh-private" / "contact-intelligence"
                                             / "runs" / "T24A_IDENTITY_DELTA"))
     args = ap.parse_args()
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn:
-        print("DATABASE_URL is required", file=sys.stderr)
-        return 2
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
+    dsn = contact_dsn_or_exit()
 
     out = prepare_output_dir(args.out_dir, what="identity delta evidence")
     estate = load_estate(Path(args.estate_dir))

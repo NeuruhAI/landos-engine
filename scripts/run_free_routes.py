@@ -5,7 +5,7 @@
 
 Dry-run by default: receipts, worklists and signal CSVs are written under the custody run dir
 (outside Git, off every cloud sync); nothing touches the spine. --apply writes the per-row
-attempts to public.free_route_attempts (DATABASE_URL, DB owner). Contact writes never happen
+attempts to public.free_route_attempts (DEEDSONAR_DATABASE_URL only, never DATABASE_URL; see app/contact_authority.py). Contact writes never happen
 here: they go through project_contacts_to_deedsonar (party graph) after their own dry run.
 Routes whose terms forbid scripts (T1, T2, T3, T4, T5, T7, T10) always produce an H-12 receipt
 and a worklist — never a silent skip. Paid routes never run (ALLOW_SPEND=0)."""
@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 
 from app.custody.locations import canonical_bundle, estate_export, run_dir  # noqa: E402
 from app.custody.sync_guard import prepare_output_dir  # noqa: E402
+from app.contact_authority import contact_dsn_or_exit  # noqa: E402
 from app.free_routes.attempts import Attempt, write_attempts  # noqa: E402
 from app.free_routes.estate_rows import load_estate_rows, is_entity_owner, is_probate  # noqa: E402
 from app.free_routes.human_routes import (t2_notice_search, t3_special_proceedings_search, t4_obituary_search,  # noqa: E402
@@ -56,12 +57,15 @@ def main() -> int:
     ap.add_argument("--counties", default="")
     ap.add_argument("--cap", type=int, default=40, help="worklist cap per county for the human routes")
     ap.add_argument("--apply", action="store_true", help="write per-row attempts to public.free_route_attempts")
-    ap.add_argument("--database-url", default=os.environ.get("DATABASE_URL"))
+    ap.add_argument("--database-url", default=None,
+                    help="default: DEEDSONAR_DATABASE_URL only (DATABASE_URL is never read); the retired legacy DB is refused. "
+                         "Pass --database-url '' to run offline (I2/I3/I5 halt with a receipt).")
     ap.add_argument("--wake-extract", default="", help="a local real_estate_delq853_*.zip (else downloaded)")
     ap.add_argument("--skip-charlotte", action="store_true")
     ap.add_argument("--t6-run", default="", help="a completed NCSBE lane run dir; T6's receipt and attempts are read from it")
     ap.add_argument("--t6-as-of", default="", help="the date the NCSBE snapshot says its values are true (the file Last-Modified)")
     a = ap.parse_args()
+    a.database_url = contact_dsn_or_exit(a.database_url, required=a.apply)
     if (os.environ.get("ALLOW_SPEND") or "0") != "0":
         sys.exit("ALLOW_SPEND must be 0: the free routes never pay")
     out = prepare_output_dir(run_dir(a.run_name), what="free routes run")
@@ -193,7 +197,7 @@ def main() -> int:
                 reg = by_id[rid]
                 index[rid] = write_receipt(halted_receipt(rid, reg.name, mode="AUTOMATED", source=reg.source, license=reg.license,
                                                           provenance_url=reg.provenance_url, halt_code="H-12",
-                                                          human_step="Needs the spine: re-run with DATABASE_URL set (read-only for I2/I5; I3 reads candidate_parties).",
+                                                          human_step="Needs the spine: re-run with DEEDSONAR_DATABASE_URL set (read-only for I2/I5; I3 reads candidate_parties).",
                                                           rows_tried=len(estate)), receipts_dir)
     if "I1" in routes:
         res = i1_out_of_state(estate, run_id=run_id, now_iso=ts, receipt_path=None)

@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +27,8 @@ from psycopg.rows import dict_row
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from app.contact_authority import contact_dsn_or_exit  # noqa: E402
 
 #: The Qualified work queue. One row per Qualified opportunity that is still
 #: unresolved, ordered the way the operator actually picks work up: by grade,
@@ -274,10 +275,8 @@ def main() -> int:
             cid = (row.get("candidate_id") or "").strip()
             if cid and row.get("verdict") in {"NO_MATCH", "IDENTITY_CORROBORATED_NO_PHONE"}:
                 negative_memory.setdefault(cid, set()).add("NCSBE_PUBLIC_VOTER_FILE")
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn:
-        print("DATABASE_URL is required", file=sys.stderr)
-        return 2
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
+    dsn = contact_dsn_or_exit()
 
     rows = []
     with psycopg.connect(dsn, row_factory=dict_row) as conn, conn.cursor() as cur:

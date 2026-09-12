@@ -35,7 +35,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import sys
 import uuid
 from collections import Counter, defaultdict
@@ -51,6 +50,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.custody.locations import canonical_bundle, estate_export
+from app.contact_authority import contact_dsn_or_exit
 from app.contact.identity_tuple import estate_revision, master_csv_paths
 from app.resolution.contract import CALLABILITY_NOT_AUTHORIZED
 from app.resolution.factory import build_records, load_csv
@@ -596,7 +596,8 @@ def main() -> int:
                          "records which candidates the voter file was already asked "
                          "about and returned nothing for, so the router stops "
                          "recommending it to them. Repeatable.")
-    ap.add_argument("--database-url", default=os.environ.get("DEEDSONAR_DATABASE_URL") or os.environ.get("DATABASE_URL"))
+    ap.add_argument("--database-url", default=None,
+                    help="default: DEEDSONAR_DATABASE_URL only; DATABASE_URL is never read (app/contact_authority.py)")
     ap.add_argument("--apply", action="store_true", help="perform the production write")
     ap.add_argument("--source-as-of", default=None, help="ISO date the source snapshot says its values are true (e.g. the NCSBE file Last-Modified); stamped into party_phones.provenance.source_as_of; unknown stays unknown")
     ap.add_argument("--verify-idempotent", action="store_true")
@@ -610,9 +611,8 @@ def main() -> int:
     global SOURCE_AS_OF
     SOURCE_AS_OF = args.source_as_of or None
 
-    if not args.database_url:
-        print("no database url", file=sys.stderr)
-        return 2
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused.
+    args.database_url = contact_dsn_or_exit(args.database_url)
 
     out = Path(args.out_dir).expanduser()
     priv = out / "_private"

@@ -34,6 +34,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.contact_authority import contact_dsn_or_exit  # noqa: E402
+
 from app.contact.entity_public import org_key
 from app.contact.owner_class import owner_route_class
 from app.custody.sync_guard import prepare_output_dir
@@ -79,10 +81,8 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
 
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn:
-        print("DATABASE_URL is required", file=sys.stderr)
-        return 2
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
+    dsn = contact_dsn_or_exit()
     out = prepare_output_dir(args.out_dir, what="entity fan-out evidence")
     run_id = f"t24a-entity-{utcnow()}"
 

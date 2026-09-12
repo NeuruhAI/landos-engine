@@ -43,6 +43,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.contact_authority import contact_dsn_or_exit  # noqa: E402
+
 from app.custody.sync_guard import prepare_output_dir
 
 T20D = Path.home() / "neuruh-workspace" / "T20D_NC_FREE_CONTACT_EXPANSION_20260819"
@@ -82,10 +84,8 @@ def main() -> int:
     ap.add_argument("--out-dir", default=str(Path.home() / "neuruh-private"
                                              / "contact-intelligence" / "runs" / "T24A_TIER_C"))
     args = ap.parse_args()
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn:
-        print("DATABASE_URL is required", file=sys.stderr)
-        return 2
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
+    dsn = contact_dsn_or_exit()
     out = prepare_output_dir(args.out_dir, what="tier C adjudication evidence")
     run_id = f"t24a-tierc-{utcnow()}"
 

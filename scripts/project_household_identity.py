@@ -48,7 +48,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.config import DATABASE_URL
+from app.contact_authority import contact_dsn_or_exit
 
 #: Roles that are a person you could actually speak to. DECEDENT is excluded
 #: because he is the subject, and REGISTERED_AGENT because a service address is
@@ -155,7 +155,8 @@ def main() -> int:
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
-    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
+    with psycopg.connect(contact_dsn_or_exit(), row_factory=dict_row) as conn:
         conn.execute("set statement_timeout = '300s'")
         before = census(conn)
         report = {"run_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
