@@ -24,7 +24,7 @@ def _factory_run(tmp_path: Path, *, state="CLEAN", tamper=False) -> Path:
     digest = hashlib.sha256(jsonl.read_bytes()).hexdigest()
     (run / "run_receipt.json").write_text(json.dumps({
         "run_id": "run-x", "code_commit": {"state": state, "sha": "abc"},
-        "rollup": {"normalized_sha256": "0" * 64 if tamper else digest},
+        "estate": {"normalized_sha256": "0" * 64 if tamper else digest},
         "health_by_verdict": {"HEALTHY": 1}, "outcome_by_source": {"landed": 1}}))
     return run
 
@@ -44,6 +44,15 @@ def test_a_dirty_run_is_refused_unless_explicitly_allowed(tmp_path):
 def test_a_jsonl_that_does_not_match_its_receipt_is_refused(tmp_path):
     with pytest.raises(ep.ProducerError, match="sha256"):
         ep.verify_factory_run(_factory_run(tmp_path, tamper=True), allow_dirty=True)
+
+
+def test_a_receipt_without_a_digest_is_refused_not_trusted(tmp_path):
+    run = _factory_run(tmp_path)
+    receipt = json.loads((run / "run_receipt.json").read_text())
+    receipt.pop("estate")
+    (run / "run_receipt.json").write_text(json.dumps(receipt))
+    with pytest.raises(ep.ProducerError, match="no estate.normalized_sha256"):
+        ep.verify_factory_run(run, allow_dirty=True)
 
 
 def test_a_directory_that_is_not_a_factory_run_is_refused(tmp_path):
@@ -101,3 +110,22 @@ def test_cli_refuses_with_exit_2_and_writes_nothing(tmp_path, capsys):
     assert code == 2
     assert "REFUSED" in capsys.readouterr().err
     assert not (out / "PRODUCER_RECEIPT.json").exists()
+
+
+def test_mecklenburg_staging_is_collected_from_the_factory_run(tmp_path):
+    run = tmp_path / "run"
+    (run / "staging").mkdir(parents=True)
+    (run / "staging" / "nc.mecklenburg.taxdelinquent.individual_list.jsonl").write_text(
+        '{"county_fips":"37119","owner_name":"DOE JANE","staging_id":"a"}\n'
+        '{"county_fips":"37179","owner_name":"NOT MECK","staging_id":"b"}\n')
+    (run / "staging" / "nc.mecklenburg.taxdelinquent.business_list.jsonl").write_text(
+        '{"county_fips":"37119","owner_name":"ACME LLC","staging_id":"c"}\n')
+    got = ep.collect_mecklenburg_staging(run, tmp_path / "out")
+    assert got["rows"] == 2 and got["refused_non_37119"] == 1 and len(got["from"]) == 2
+    lines = Path(got["path"]).read_text().splitlines()
+    assert sorted(json.loads(l)["owner_name"] for l in lines) == ["ACME LLC", "DOE JANE"]
+
+
+def test_no_mecklenburg_staging_means_no_taxpayer_file(tmp_path):
+    (tmp_path / "run").mkdir()
+    assert ep.collect_mecklenburg_staging(tmp_path / "run", tmp_path / "out") is None
