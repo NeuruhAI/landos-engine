@@ -69,10 +69,12 @@ fi
 # --- verify BEFORE it may become a backup: readable TOC + production content markers --
 TOC="$("$PGRESTORE" --list "$TMP" 2>/dev/null || true)"
 [ -n "$TOC" ] || { rm -f "$TMP"; die "pg_restore --list could not read the dump; partial removed"; }
+# Here-strings, not pipes: `printf | grep -q` under `set -o pipefail` fails on a real
+# TOC (grep exits on the first match, printf takes SIGPIPE, the pipe reads as false).
 MARKERS=0
-printf '%s\n' "$TOC" | grep -qE 'TABLE DATA public lead_import_rows ' && MARKERS=$((MARKERS+1))
-printf '%s\n' "$TOC" | grep -qE 'TABLE DATA supabase_migrations schema_migrations ' && MARKERS=$((MARKERS+1))
-printf '%s\n' "$TOC" | grep -qE 'TABLE DATA public contact_evidence ' && MARKERS=$((MARKERS+1))
+grep -qE 'TABLE DATA public lead_import_rows ' <<<"$TOC" && MARKERS=$((MARKERS+1))
+grep -qE 'TABLE DATA supabase_migrations schema_migrations ' <<<"$TOC" && MARKERS=$((MARKERS+1))
+grep -qE 'TABLE DATA public contact_evidence ' <<<"$TOC" && MARKERS=$((MARKERS+1))
 if [ "$MARKERS" -lt 3 ]; then
   rm -f "$TMP"; die "dump missing expected production markers (found $MARKERS/3); partial removed"
 fi

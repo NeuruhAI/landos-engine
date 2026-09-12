@@ -102,6 +102,17 @@ class BackupDeedsonarProductionTests(unittest.TestCase):
         self.assertFalse(missing.exists())
         self.assertFalse(self.calls.exists())
 
+    def test_a_real_sized_toc_is_verified(self):
+        # A production TOC runs to thousands of lines. Under `set -o pipefail`, piping it
+        # into `grep -q` lets grep exit on the first match; printf then dies of SIGPIPE,
+        # the pipe "fails", and a good dump is refused and deleted (2026-09-12, 0/3 markers
+        # on a real efxo dump). The markers sit at the top here so grep exits early.
+        filler = "".join(f"{n}; 2615 1 TABLE public t{n} postgres\n" for n in range(100, 60100))
+        self.toc.write_text(GOOD_TOC + filler)
+        r = self.run_script([f"DEEDSONAR_DATABASE_URL={EFXO}"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len([n for n in self.dumps() if n.endswith(".dump")]), 1, self.dumps())
+
     def test_a_hollow_dump_is_never_installed(self):
         self.toc.write_text("10; 0 1 TABLE DATA public some_other_table postgres\n")
         r = self.run_script([f"DEEDSONAR_DATABASE_URL={EFXO}"])
