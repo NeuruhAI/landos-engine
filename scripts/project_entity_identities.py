@@ -81,7 +81,7 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
 
-    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
     dsn = contact_dsn_or_exit()
     out = prepare_output_dir(args.out_dir, what="entity fan-out evidence")
     run_id = f"t24a-entity-{utcnow()}"

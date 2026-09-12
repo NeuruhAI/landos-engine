@@ -1,12 +1,15 @@
 """The DeedSonar contact graph has ONE database authority, and the legacy spine is refused.
 
 Three layers:
-  1. the resolver (app/contact_authority.py): source order and every refusal;
+  1. the resolver (app/contact_authority.py): the two sources (--database-url,
+     DEEDSONAR_DATABASE_URL; never DATABASE_URL) and every refusal;
   2. the inventory: every engine file that opens a database AND touches the contact
      graph resolves through the resolver. A new contact writer that reads
      DATABASE_URL directly fails here;
   3. the real CLIs: each contact tool, pointed at the legacy DSN, exits 2 with
-     LEGACY_CONTACT_DSN_REFUSED before it connects or writes an output file.
+     LEGACY_CONTACT_DSN_REFUSED before it connects or writes an output file; and
+     with only DATABASE_URL set (no DEEDSONAR_DATABASE_URL) it exits 2 with
+     CONTACT_DSN_MISSING (founder decision 2026-09-12: no DATABASE_URL fallback).
 
 No test connects to any database. The legacy DSNs below point at 127.0.0.1:1, so a
 guard regression would surface as a connection error, never as a network write.
@@ -38,6 +41,8 @@ DIRECT_LEGACY = f"postgresql://postgres:pw@db.{LEGACY}.supabase.co:5432/postgres
 CONNINFO_LEGACY = f"host=aws-0-us-east-1.pooler.supabase.com user=postgres.{LEGACY} password=pw dbname=postgres"
 POOLER_CANON = f"postgresql://postgres.{CANONICAL_REF}:pw@aws-1-us-east-1.pooler.supabase.com:5432/postgres"
 DIRECT_CANON = f"postgresql://postgres:pw@db.{CANONICAL_REF}.supabase.co:5432/postgres"
+# the production shape T5 will set (session pooler, us-east-2); fake password
+EFXO_SESSION_POOLER = f"postgresql://postgres.{CANONICAL_REF}:pw@aws-0-us-east-2.pooler.supabase.com:5432/postgres"
 OTHER_REF = "abcdefghijklmnopqrst"
 
 
@@ -48,12 +53,45 @@ def resolve(**env):
 # --- 1. the resolver -------------------------------------------------------------
 
 @pytest.mark.parametrize("dsn", [POOLER_LEGACY, DIRECT_LEGACY, CONNINFO_LEGACY])
-@pytest.mark.parametrize("var", ["DEEDSONAR_DATABASE_URL", "DATABASE_URL"])
-def test_legacy_is_refused_in_every_form_and_source(dsn, var):
+def test_legacy_is_refused_in_every_form(dsn):
     with pytest.raises(ContactAuthorityError) as exc:
-        resolve(**{var: dsn})
+        resolve(DEEDSONAR_DATABASE_URL=dsn)
     assert exc.value.code == "LEGACY_CONTACT_DSN_REFUSED"
     assert "pw" not in str(exc.value)
+
+
+# --- DATABASE_URL is never a contact source (founder decision 2026-09-12) ---------
+
+def test_database_url_efxo_without_deedsonar_var_is_missing_not_picked_up():
+    # (a) even the canonical project in DATABASE_URL is not read: contact writers take
+    # DEEDSONAR_DATABASE_URL (or --database-url) only.
+    with pytest.raises(ContactAuthorityError) as exc:
+        resolve(DATABASE_URL=EFXO_SESSION_POOLER)
+    assert exc.value.code == "CONTACT_DSN_MISSING"
+    assert "DEEDSONAR_DATABASE_URL" in str(exc.value) and "pw" not in str(exc.value)
+
+
+def test_database_url_lvdi_without_deedsonar_var_is_missing_not_a_silent_pickup():
+    # (b) the legacy DSN in DATABASE_URL is never even classified: it is not a source.
+    with pytest.raises(ContactAuthorityError) as exc:
+        resolve(DATABASE_URL=POOLER_LEGACY)
+    assert exc.value.code == "CONTACT_DSN_MISSING"
+    assert LEGACY not in str(exc.value) and "pw" not in str(exc.value)
+
+
+@pytest.mark.parametrize("dsn", [
+    EFXO_SESSION_POOLER, POOLER_CANON, DIRECT_CANON,
+    POOLER_LEGACY, DIRECT_LEGACY, CONNINFO_LEGACY,
+    "postgresql://t:t@127.0.0.1:55432/replica",
+    "postgresql://postgres:pw@10.0.0.7:5432/postgres",
+])
+def test_database_url_is_never_a_contact_source(dsn):
+    for extra in ({}, {"CONTACT_DB_ALLOW_NONCANONICAL": "1"}):
+        with pytest.raises(ContactAuthorityError) as exc:
+            resolve(DATABASE_URL=dsn, **extra)
+        assert exc.value.code == "CONTACT_DSN_MISSING"
+        # optional callers (run_free_routes dry run) get "no database", never DATABASE_URL
+        assert resolve_contact_dsn(required=False, env={"DATABASE_URL": dsn, **extra}) is None
 
 
 def test_legacy_is_refused_even_with_the_noncanonical_override():
@@ -90,10 +128,10 @@ def test_deedsonar_var_wins_over_the_engine_database_url():
 
 
 def test_the_host_today_fails_closed():
-    # .env today: DATABASE_URL=legacy and no DEEDSONAR_DATABASE_URL -> refusal, not a legacy write.
+    # .env today: DATABASE_URL=legacy and no DEEDSONAR_DATABASE_URL -> missing, not a legacy write.
     with pytest.raises(ContactAuthorityError) as exc:
         resolve(DATABASE_URL=POOLER_LEGACY)
-    assert exc.value.code == "LEGACY_CONTACT_DSN_REFUSED"
+    assert exc.value.code == "CONTACT_DSN_MISSING"
     assert "DEEDSONAR_DATABASE_URL" in str(exc.value)
 
 
@@ -135,9 +173,12 @@ def test_missing_dsn_is_an_error_unless_optional():
 
 
 def test_the_env_example_placeholder_is_not_a_dsn():
-    auth = resolve(DEEDSONAR_DATABASE_URL=f"postgresql://postgres.{CANONICAL_REF}:[YOUR-PASSWORD]@h/p",
-                   DATABASE_URL=POOLER_CANON)
-    assert auth.source == "DATABASE_URL"
+    # The placeholder counts as unset, and an unset DEEDSONAR_DATABASE_URL never falls
+    # back to DATABASE_URL, even a canonical one.
+    with pytest.raises(ContactAuthorityError) as exc:
+        resolve(DEEDSONAR_DATABASE_URL=f"postgresql://postgres.{CANONICAL_REF}:[YOUR-PASSWORD]@h/p",
+                DATABASE_URL=POOLER_CANON)
+    assert exc.value.code == "CONTACT_DSN_MISSING"
 
 
 # --- 2. the inventory ------------------------------------------------------------
@@ -192,9 +233,16 @@ def test_every_contact_graph_connection_goes_through_the_authority():
         assert "contact_dsn_or_exit" in (ROOT / caller).read_text(), caller
 
 
+#: files allowed to name the legacy ref, each only to refuse it
+LEGACY_REFUSAL_SITES = {
+    "app/contact_authority.py",   # this authority
+    "scripts/sync_to_crm.py",     # engine CRM write refusal on the legacy spine (landos-engine #35)
+}
+
+
 def test_the_legacy_ref_lives_only_in_the_refusal():
-    hits = [rel for rel, s in _engine_py() if LEGACY in s]
-    assert hits == ["app/contact_authority.py"], hits
+    hits = {rel for rel, s in _engine_py() if LEGACY in s}
+    assert "app/contact_authority.py" in hits and hits <= LEGACY_REFUSAL_SITES, sorted(hits)
 
 
 # --- 3. the real CLIs ------------------------------------------------------------
@@ -229,5 +277,30 @@ def test_every_contact_cli_refuses_the_legacy_dsn_before_connecting(tmp_path):
         out = proc.stdout + proc.stderr
         if proc.returncode != 2 or "LEGACY_CONTACT_DSN_REFUSED" not in out or "onnection refused" in out:
             failures.append((rel, proc.returncode, out[-300:]))
+    assert failures == []
+    assert not (tmp_path / "never-created").exists()
+
+
+def test_every_contact_cli_ignores_database_url_and_exits_missing(tmp_path):
+    # DATABASE_URL set, DEEDSONAR_DATABASE_URL empty (which also stops an engine .env from
+    # supplying it): every tool exits 2 CONTACT_DSN_MISSING and never connects. A regression
+    # that read DATABASE_URL would refuse legacy (wrong code) or hit 127.0.0.1:1 (refused).
+    base = {k: v for k, v in os.environ.items() if not k.startswith("PG")}
+    base.update(DEEDSONAR_DATABASE_URL="", PYTHONPATH=str(ROOT), LANDOS_SECRET="test")
+    failures = []
+    cases = _cli_cases(tmp_path)
+    for engine_dsn in (f"postgresql://postgres.{LEGACY}:pw@127.0.0.1:1/postgres",
+                       f"postgresql://postgres.{CANONICAL_REF}:pw@127.0.0.1:1/postgres",
+                       "postgresql://t5court:x@127.0.0.1:1/t5court"):
+        env = dict(base, DATABASE_URL=engine_dsn)
+        for rel, args in cases:
+            if rel == "scripts/run_free_routes.py":
+                args = [*args, "--apply"]  # a dry run takes the DSN as optional (offline)
+            proc = subprocess.run([sys.executable, rel, *args], cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=120)
+            out = proc.stdout + proc.stderr
+            if (proc.returncode != 2 or "CONTACT_DSN_MISSING" not in out or "onnection refused" in out
+                    or "CONTACT_DB_AUTHORITY=" in out or "pw@" in out):
+                failures.append((engine_dsn.split("@")[0][-24:], rel, proc.returncode, out[-300:]))
     assert failures == []
     assert not (tmp_path / "never-created").exists()

@@ -198,7 +198,7 @@ def main() -> int:
                       ("rank", "verdict", "refused_because")} for r in refuse],
         "applied": False,
     }
-    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
     with psycopg.connect(contact_dsn_or_exit(), row_factory=dict_row) as conn:
         if args.apply:
             report["rows_written"], report["attempts_written"] = apply(conn, write)

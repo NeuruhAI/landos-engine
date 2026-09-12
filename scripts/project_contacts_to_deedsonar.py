@@ -597,7 +597,7 @@ def main() -> int:
                          "about and returned nothing for, so the router stops "
                          "recommending it to them. Repeatable.")
     ap.add_argument("--database-url", default=None,
-                    help="default: DEEDSONAR_DATABASE_URL, then DATABASE_URL (app/contact_authority.py)")
+                    help="default: DEEDSONAR_DATABASE_URL only; DATABASE_URL is never read (app/contact_authority.py)")
     ap.add_argument("--apply", action="store_true", help="perform the production write")
     ap.add_argument("--source-as-of", default=None, help="ISO date the source snapshot says its values are true (e.g. the NCSBE file Last-Modified); stamped into party_phones.provenance.source_as_of; unknown stays unknown")
     ap.add_argument("--verify-idempotent", action="store_true")
@@ -611,7 +611,7 @@ def main() -> int:
     global SOURCE_AS_OF
     SOURCE_AS_OF = args.source_as_of or None
 
-    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused.
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused.
     args.database_url = contact_dsn_or_exit(args.database_url)
 
     out = Path(args.out_dir).expanduser()

@@ -212,7 +212,7 @@ def main() -> int:
                          indent=1))
         return 0
 
-    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
     with psycopg.connect(contact_dsn_or_exit(), row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             cur.execute("select candidate_id::text c, tenant_id::text t "

@@ -267,7 +267,7 @@ def main() -> int:
                                             / "runs" / "T24A_ADDRESS_SEMANTICS"))
     args = ap.parse_args()
 
-    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
     dsn = contact_dsn_or_exit()
 
     out = prepare_output_dir(args.out_dir, what="address semantics repair evidence")

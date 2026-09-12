@@ -96,7 +96,7 @@ def main() -> int:
     ap.add_argument("--out-dir", default=str(Path.home() / "neuruh-private" / "contact-intelligence"
                                             / "runs" / "T24A_IDENTITY_DELTA"))
     args = ap.parse_args()
-    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
     dsn = contact_dsn_or_exit()
 
     out = prepare_output_dir(args.out_dir, what="identity delta evidence")

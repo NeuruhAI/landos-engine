@@ -13,8 +13,10 @@ and nothing said so.
 
 This module resolves the contact DSN in ONE place and refuses the wrong one:
 
-  * Source order: an explicit `--database-url`, then `DEEDSONAR_DATABASE_URL`, then
-    `DATABASE_URL` (the order `project_contacts_to_deedsonar.py` already used).
+  * Sources: an explicit `--database-url`, or `DEEDSONAR_DATABASE_URL`. Nothing
+    else. `DATABASE_URL` is never read for the contact graph, whatever it holds
+    (founder decision 2026-09-12: no fallback to DATABASE_URL for contact
+    writers); with neither source set a tool fails CONTACT_DSN_MISSING (exit 2).
     The engine's own `DATABASE_URL` is NOT changed by this module; the engine's
     `landos` schema and `sync_to_crm` keep it until the engine DB-authority
     ruling (T0).
@@ -45,7 +47,6 @@ RETIRED_REFS = {
     "lvdimujkfheeyqchjzra": "legacy spine, retired as DeedSonar's DB at the 2026-09-08 Pro cutover",
 }
 ENV_VAR = "DEEDSONAR_DATABASE_URL"
-FALLBACK_ENV_VAR = "DATABASE_URL"
 ALLOW_NONCANONICAL_VAR = "CONTACT_DB_ALLOW_NONCANONICAL"
 
 CANONICAL = "CANONICAL"
@@ -67,7 +68,7 @@ class ContactAuthorityError(RuntimeError):
 @dataclass(frozen=True)
 class ContactAuthority:
     dsn: str
-    source: str             # "--database-url" | DEEDSONAR_DATABASE_URL | DATABASE_URL
+    source: str             # "--database-url" | DEEDSONAR_DATABASE_URL
     klass: str              # CANONICAL | NON_PRODUCTION | NONCANONICAL_ALLOWED
     ref: Optional[str]      # Supabase project ref when the DSN names one
     host: str
@@ -158,7 +159,9 @@ def resolve_contact_dsn(explicit: Optional[str] = None, *, required: bool = True
                         env: Optional[Mapping[str, str]] = None) -> Optional[ContactAuthority]:
     """Resolve and check the contact DSN. `explicit=""` means "no database" (offline).
 
-    Returns None only when required=False and no DSN is configured anywhere.
+    Sources: `explicit` (--database-url) or DEEDSONAR_DATABASE_URL only. DATABASE_URL
+    is never consulted, so a legacy (or any) engine DATABASE_URL cannot be picked up.
+    Returns None only when required=False and neither source is set.
     Raises ContactAuthorityError for a missing (required) or refused DSN.
     """
     if env is None:
@@ -170,15 +173,15 @@ def resolve_contact_dsn(explicit: Optional[str] = None, *, required: bool = True
                 raise ContactAuthorityError("CONTACT_DSN_MISSING", "--database-url is empty.")
             return None
         return classify(explicit, "--database-url", env)
-    for var in (ENV_VAR, FALLBACK_ENV_VAR):
-        val = (env.get(var) or "").strip()
-        if val and not val.startswith("replace") and "[YOUR-PASSWORD]" not in val:
-            return classify(val, var, env)
+    val = (env.get(ENV_VAR) or "").strip()
+    if val and not val.startswith("replace") and "[YOUR-PASSWORD]" not in val:
+        return classify(val, ENV_VAR, env)
     if not required:
         return None
     raise ContactAuthorityError(
         "CONTACT_DSN_MISSING",
-        f"set {ENV_VAR} (the {CANONICAL_REF} DSN) in the environment or the engine .env.")
+        f"set {ENV_VAR} (the {CANONICAL_REF} DSN) in the environment or the engine .env. "
+        f"DATABASE_URL is the engine's database and is never read for the contact graph.")
 
 
 def contact_dsn_or_exit(explicit: Optional[str] = None, *, required: bool = True) -> Optional[str]:

@@ -76,7 +76,7 @@ def main() -> int:
     if args.cascade_dir:
         print(f"negative memory: {len(negative)} candidates carry a source that was "
               f"run and returned nothing")
-    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
     dsn = contact_dsn_or_exit()
 
     with psycopg.connect(dsn, row_factory=dict_row) as conn:

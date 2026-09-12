@@ -275,7 +275,7 @@ def main() -> int:
             cid = (row.get("candidate_id") or "").strip()
             if cid and row.get("verdict") in {"NO_MATCH", "IDENTITY_CORROBORATED_NO_PHONE"}:
                 negative_memory.setdefault(cid, set()).add("NCSBE_PUBLIC_VOTER_FILE")
-    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
     dsn = contact_dsn_or_exit()
 
     rows = []

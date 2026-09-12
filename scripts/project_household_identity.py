@@ -155,7 +155,7 @@ def main() -> int:
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
-    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    # DEEDSONAR_DATABASE_URL only (never DATABASE_URL); the retired legacy DB is refused (exit 2).
     with psycopg.connect(contact_dsn_or_exit(), row_factory=dict_row) as conn:
         conn.execute("set statement_timeout = '300s'")
         before = census(conn)

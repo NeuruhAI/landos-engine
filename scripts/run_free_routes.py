@@ -5,7 +5,7 @@
 
 Dry-run by default: receipts, worklists and signal CSVs are written under the custody run dir
 (outside Git, off every cloud sync); nothing touches the spine. --apply writes the per-row
-attempts to public.free_route_attempts (DEEDSONAR_DATABASE_URL, then DATABASE_URL; see app/contact_authority.py). Contact writes never happen
+attempts to public.free_route_attempts (DEEDSONAR_DATABASE_URL only, never DATABASE_URL; see app/contact_authority.py). Contact writes never happen
 here: they go through project_contacts_to_deedsonar (party graph) after their own dry run.
 Routes whose terms forbid scripts (T1, T2, T3, T4, T5, T7, T10) always produce an H-12 receipt
 and a worklist — never a silent skip. Paid routes never run (ALLOW_SPEND=0)."""
@@ -58,7 +58,7 @@ def main() -> int:
     ap.add_argument("--cap", type=int, default=40, help="worklist cap per county for the human routes")
     ap.add_argument("--apply", action="store_true", help="write per-row attempts to public.free_route_attempts")
     ap.add_argument("--database-url", default=None,
-                    help="default: DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused. "
+                    help="default: DEEDSONAR_DATABASE_URL only (DATABASE_URL is never read); the retired legacy DB is refused. "
                          "Pass --database-url '' to run offline (I2/I3/I5 halt with a receipt).")
     ap.add_argument("--wake-extract", default="", help="a local real_estate_delq853_*.zip (else downloaded)")
     ap.add_argument("--skip-charlotte", action="store_true")
