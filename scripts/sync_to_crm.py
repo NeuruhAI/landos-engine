@@ -329,8 +329,38 @@ def assert_insert_row_valid(values):
     return row
 
 
+# --- legacy CRM refusal (2026-09-12 convergence) -------------------------------------
+# DeedSonar's CRM (public.acquisition_leads, public.contacts) has lived on Supabase
+# efxowqudmsfqjmbeidjc since the 2026-09-10 cutover. The legacy CRM surface on
+# lvdimujkfheeyqchjzra was retired on 2026-09-12. This projection reads
+# landos.owner_leads and writes the CRM tables through ONE connection, the engine
+# DATABASE_URL, which is still lvdi. A write run here would feed a retired CRM and
+# become a second CRM/contact writer. Moving the connection to efxo is not a fix
+# either: its landos schema is a stale cutover copy. So a write run is refused on
+# the legacy spine until the engine DB-authority ruling (T0) says where
+# landos.owner_leads lives. Dry runs only read, so they stay available.
+_LEGACY_SPINE_REF = "lvdimujkfheeyqchjzra"
+
+
+class LegacyCrmWriteRefused(SystemExit):
+    pass
+
+
+def refuse_legacy_crm_write(dsn: str, dry_run: bool) -> None:
+    if dry_run:
+        return
+    if _LEGACY_SPINE_REF in (dsn or ""):
+        raise LegacyCrmWriteRefused(
+            "sync_to_crm REFUSED: the engine DATABASE_URL is the legacy spine "
+            f"{_LEGACY_SPINE_REF}. DeedSonar's CRM lives in efxowqudmsfqjmbeidjc, and the "
+            "legacy CRM is retired, so a write here would be a second CRM writer. "
+            "Blocked pending the engine DB-authority ruling (T0). --dry-run still works."
+        )
+
+
 def main(dry_run: bool = False, lead_ids=None) -> None:
     lead_filter = list(lead_ids) if lead_ids else None
+    refuse_legacy_crm_write(DATABASE_URL, dry_run)
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute(
             """select lead_id, owner_name, situs_lat, situs_lng, skip_trace_status,
