@@ -22,7 +22,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/../.env"
-OUT_DIR="$HOME/models/provenance/db"
+# SPINE_BACKUP_DIR lets cron keep this legacy-spine dump on cold custody (NEURUH-HD)
+# instead of the internal disk. The default is unchanged.
+OUT_DIR="${SPINE_BACKUP_DIR:-$HOME/models/provenance/db}"
 
 # --- locate pg_dump (Homebrew libpq is keg-only; cron PATH won't have it) --------------
 for d in /opt/homebrew/opt/libpq/bin /usr/local/opt/libpq/bin /opt/homebrew/bin /usr/local/bin /usr/bin; do
