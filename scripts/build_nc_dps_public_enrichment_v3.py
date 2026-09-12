@@ -204,7 +204,8 @@ def build_mecklenburg_signals_addr(
             "source": "official_distress:mecklenburg:unique_owner_parcel_match",
             "source_type": "taxdelinquent",
             "geography": "37119",
-            "event_date": row.get("source_as_of") or "2026-08-04",
+            # Declared as_of or nothing; never a literal date (see core.facts_as_of).
+            "event_date": row.get("source_as_of") or None,
             "raw_address": chosen.get("siteadd") or "",
             "parcel_apn": parcel,
             "owner_name": chosen.get("ownname") or row.get("owner_name") or "",
@@ -283,6 +284,10 @@ def run(
             for row in reused_meck:
                 row["heir_indicator"] = heir_flag_strict(str(row.get("owner_name") or ""), [])
                 row["fragmented_ownership_indicator"] = fragmented_flag_strict(str(row.get("owner_name") or ""))
+                # A reused row arrives without its signals, so nothing observed
+                # dates it. Whatever an older CSV claimed is not re-asserted.
+                row["facts_as_of"] = ""
+                row["facts_as_of_basis"] = core.FACTS_BASIS_UNKNOWN
 
         combined = [
             row for row in fresh_rows

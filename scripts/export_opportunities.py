@@ -67,7 +67,16 @@ SCHEMA_COLUMNS = [
     "phone_1", "phone_2", "email_1", "contact_status",
     "source_run_id", "scoring_run_id", "export_run_id",
     "schema_version", "created_at", "exported_at",
+    # FACTS DATE (appended; no existing column moves). facts_as_of is the newest
+    # date a county payload carried about the property -- observed, never the
+    # adapter's declared constant, never a build/export time. Empty = UNKNOWN.
+    # created_at/exported_at are PROVENANCE times, not facts times.
+    "facts_as_of", "facts_as_of_basis",
 ]
+
+FACTS_BASIS_OBSERVED = "observed_event_date"
+FACTS_BASIS_UNKNOWN = "unknown"
+_FACTS_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # --- canonical recipe registry -------------------------------------------------
 # Discovered (NOT invented) from source: the seven NC curative recipe ids are the
@@ -286,7 +295,33 @@ def map_row(src: dict[str, str], *, provenance: dict[str, str]) -> dict[str, str
         "email_1": "",
         "contact_status": (src.get("phone_status") or "").strip(),
         **provenance,
+        **facts_date(src),
     }
+
+
+def facts_date(src: dict[str, str]) -> dict[str, str]:
+    """Carry the upstream facts date verbatim, or say UNKNOWN.
+
+    Only a value the enrichment stage labelled `observed_event_date` passes; any
+    other basis (or a malformed date) exports as empty/unknown. Nothing here
+    derives a date -- in particular not from created_at or exported_at."""
+    basis = (src.get("facts_as_of_basis") or "").strip()
+    value = (src.get("facts_as_of") or "").strip()
+    if basis == FACTS_BASIS_OBSERVED and _FACTS_DATE.match(value):
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            pass
+        else:
+            return {"facts_as_of": value, "facts_as_of_basis": FACTS_BASIS_OBSERVED}
+    return {"facts_as_of": "", "facts_as_of_basis": FACTS_BASIS_UNKNOWN}
+
+
+def _count_basis(rows: list[dict[str, str]]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for r in rows:
+        out[r["facts_as_of_basis"]] = out.get(r["facts_as_of_basis"], 0) + 1
+    return out
 
 
 def sort_key(row: dict[str, str]):
@@ -339,7 +374,8 @@ def file_entry(path: Path, rows: list[dict[str, str]], *, recipe_id: str,
 def build(source: Path, output: Path, *, state: str | None, county: str | None,
           recipe: str | None, scope: str, pending_signals: Path | None,
           pending_audit: Path | None, meck_staging: Path | None,
-          exported_at: str | None, export_run_id: str | None) -> dict[str, Any]:
+          exported_at: str | None, export_run_id: str | None,
+          ranked_universe_date: str | None = None) -> dict[str, Any]:
     src_rows = load_source(source)
     source_sha = sha256_file(source)
     ts = exported_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -351,9 +387,12 @@ def build(source: Path, output: Path, *, state: str | None, county: str | None,
         "scoring_run_id": NOT_DEFINED,   # no canonical scoring run-id artifact exists
         "export_run_id": run_id,
         "schema_version": SCHEMA_VERSION,
-        # created_at = the canonical ranked-universe run date carried by the T4
-        # evidence (RUN_STATE 2026-08-12); exported_at = this export.
-        "created_at": "2026-08-12",
+        # created_at = the ranked-universe run date, when the caller states it
+        # (--ranked-universe-date); exported_at = this export. It used to be the
+        # literal "2026-08-12" on every export, and DeedSonar read it as the
+        # facts date. Unstated is empty -- UNKNOWN, never a remembered day.
+        # Neither column is a facts date: that is facts_as_of.
+        "created_at": (ranked_universe_date or "").strip(),
         "exported_at": ts,
     }
 
@@ -474,6 +513,13 @@ def build(source: Path, output: Path, *, state: str | None, county: str | None,
                                       "source assigns one recipe per property; no cross-"
                                       "recipe strategy is defined upstream"},
         "pending_unranked": pending_summary,
+        "facts_as_of": {
+            "basis_counts": dict(sorted(_count_basis(mapped).items())),
+            "min": min((r["facts_as_of"] for r in mapped if r["facts_as_of"]), default=None),
+            "max": max((r["facts_as_of"] for r in mapped if r["facts_as_of"]), default=None),
+            "semantics": "newest county-payload date per property (observed_event_date); "
+                         "empty = UNKNOWN; never created_at/exported_at",
+        },
         "contact_gate": {"phone_export_gate": False, "dnc_export_gate": False,
                          "callability_export_gate": False,
                          "note": "contact fields optional; inclusion never depends on them"},
@@ -644,12 +690,16 @@ def main() -> None:
     ap.add_argument("--meck-staging", type=Path)
     ap.add_argument("--exported-at", help="ISO ts override (deterministic re-runs)")
     ap.add_argument("--export-run-id")
+    ap.add_argument("--ranked-universe-date",
+                    help="date the ranked universe was produced (provenance -> created_at); "
+                         "omitted = empty. NOT a facts date")
     args = ap.parse_args()
     manifest = build(args.source, args.output, state=args.state, county=args.county,
                      recipe=args.recipe, scope=args.scope,
                      pending_signals=args.pending_signals, pending_audit=args.pending_audit,
                      meck_staging=args.meck_staging, exported_at=args.exported_at,
-                     export_run_id=args.export_run_id)
+                     export_run_id=args.export_run_id,
+                     ranked_universe_date=args.ranked_universe_date)
     write_registry(args.output / "02_RECIPE_REGISTRY")
     master = next(e for e in manifest["files"] if e["recipe_id"] == "ALL")
     print(json.dumps({

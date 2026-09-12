@@ -178,6 +178,51 @@ def detail(row: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+_ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+
+FACTS_BASIS_OBSERVED = "observed_event_date"
+FACTS_BASIS_UNKNOWN = "unknown"
+
+
+def _iso_date(value: Any) -> date | None:
+    match = _ISO_DATE.match(str(value or "").strip())
+    if not match:
+        return None
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def facts_as_of(signals: list[dict[str, Any]]) -> tuple[str, str]:
+    """The property's FACTS date: the newest date a county payload carried about it.
+
+    The same rule as landos-ingest source_factory/freshness.presentation_date, cut
+    to its one trustworthy basis: detail_json.observed_event_date, which the
+    factory records only when the payload dates itself (Wake's tape_creation_date).
+    Nothing else may stand in for it -- not the adapter's declared as_of constant,
+    not event_date, not retrieved_at/fetched_at, and not a build or export time.
+    Without an observed date the answer is ("", "unknown"), never today.
+
+    A payload cannot be dated after it was retrieved, so an observed date later
+    than the signal's own retrieved_at is refused rather than trusted.
+    """
+    newest: date | None = None
+    for signal in signals:
+        d = detail(signal)
+        observed = _iso_date(d.get("observed_event_date"))
+        if observed is None:
+            continue
+        retrieved = _iso_date(d.get("retrieved_at"))
+        if retrieved is not None and observed > retrieved:
+            continue
+        if newest is None or observed > newest:
+            newest = observed
+    if newest is None:
+        return "", FACTS_BASIS_UNKNOWN
+    return newest.isoformat(), FACTS_BASIS_OBSERVED
+
+
 def heir_flag(owner: str, rows: list[dict[str, Any]]) -> bool:
     text = owner.upper()
     if any(token in text for token in (" HEIR", "HEIRS", " HRS", "ESTATE OF", " ESTATE")):
@@ -228,7 +273,9 @@ def build_mecklenburg_signals(
             "source": "official_distress:mecklenburg:unique_owner_parcel_match",
             "source_type": "taxdelinquent",
             "geography": "37119",
-            "event_date": row.get("source_as_of") or "2026-08-04",
+            # The publication's declared as_of, or nothing. Never a literal: the
+            # old "2026-08-04" fallback dated every unlabelled row to one day.
+            "event_date": row.get("source_as_of") or None,
             "raw_address": one.get("siteadd") or "",
             "parcel_apn": parcel,
             "owner_name": one.get("ownname") or row.get("owner_name") or "",
@@ -295,6 +342,7 @@ def aggregate(
         assessed_less_tax = assessed - tax_balance if assessed is not None and tax_balance is not None else None
         tax_ratio = tax_balance / assessed if assessed and tax_balance is not None else None
         matched = bool(one)
+        facts_date, facts_basis = facts_as_of(sigs)
 
         rows.append({
             "county": COUNTY_NAMES.get(fips, fips),
@@ -342,6 +390,9 @@ def aggregate(
             "equity_status": "UNKNOWN_NEEDS_DEBT_SEARCH",
             "stage": "RAW_OPPORTUNITY_ENRICHED",
             "contact_authorized": False,
+            # Appended last so every existing column keeps its position.
+            "facts_as_of": facts_date,
+            "facts_as_of_basis": facts_basis,
         })
     return rows
 
