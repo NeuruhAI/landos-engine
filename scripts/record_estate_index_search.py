@@ -52,7 +52,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.config import DATABASE_URL
+from app.contact_authority import contact_dsn_or_exit
 from app.resolution.source_procedure import (
     NC_ECOURTS_ESTATE_SMART_SEARCH_V1 as PROC,
     supports_replay_suppression,
@@ -198,7 +198,8 @@ def main() -> int:
                       ("rank", "verdict", "refused_because")} for r in refuse],
         "applied": False,
     }
-    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    with psycopg.connect(contact_dsn_or_exit(), row_factory=dict_row) as conn:
         if args.apply:
             report["rows_written"], report["attempts_written"] = apply(conn, write)
             conn.commit()

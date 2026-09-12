@@ -56,7 +56,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.config import DATABASE_URL
+from app.contact_authority import contact_dsn_or_exit
 from app.contact.address_normalize import ParsedAddress, parse_address
 from app.contact.household import (
     HOUSEHOLD_VERSION,
@@ -406,7 +406,8 @@ def main() -> int:
         print(f"RAW_DIR_MISSING={raw_dir}", file=sys.stderr)
         return 2
 
-    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    with psycopg.connect(contact_dsn_or_exit(), row_factory=dict_row) as conn:
         conn.execute("set statement_timeout = '300s'")
         cands = load_candidates(conn, tiers, args.limit)
         print(f"COHORT={len(cands)} tiers={','.join(tiers)}", file=sys.stderr)

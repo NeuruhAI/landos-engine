@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -31,6 +30,8 @@ from psycopg.rows import dict_row
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from app.contact_authority import contact_dsn_or_exit  # noqa: E402
 
 from app.resolution.router import ROUTER_VERSION, QUEUE_CONTACT_STATUS, next_best_source
 
@@ -75,10 +76,8 @@ def main() -> int:
     if args.cascade_dir:
         print(f"negative memory: {len(negative)} candidates carry a source that was "
               f"run and returned nothing")
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn:
-        print("DATABASE_URL is required", file=sys.stderr)
-        return 2
+    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    dsn = contact_dsn_or_exit()
 
     with psycopg.connect(dsn, row_factory=dict_row) as conn:
         with conn.cursor() as cur:

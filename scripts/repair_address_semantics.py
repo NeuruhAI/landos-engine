@@ -53,6 +53,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.contact_authority import contact_dsn_or_exit  # noqa: E402
+
 from app.contact.address_normalize import extract_zip5, strip_leading_house
 from app.contact.estate_fields import owner_occupies_property, property_zip_for
 from app.custody.sync_guard import prepare_output_dir
@@ -265,10 +267,8 @@ def main() -> int:
                                             / "runs" / "T24A_ADDRESS_SEMANTICS"))
     args = ap.parse_args()
 
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn:
-        print("DATABASE_URL is required", file=sys.stderr)
-        return 2
+    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    dsn = contact_dsn_or_exit()
 
     out = prepare_output_dir(args.out_dir, what="address semantics repair evidence")
     run_id = f"t24a-{utcnow()}"

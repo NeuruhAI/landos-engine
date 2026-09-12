@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.config import DATABASE_URL
+from app.contact_authority import contact_dsn_or_exit
 from app.resolution.contract import (
     CONFIDENCE_CATEGORIES,
     FAMILY_RELATIONS,
@@ -212,7 +212,8 @@ def main() -> int:
                          indent=1))
         return 0
 
-    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+    # DEEDSONAR_DATABASE_URL, then DATABASE_URL; the retired legacy DB is refused (exit 2).
+    with psycopg.connect(contact_dsn_or_exit(), row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             cur.execute("select candidate_id::text c, tenant_id::text t "
                         "from public.deedsonar_current_candidates_v1")
