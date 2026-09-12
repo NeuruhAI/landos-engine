@@ -88,14 +88,48 @@ def verify_factory_run(run_dir: Path, *, allow_dirty: bool) -> dict[str, Any]:
     code = receipt.get("code_commit") or {}
     if code.get("state") != "CLEAN" and not allow_dirty:
         raise ProducerError(f"factory run code is {code.get('state')!r}, not CLEAN (--allow-dirty to override)")
-    want = (receipt.get("rollup") or {}).get("normalized_sha256")
+    # The factory records the assembled output's digest in the run receipt's
+    # `estate` block (strategy/source_factory/run.py assemble). No digest, no
+    # binding: refused rather than trusted.
+    want = (receipt.get("estate") or {}).get("normalized_sha256")
     got = sha256_file(jsonl)
-    if want and want != got:
+    if not want:
+        raise ProducerError("run receipt carries no estate.normalized_sha256 to bind the JSONL to")
+    if want != got:
         raise ProducerError(f"normalized_signals.jsonl sha256 {got[:16]} != receipt {want[:16]}")
     return {"run_id": receipt.get("run_id"), "code_commit": code, "normalized_sha256": got,
             "receipt_sha256": sha256_file(receipt_path),
             "health_by_verdict": receipt.get("health_by_verdict"),
             "outcome_by_source": receipt.get("outcome_by_source")}
+
+
+MECK_FIPS = "37119"
+
+
+def collect_mecklenburg_staging(factory_run: Path, output: Path) -> dict[str, Any] | None:
+    """The factory's Mecklenburg STAGING rows (taxpayer-level, no parcel), joined
+    into the one file enrichment's owner scan reads (--mecklenburg-taxpayers).
+    Rows outside 37119 are refused. None when the run staged no Mecklenburg rows."""
+    files = sorted((factory_run / "staging").glob("nc.mecklenburg.*.jsonl"))
+    if not files:
+        return None
+    path = output / "00_staging" / "mecklenburg_taxpayers.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = refused = 0
+    with open(path, "w", encoding="utf-8") as out:
+        for f in files:
+            with open(f, encoding="utf-8") as fh:
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    if str(row.get("county_fips")) != MECK_FIPS:
+                        refused += 1
+                        continue
+                    out.write(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n")
+                    rows += 1
+    return {"path": str(path), "rows": rows, "refused_non_37119": refused, "sha256": sha256_file(path),
+            "from": {str(f): sha256_file(f) for f in files}}
 
 
 def revise_rows(payload: dict[str, Any], *, full_universe: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -165,6 +199,17 @@ def produce(factory_run: Path, output: Path, *, recipe_engine: Path, deedsonar: 
     enriched = enrich_dir / "LANDOS_ENRICHED_OPPORTUNITIES.csv"
     cmd = [sys.executable, "-m", "scripts.build_nc_dps_public_enrichment_v3",
            "--signals", str(factory_run / "normalized_signals.jsonl"), "--output", str(enrich_dir)]
+    # Mecklenburg arrives as factory STAGING (landos-ingest: taxpayer lists have
+    # no parcel). An explicit --mecklenburg-taxpayers wins; otherwise the run's
+    # own staging is used. Either way the receipt names the file and its digest.
+    if mecklenburg_taxpayers is None:
+        staged = collect_mecklenburg_staging(factory_run, output)
+        if staged:
+            mecklenburg_taxpayers = Path(staged["path"])
+        receipt["mecklenburg_staging"] = staged
+    else:
+        receipt["mecklenburg_staging"] = {"path": str(mecklenburg_taxpayers), "supplied_by": "caller",
+                                          "sha256": sha256_file(mecklenburg_taxpayers)}
     if mecklenburg_taxpayers:
         cmd += ["--mecklenburg-taxpayers", str(mecklenburg_taxpayers)]
     _step(receipt, "1_enrich", cmd, ENGINE_ROOT, [enriched])
