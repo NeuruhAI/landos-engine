@@ -87,6 +87,10 @@ QUEUE_CONTACT_STATUS = {
     Q_ESTATE_ID_FOUND: "IDENTITY RESOLVED — NO PHONE",
     Q_SOS_ID_REQUIRED: "NEEDS SOS / ENTITY IDENTITY",
     Q_ENTITY_PRINCIPAL_FOUND: "IDENTITY RESOLVED — NO PHONE",
+    # v3 arrivals. Without these two, the route refresh wrote a blank status for
+    # every row it moved here while every other queue carried a label.
+    Q_ENTITY_ID_FOUND: "ENTITY IDENTIFIED — NO PHONE",
+    Q_MANUAL_SOURCE: "MANUAL SOURCE REQUIRED",
     Q_TRUSTEE_REQUIRED: "NEEDS TRUSTEE IDENTITY",
     Q_TRUSTEE_FOUND: "TRUSTEE IDENTIFIED",
     Q_TIER_C_REVIEW: "TIER_C REVIEW",
