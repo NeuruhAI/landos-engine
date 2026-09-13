@@ -108,3 +108,17 @@ def test_a_single_lucky_hit_does_not_outrank_a_hundred_attempts():
                 "confidence": "HIGH", "manual": False} for _ in range(100)])
     ranked = rank_sources(build_yield(rows), "county", "C")
     assert [r["source"] for r in ranked] == ["STEADY", "LUCKY"]
+
+
+def test_every_queue_the_router_can_reach_has_a_contact_status():
+    """The refresh writes QUEUE_CONTACT_STATUS[queue] as the panel's status.
+    A queue the router can emit but the vocabulary does not name lands as a
+    blank status on every row routed there."""
+    from app.resolution import router as r
+
+    reachable = {
+        getattr(r, name) for name in dir(r)
+        if name.startswith("Q_") and isinstance(getattr(r, name), str)
+    }
+    missing = {q for q in reachable if not r.QUEUE_CONTACT_STATUS.get(q)}
+    assert missing == set()
