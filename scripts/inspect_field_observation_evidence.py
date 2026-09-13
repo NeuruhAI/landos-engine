@@ -23,7 +23,7 @@ def main():
     migration_sha=hashlib.sha256(MIGRATION.read_bytes()).hexdigest()
     try:
         # ONE authority: app.config resolves DEEDSONAR_DATABASE_URL first and refuses the retired spine.
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        sys.path.append(str(Path(__file__).resolve().parents[1]))
         from app.config import DATABASE_URL
         if not DATABASE_URL: return fail('DB_CONFIGURATION_UNAVAILABLE')
         import psycopg
