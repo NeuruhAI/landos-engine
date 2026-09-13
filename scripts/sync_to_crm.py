@@ -471,6 +471,67 @@ LEAD_PAGE_SQL = """select lead_id, owner_name, situs_lat, situs_lng, skip_trace_
                limit %s"""
 
 
+def _fetch_page_context(cur, ids):
+    """The per-page lookups the projection needs (scores, kin, tax-sale valuation) for
+    exactly the owner_leads in `ids`. Runs inside the page's try so a fetch failure
+    (e.g. a lock conflict with concurrent DDL) is checkpointed like any other page error."""
+    # latest composite score per lead — for the score_* projection (one-way,
+    # landos -> CRM). NULL components stay NULL (arbitrage = "no comps yet", not 0).
+    cur.execute("""
+        with latest as (
+          select distinct on (identity_node_id) identity_node_id, score,
+                 owner_component, distress_component, arbitrage_component,
+                 top_factors, weights_version, inputs_snapshot, computed_at
+          from landos.scores where tenant_id = %s
+          order by identity_node_id, computed_at desc)
+        select ol.lead_id, l.score, l.owner_component, l.distress_component,
+               l.arbitrage_component, l.top_factors, l.weights_version,
+               l.inputs_snapshot, l.computed_at
+        from landos.owner_leads ol
+        join landos.identity_nodes n on n.tenant_id = %s and n.parcel_apn = ol.parcel_apn
+        join latest l on l.identity_node_id = n.id
+        where ol.tenant_id = %s and not ol.discovery_seed
+          and ol.lead_id = any(%s)""",
+        (TENANT, TENANT, TENANT, ids))
+    scores = {row["lead_id"]: row for row in cur.fetchall()}
+
+    # kin / heirs (contact_relations) for the Jarvis brief — sparse (MISSING -> []).
+    cur.execute("""
+        select cr.owner_lead_id, cr.relative_name, cr.relationship, cr.is_heir
+        from landos.contact_relations cr
+        join landos.owner_leads ol on ol.lead_id = cr.owner_lead_id
+        where ol.tenant_id = %s and not ol.discovery_seed
+          and cr.owner_lead_id = any(%s)""", (TENANT, ids))
+    kin_map = defaultdict(list)
+    for kr in cur.fetchall():
+        kin_map[kr["owner_lead_id"]].append(
+            {"name": kr["relative_name"], "relationship": kr["relationship"],
+             "is_heir": kr["is_heir"]})
+
+    # Phase B b1: tax-sale valuation provenance per lead (sev, min_bid,
+    # current_tax) from its matched taxsale signals — the source of the equity
+    # the CRM displays. Keyed by owner_leads.lead_id (= acquisition_leads.source_lead_id).
+    # guarded cast: raw_payload amounts vary — "TBA" (pending TX sales) and
+    # dollar/comma-formatted ("$23.02"). Strip $ , and spaces, then regex-match a
+    # number or yield NULL — never crash, never coerce garbage.
+    _num = lambda expr: (f"(case when regexp_replace({expr}, '[$, ]', '', 'g') ~ '^-?[0-9]+(\\.[0-9]+)?$' "
+                         f"then regexp_replace({expr}, '[$, ]', '', 'g')::numeric end)")
+    _minbid = "coalesce(ds.raw_payload->>'min_bid', ds.raw_payload->>'minimum_bid')"
+    cur.execute(f"""
+        select ol.lead_id, left(ol.county_fips, 2) as st,
+               max({_num("ds.raw_payload->>'sev'")})          as sev,
+               min({_num(_minbid)})                            as min_bid,
+               max({_num("ds.raw_payload->>'current_tax'")})  as current_tax
+        from landos.owner_leads ol
+        join landos.discovery_signals ds
+          on ds.matched_lead_id = ol.lead_id and ds.source_type = 'taxsale'
+        where ol.tenant_id = %s and not ol.discovery_seed
+          and ol.lead_id = any(%s)
+        group by ol.lead_id, left(ol.county_fips, 2)""", (TENANT, ids))
+    valuation = {row["lead_id"]: row for row in cur.fetchall()}
+    return scores, kin_map, valuation
+
+
 def main(dry_run: bool = False, lead_ids=None, batch_size=None, checkpoint_path=None,
          resume=False, max_batches=None, rss_envelope_bytes=DEFAULT_RSS_ENVELOPE_BYTES) -> None:
     lead_filter = list(lead_ids) if lead_ids else None
@@ -546,62 +607,8 @@ def main(dry_run: bool = False, lead_ids=None, batch_size=None, checkpoint_path=
             ids = [r["lead_id"] for r in leads]
             s0 = _snap()
 
-            # latest composite score per lead — for the score_* projection (one-way,
-            # landos -> CRM). NULL components stay NULL (arbitrage = "no comps yet", not 0).
-            cur.execute("""
-                with latest as (
-                  select distinct on (identity_node_id) identity_node_id, score,
-                         owner_component, distress_component, arbitrage_component,
-                         top_factors, weights_version, inputs_snapshot, computed_at
-                  from landos.scores where tenant_id = %s
-                  order by identity_node_id, computed_at desc)
-                select ol.lead_id, l.score, l.owner_component, l.distress_component,
-                       l.arbitrage_component, l.top_factors, l.weights_version,
-                       l.inputs_snapshot, l.computed_at
-                from landos.owner_leads ol
-                join landos.identity_nodes n on n.tenant_id = %s and n.parcel_apn = ol.parcel_apn
-                join latest l on l.identity_node_id = n.id
-                where ol.tenant_id = %s and not ol.discovery_seed
-                  and ol.lead_id = any(%s)""",
-                (TENANT, TENANT, TENANT, ids))
-            scores = {row["lead_id"]: row for row in cur.fetchall()}
-
-            # kin / heirs (contact_relations) for the Jarvis brief — sparse (MISSING -> []).
-            cur.execute("""
-                select cr.owner_lead_id, cr.relative_name, cr.relationship, cr.is_heir
-                from landos.contact_relations cr
-                join landos.owner_leads ol on ol.lead_id = cr.owner_lead_id
-                where ol.tenant_id = %s and not ol.discovery_seed
-                  and cr.owner_lead_id = any(%s)""", (TENANT, ids))
-            kin_map = defaultdict(list)
-            for kr in cur.fetchall():
-                kin_map[kr["owner_lead_id"]].append(
-                    {"name": kr["relative_name"], "relationship": kr["relationship"],
-                     "is_heir": kr["is_heir"]})
-
-            # Phase B b1: tax-sale valuation provenance per lead (sev, min_bid,
-            # current_tax) from its matched taxsale signals — the source of the equity
-            # the CRM displays. Keyed by owner_leads.lead_id (= acquisition_leads.source_lead_id).
-            # guarded cast: raw_payload amounts vary — "TBA" (pending TX sales) and
-            # dollar/comma-formatted ("$23.02"). Strip $ , and spaces, then regex-match a
-            # number or yield NULL — never crash, never coerce garbage.
-            _num = lambda expr: (f"(case when regexp_replace({expr}, '[$, ]', '', 'g') ~ '^-?[0-9]+(\\.[0-9]+)?$' "
-                                 f"then regexp_replace({expr}, '[$, ]', '', 'g')::numeric end)")
-            _minbid = "coalesce(ds.raw_payload->>'min_bid', ds.raw_payload->>'minimum_bid')"
-            cur.execute(f"""
-                select ol.lead_id, left(ol.county_fips, 2) as st,
-                       max({_num("ds.raw_payload->>'sev'")})          as sev,
-                       min({_num(_minbid)})                            as min_bid,
-                       max({_num("ds.raw_payload->>'current_tax'")})  as current_tax
-                from landos.owner_leads ol
-                join landos.discovery_signals ds
-                  on ds.matched_lead_id = ol.lead_id and ds.source_type = 'taxsale'
-                where ol.tenant_id = %s and not ol.discovery_seed
-                  and ol.lead_id = any(%s)
-                group by ol.lead_id, left(ol.county_fips, 2)""", (TENANT, ids))
-            valuation = {row["lead_id"]: row for row in cur.fetchall()}
-
             try:
+                scores, kin_map, valuation = _fetch_page_context(cur, ids)
                 for r in leads:
                     # DNC GATE (compliance, hard): only explicit `clear` can project a
                     # phone. Unknown/unchecked/NULL are not permission.
