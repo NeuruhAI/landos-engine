@@ -8,17 +8,32 @@ start and tells you exactly which variable is wrong — instead of crashing
 later with a confusing error.
 """
 import os
+from typing import Mapping, Optional
+
 from dotenv import load_dotenv
+
+from .contact_authority import CANONICAL_REF, RETIRED_REFS
 
 # Reads the .env file sitting next to this project and loads each line
 # (KEY=value) into the environment so os.environ can see them.
 load_dotenv()
 
+# A deliberate forensic READ of the retired spine (parity checks) sets this to 1.
+# Nothing in production sets it; without it the legacy project cannot become the
+# engine's database at all.
+ALLOW_LEGACY_SPINE_VAR = "LANDOS_ALLOW_LEGACY_SPINE"
 
-def _require(name: str) -> str:
+
+def _is_set(v: Optional[str]) -> bool:
+    if not v:
+        return False
+    return not v.startswith("replace") and "[YOUR-PASSWORD]" not in v
+
+
+def _require(name: str, env: Optional[Mapping[str, str]] = None) -> str:
     """Return the env var, or raise a clear error if it's missing/placeholder."""
-    v = os.environ.get(name)
-    if not v or v.startswith("replace") or "[YOUR-PASSWORD]" in v:
+    v = (os.environ if env is None else env).get(name)
+    if v is None or not _is_set(v):
         raise RuntimeError(
             f"Environment variable {name} is missing or still set to the "
             f"placeholder. Open the .env file in this folder and set a real value."
@@ -26,27 +41,48 @@ def _require(name: str) -> str:
     return v
 
 
-def _require_canonical_database() -> str:
+def refuse_legacy_spine(dsn: str, env: Mapping[str, str]) -> None:
+    """The retired spine may not be the engine's database (T4 topology, 2026-09-13).
+
+    Before this guard a stale DATABASE_URL was a silent path back to lvdi: the
+    scorer kept writing lvdi landos.scores for four days after the cutover
+    (efxo 5,230 vs lvdi 5,277). The DSN, PGHOST and PGUSER are all checked.
+    """
+    blob = " ".join([dsn, env.get("PGHOST", ""), env.get("PGUSER", "")]).lower()
+    for ref, why in RETIRED_REFS.items():
+        if ref in blob:
+            if (env.get(ALLOW_LEGACY_SPINE_VAR) or "").strip() == "1":
+                return
+            raise RuntimeError(
+                f"LEGACY_SPINE_REFUSED: the engine database resolved to {ref} ({why}). "
+                f"Production is {CANONICAL_REF}: set DEEDSONAR_DATABASE_URL to that DSN. "
+                f"A deliberate forensic READ of the legacy spine must set "
+                f"{ALLOW_LEGACY_SPINE_VAR}=1.")
+
+
+def resolve_engine_database_url(env: Optional[Mapping[str, str]] = None) -> str:
     """Resolve the engine DB from the canonical DeedSonar DSN first.
 
     Since the 2026-09-10 production cutover, efxowqudmsfqjmbeidjc is the
     single production authority for both the DeedSonar CRM tables and the
     LandOS schema used by sync_to_crm. Prefer DEEDSONAR_DATABASE_URL so a
     stale legacy DATABASE_URL cannot silently keep the engine on lvdi.
-    The legacy value remains a backwards-compatible fallback only when the
-    canonical variable is genuinely absent; the runtime write guards still
-    refuse the retired lvdi project.
+    The legacy-named DATABASE_URL is a fallback only when the canonical
+    variable is genuinely absent — and whichever variable wins, the retired
+    lvdi project is refused (refuse_legacy_spine).
     """
-    canonical = os.environ.get("DEEDSONAR_DATABASE_URL")
-    if canonical and not canonical.startswith("replace") and "[YOUR-PASSWORD]" not in canonical:
-        return canonical
-    return _require("DATABASE_URL")
+    if env is None:
+        env = os.environ
+    canonical = env.get("DEEDSONAR_DATABASE_URL")
+    dsn = canonical if canonical is not None and _is_set(canonical) else _require("DATABASE_URL", env)
+    refuse_legacy_spine(dsn, env)
+    return dsn
 
 
 # The ONE canonical production Postgres connection string.
 # DEEDSONAR_DATABASE_URL wins over the historical DATABASE_URL so the engine,
 # sync_to_crm, and contact tooling converge on the same efxo production authority.
-DATABASE_URL = _require_canonical_database()
+DATABASE_URL = resolve_engine_database_url()
 
 # The shared secret APG must send in the X-LANDOS-SECRET header to call us.
 LANDOS_SECRET = _require("LANDOS_SECRET")
