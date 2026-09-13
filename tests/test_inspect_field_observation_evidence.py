@@ -11,7 +11,8 @@ def test_fixed_scope_and_no_mutation_queries():
         assert word not in SOURCE.upper().replace('TRANSACTION READ ONLY','')
 
 def test_missing_configuration_fails_closed():
-    p=subprocess.run([sys.executable,str(SCRIPT)],cwd=SCRIPT.parents[1],env={'PATH':'/usr/bin:/bin'},capture_output=True,text=True)
+    # both DB variables pinned empty: the checkout's .env (loaded by app.config) may not fill them behind the test
+    p=subprocess.run([sys.executable,str(SCRIPT)],cwd=SCRIPT.parents[1],env={'PATH':'/usr/bin:/bin','DEEDSONAR_DATABASE_URL':'','DATABASE_URL':''},capture_output=True,text=True)
     assert p.returncode != 0
     out=json.loads(p.stdout); assert out['ok'] is False and out['error_code'] in {'DB_CONFIGURATION_UNAVAILABLE','DB_CONNECTION_FAILED'}
 

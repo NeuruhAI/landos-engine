@@ -22,7 +22,9 @@ def main():
     if not MIGRATION.is_file(): return fail('MIGRATION_FILE_NOT_FOUND')
     migration_sha=hashlib.sha256(MIGRATION.read_bytes()).hexdigest()
     try:
-        DATABASE_URL=__import__('os').environ.get('DATABASE_URL')
+        # ONE authority: app.config resolves DEEDSONAR_DATABASE_URL first and refuses the retired spine.
+        sys.path.append(str(Path(__file__).resolve().parents[1]))
+        from app.config import DATABASE_URL
         if not DATABASE_URL: return fail('DB_CONFIGURATION_UNAVAILABLE')
         import psycopg
     except Exception:return fail('DB_CONFIGURATION_UNAVAILABLE')
