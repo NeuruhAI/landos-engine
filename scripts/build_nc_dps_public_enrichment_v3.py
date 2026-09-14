@@ -294,6 +294,11 @@ def run(
             if str(row.get("county_fips") or "") != "37119"
         ] + reused_meck
     combined.sort(key=lambda r: (str(r.get("county_fips") or ""), str(r.get("parcel_apn") or "")))
+    # One row per parcel is this stage's contract; export refuses a repeated key
+    # anyway, but only here can the refusal name the stage that made it.
+    dupes = core.duplicate_parcel_keys(combined)
+    if dupes:
+        raise SystemExit(f"enrichment refuses {len(dupes)} repeated (county_fips, parcel_apn) keys: {dupes[:10]}")
     core.write_csv(output_dir / "LANDOS_ENRICHED_OPPORTUNITIES.csv", combined)
 
     summary = {
@@ -313,6 +318,7 @@ def run(
         "equity_status": "UNKNOWN_UNTIL_DEBT_INSTRUMENT_SEARCH",
         "contact_authorized": False,
         "source_errors": fresh_summary.get("source_errors", []),
+        "onemap_keys_claimed_by_several_records": fresh_summary.get("onemap_keys_claimed_by_several_records", {}),
         "onemap_transport": "POST",
         "onemap_service": ONEMAP,
         "output": str(output_dir / "LANDOS_ENRICHED_OPPORTUNITIES.csv"),
