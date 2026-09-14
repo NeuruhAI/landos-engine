@@ -32,14 +32,11 @@ def run(signals_path: Path, meck_path: Path | None, output_dir: Path) -> dict[st
 
     parcel_context: dict[tuple[str, str], dict[str, Any]] = {}
     source_errors: list[str] = []
+    multi_claimed: dict[str, int] = {}
     for fips, ids in sorted(desired.items()):
         try:
             records = core.query_ids(fips, sorted(ids))
-            for record in records:
-                for field in ("parno", "altparno"):
-                    key = core.norm_parcel(record.get(field))
-                    if key:
-                        parcel_context[(fips, key)] = record
+            multi_claimed[fips] = core.index_parcel_context(parcel_context, fips, records)
             print(f"ONEMAP_{fips}_MATCHED_RECORDS={len(records)}")
         except Exception as exc:
             source_errors.append(f"{fips}:{type(exc).__name__}:{exc}")
@@ -57,12 +54,8 @@ def run(signals_path: Path, meck_path: Path | None, output_dir: Path) -> dict[st
             matches = core.scan_county_for_owners("37119", target_names)
             meck_signals, meck_unresolved_report = core.build_mecklenburg_signals(meck, matches)
             signals.extend(meck_signals)
-            for candidates in matches.values():
-                for record in candidates:
-                    for field in ("parno", "altparno"):
-                        key = core.norm_parcel(record.get(field))
-                        if key:
-                            parcel_context[("37119", key)] = record
+            multi_claimed["37119-owner-match"] = core.index_parcel_context(
+                parcel_context, "37119", [record for candidates in matches.values() for record in candidates])
         except Exception as exc:
             source_errors.append(f"37119-owner-match:{type(exc).__name__}:{exc}")
             print(f"MECK_ONEMAP_ERROR={exc}")
@@ -90,6 +83,7 @@ def run(signals_path: Path, meck_path: Path | None, output_dir: Path) -> dict[st
         "equity_status": "UNKNOWN_UNTIL_DEBT_INSTRUMENT_SEARCH",
         "contact_authorized": False,
         "source_errors": source_errors,
+        "onemap_keys_claimed_by_several_records": multi_claimed,
         "output": str(output_dir / "LANDOS_ENRICHED_OPPORTUNITIES.csv"),
     }
     (output_dir / "LANDOS_ENRICHMENT_SUMMARY.json").write_text(

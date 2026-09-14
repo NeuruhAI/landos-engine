@@ -148,6 +148,16 @@ def scan_county_for_owners(fips: str, target_owners: set[str]) -> dict[str, list
     return matches
 
 
+# A county roll with no sale on record still fills its sale-date column:
+# 12/30/1899 is OLE-automation day 0 (Durham), 1/1/1900 is spreadsheet day 1
+# (Union), 1900-01-01 an ArcGIS date at that day (Mecklenburg). Read as dates,
+# every such parcel was "owned 126 years" and earned ownership_20_plus_years in
+# the ranker. On the 2026-09-13 factory run all 1,830 sale dates on or before
+# 1900-01-01 were one of those three values; the next earliest was 1921. A
+# placeholder is no sale date, so years_owned stays UNKNOWN.
+NO_SALE_ON_RECORD_BEFORE = date(1900, 1, 2)
+
+
 def parse_years_owned(value: Any) -> int | None:
     text = str(value or "").strip()
     if not text:
@@ -166,7 +176,7 @@ def parse_years_owned(value: Any) -> int | None:
         m = re.search(r"(19|20)\d{2}", text)
         if m:
             dt = date(int(m.group(0)), 1, 1)
-    if dt is None:
+    if dt is None or dt < NO_SALE_ON_RECORD_BEFORE:
         return None
     today = date(2026, 8, 7)
     years = today.year - dt.year - ((today.month, today.day) < (dt.month, dt.day))
@@ -297,6 +307,58 @@ def build_mecklenburg_signals(
     return signals, unresolved_report
 
 
+def index_parcel_context(
+    parcel_context: dict[tuple[str, str], dict[str, Any]],
+    fips: str,
+    records: Iterable[dict[str, Any]],
+) -> int:
+    """Key each OneMap record by its parno and its altparno.
+
+    A number that is one record's parno and another record's altparno resolves
+    to the parno record (the parcel filed under that number), whatever order
+    OneMap answered in. Returns how many keys more than one record claims
+    through the same field; the last claimant keeps the key, as before.
+    """
+    by_field: dict[str, dict[str, list[dict[str, Any]]]] = {"parno": defaultdict(list), "altparno": defaultdict(list)}
+    for record in records:
+        for field in ("parno", "altparno"):
+            key = norm_parcel(record.get(field))
+            if key:
+                by_field[field][key].append(record)
+    multi_claimed = 0
+    for field in ("altparno", "parno"):  # parno last, so it wins a cross-field tie
+        for key, claimants in by_field[field].items():
+            multi_claimed += len(claimants) > 1
+            parcel_context[(fips, key)] = claimants[-1]
+    return multi_claimed
+
+
+def parcel_identity(pkey: str, raw_parcel: str, one: dict[str, Any]) -> tuple[str, str]:
+    """(parcel_apn, alternate_parcel) for the source group keyed pkey.
+
+    The identity is the parcel number the SOURCE names. When OneMap files the
+    parcel under that same number (parno), OneMap's spelling of it is kept.
+    When the source number matched OneMap's altparno instead, the two numbers
+    name different things: Durham bills each taxable unit by REID, and OneMap's
+    parno there is the PIN every condo unit on one footprint shares. Re-keying
+    to the PIN merged distinct units under one key (2026-09-13: 12 duplicate
+    37063 keys, refused at export) and moved 1,951 Durham rows off the REID the
+    DeedSonar estate keys them by. The source number stays the identity and
+    OneMap's parno rides along as alternate_parcel. Either way the emitted
+    parcel_apn normalizes to pkey, so one group is one key.
+    """
+    parno = str(one.get("parno") or "").strip()
+    if parno and norm_parcel(parno) == pkey:
+        return parno, str(one.get("altparno") or "")
+    return raw_parcel, parno
+
+
+def duplicate_parcel_keys(rows: Iterable[dict[str, Any]]) -> list[tuple[str, str]]:
+    """(county_fips, normalized parcel_apn) keys carried by more than one row."""
+    counts = Counter((str(r.get("county_fips") or ""), norm_parcel(r.get("parcel_apn"))) for r in rows)
+    return sorted(k for k, n in counts.items() if n > 1)
+
+
 def aggregate(
     signals: list[dict[str, Any]],
     parcel_context: dict[tuple[str, str], dict[str, Any]],
@@ -312,6 +374,7 @@ def aggregate(
     for (fips, pkey), sigs in groups.items():
         raw_parcel = str(sigs[0].get("parcel_apn") or "")
         one = parcel_context.get((fips, pkey), {})
+        parcel_apn, alternate_parcel = parcel_identity(pkey, raw_parcel, one)
         owner = str(one.get("ownname") or next((s.get("owner_name") for s in sigs if s.get("owner_name")), "") or "")
         site = str(one.get("siteadd") or next((s.get("raw_address") for s in sigs if s.get("raw_address")), "") or "")
         mailing = combine_mailing(one)
@@ -347,8 +410,8 @@ def aggregate(
         rows.append({
             "county": COUNTY_NAMES.get(fips, fips),
             "county_fips": fips,
-            "parcel_apn": str(one.get("parno") or raw_parcel),
-            "alternate_parcel": str(one.get("altparno") or ""),
+            "parcel_apn": parcel_apn,
+            "alternate_parcel": alternate_parcel,
             "owner_name": owner,
             "owner_name_2": str(one.get("ownname2") or ""),
             "owner_type": str(one.get("owntype") or ""),
@@ -424,11 +487,7 @@ def run(signals_path: Path, meck_path: Path | None, output_dir: Path) -> dict[st
     for fips, ids in sorted(desired.items()):
         try:
             records = query_ids(fips, sorted(ids))
-            for record in records:
-                for field in ("parno", "altparno"):
-                    key = norm_parcel(record.get(field))
-                    if key:
-                        parcel_context[(fips, key)] = record
+            index_parcel_context(parcel_context, fips, records)
             print(f"ONEMAP_{fips}_MATCHED_RECORDS={len(records)}")
         except Exception as exc:
             source_errors.append(f"{fips}:{type(exc).__name__}:{exc}")
@@ -442,12 +501,8 @@ def run(signals_path: Path, meck_path: Path | None, output_dir: Path) -> dict[st
             matches = scan_county_for_owners("37119", target_names)
             meck_signals, meck_unresolved_report = build_mecklenburg_signals(meck, matches)
             signals.extend(meck_signals)
-            for candidates in matches.values():
-                for record in candidates:
-                    for field in ("parno", "altparno"):
-                        key = norm_parcel(record.get(field))
-                        if key:
-                            parcel_context[("37119", key)] = record
+            index_parcel_context(parcel_context, "37119",
+                                 [record for candidates in matches.values() for record in candidates])
         except Exception as exc:
             source_errors.append(f"37119-owner-match:{type(exc).__name__}:{exc}")
             print(f"MECK_ONEMAP_ERROR={exc}")
