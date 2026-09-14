@@ -400,8 +400,15 @@ def aggregate(
             if isinstance(value, list):
                 cases.extend(str(x) for x in value if x)
         cases = sorted(set(cases))
-        heir = heir_flag(owner, sigs)
-        fragmented = fragmented_flag(owner)
+        # The owner column prefers OneMap's current ownname, but the heir and
+        # co-ownership proxies read every owner text a county record gave us.
+        # OneMap's ownname drops the co-owner "&" in Wake ("LEACH, SHELIA LEACH,
+        # HILLERY O" for the bill's "LEACH, SHELIA & LEACH, HILLERY O") and the
+        # HEIRS suffix in Durham; read alone it erased 686 Wake co-ownerships of
+        # the same people on the 2026-09-13 run.
+        source_owners = sorted({str(s.get("owner_name")) for s in sigs if s.get("owner_name")})
+        heir = heir_flag(owner, sigs) or any(heir_flag(o, []) for o in source_owners)
+        fragmented = fragmented_flag(owner) or any(fragmented_flag(o) for o in source_owners)
         assessed_less_tax = assessed - tax_balance if assessed is not None and tax_balance is not None else None
         tax_ratio = tax_balance / assessed if assessed and tax_balance is not None else None
         matched = bool(one)

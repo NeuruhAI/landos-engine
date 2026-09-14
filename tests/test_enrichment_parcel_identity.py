@@ -119,6 +119,40 @@ class PlaceholderSaleDateTests(unittest.TestCase):
                             if r["last_sale_date"].startswith("12/30/1899")))
 
 
+class OwnerEvidenceTests(unittest.TestCase):
+    """The heir / co-ownership proxies read the bill's owner text as well as
+    OneMap's ownname (run through the strict classifiers v3 installs)."""
+
+    def _row(self, bill_owner, onemap_owner):
+        signal = {"geography": "37183", "parcel_apn": "0000000001", "owner_name": bill_owner,
+                  "source_type": "taxdelinquent", "detail_json": {}}
+        context = {("37183", "0000000001"): {"parno": "0000000001", "ownname": onemap_owner}}
+        with mock.patch.object(core, "heir_flag", v3.heir_flag_strict), \
+                mock.patch.object(core, "fragmented_flag", v3.fragmented_flag_strict):
+            return core.aggregate([signal], context)[0]
+
+    def test_onemap_dropping_the_co_owner_ampersand_keeps_co_ownership(self):
+        # Wake shape: the bill "LAST, A & LAST, B", OneMap "LAST, A LAST, B".
+        row = self._row("DOE, JANE & DOE, JOHN", "DOE, JANE DOE, JOHN")
+        self.assertEqual(row["owner_name"], "DOE, JANE DOE, JOHN")
+        self.assertTrue(row["fragmented_ownership_indicator"])
+
+    def test_onemap_dropping_heirs_keeps_the_heir_signal(self):
+        # Durham shape: the bill "JOHN Q DOE HEIRS", OneMap "DOE, JOHN Q".
+        self.assertTrue(self._row("JOHN Q DOE HEIRS", "DOE, JOHN Q")["heir_indicator"])
+
+    def test_onemap_only_evidence_still_counts(self):
+        self.assertTrue(self._row("DOE JOHN", "DOE JOHN HEIRS")["heir_indicator"])
+
+    def test_no_evidence_in_either_text_stays_false(self):
+        row = self._row("DOE, JOHN", "DOE, JOHN")
+        self.assertFalse(row["heir_indicator"])
+        self.assertFalse(row["fragmented_ownership_indicator"])
+
+    def test_institutional_ampersand_is_not_co_ownership(self):
+        self.assertFalse(self._row("SMITH & JONES LLC", "SMITH JONES LLC")["fragmented_ownership_indicator"])
+
+
 class V3RefusesRepeatedKeysTests(unittest.TestCase):
     def test_a_repeated_key_is_refused_before_the_csv_is_written(self):
         row = {"county_fips": "37063", "parcel_apn": "0718075776", "owner_name": "A",
