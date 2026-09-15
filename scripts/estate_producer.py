@@ -27,22 +27,41 @@ with ranks from that slice. Per-row score, tier, class and recipe do not
 depend on the universe, so they pass. --full-universe keeps global_rank, and
 the caller asserts the run covers the whole estate.
 
+--universe <prior full-universe ranking input> is how a factory run reaches
+the WHOLE estate. The prior universe is the ranking input behind the receipts
+production currently carries. Every property in it is ranked on its freshest
+facts (this run's enrichment row when the factory covered it, else the prior
+row unchanged), and every fresh property the prior universe did not hold is
+ADDED to it. Without the second half, a revise ADD lands unranked and stays
+unranked ("Not projected", sorted last) until someone re-ranks by hand.
+One ranking run then produces both artifacts:
+
+    2b project recipe-engine  scripts.project_deedsonar_receiver -> the receipts
+               stage for recipe_engine_receipts_apply_v1(true, <universe rows>)
+    5  revise  rows that KEEP global_rank, so the estate's list rank IS the
+               engine's global rank for the same run (asserted row by row)
+
     python -m scripts.estate_producer --factory-run <landos-ingest run dir> \\
         --output <dir> --recipe-engine <path> --deedsonar <path> \\
+        [--universe <prior FULL_UNIVERSE_RANKING_INPUT.csv>] \\
         [--mecklenburg-taxpayers F] [--full-universe] [--allow-dirty]
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from scripts.export_opportunities import property_key as export_property_key
 
 PRODUCER_VERSION = "estate_producer.v1"
 REVISE_SOURCE = "landos_estate_producer"
@@ -57,6 +76,13 @@ COORDS_HEADER = ("canonical_property_key,latitude,longitude,coordinate_class,coo
 REVISE_KEYS = ("property_key", "source_row_id", "county_fips", "parcel_apn", "candidate_class",
                "normalized", "source_as_of", "opportunity_score", "priority_tier",
                "primary_recipe", "signals", "recommended_action", "global_rank")
+
+# Identity a carried universe row keeps, so receipts and revise bind to the same
+# estate rows the prior run bound to. Facts are the fresh row's; identity is not.
+UNIVERSE_IDENTITY = ("property_key", "source_row_id", "candidate_id", "county_fips", "parcel_apn")
+UNIVERSE_INPUT_NAME = "FULL_UNIVERSE_RANKING_INPUT.csv"
+RECEIVER_PROJECTION_NAME = "DEEDSONAR_RECEIVER_PROJECTION.csv"
+MEMBERSHIP_PROJECTION_NAME = "DEEDSONAR_MEMBERSHIP_PROJECTION.csv"
 
 
 class ProducerError(RuntimeError):
@@ -132,6 +158,123 @@ def collect_mecklenburg_staging(factory_run: Path, output: Path) -> dict[str, An
             "from": {str(f): sha256_file(f) for f in files}}
 
 
+def universe_key(county_fips: Any, parcel_apn: Any) -> tuple[str, str]:
+    """(county_fips, parcel number with every non-alphanumeric dropped, upper-cased):
+    the key enrichment is unique on and the receipts apply joins on."""
+    return (str(county_fips or "").strip(), re.sub(r"[^A-Z0-9]", "", str(parcel_apn or "").upper()))
+
+
+def _read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        return list(reader.fieldnames or []), list(reader)
+
+
+def assemble_universe(prior: Path, fresh: Path, out: Path) -> dict[str, Any]:
+    """The full ranking universe for one run, written to `out`. Scores nothing.
+
+    * every prior-universe property, on the fresh enrichment row when this run
+      covered it, else on its prior row unchanged; identity always from the prior
+      row, so receipts and revise bind to the estate rows they bound to before;
+    * every fresh property the prior universe did not hold, appended in key order
+      with its own identity (a new estate row this run's revise ADDs).
+
+    A key repeated on either side is refused: one row per property is the
+    contract enrichment, the ranker and the receipts apply all rely on."""
+    prior_cols, prior_rows = _read_csv(prior)
+    fresh_cols, fresh_rows = _read_csv(fresh)
+    missing = [c for c in ("county_fips", "parcel_apn") if c not in prior_cols or c not in fresh_cols]
+    if missing:
+        raise ProducerError(f"universe inputs lack identity columns {missing}")
+
+    fresh_by_key: dict[tuple[str, str], dict[str, str]] = {}
+    for row in fresh_rows:
+        key = universe_key(row["county_fips"], row["parcel_apn"])
+        if not all(key):
+            raise ProducerError(f"fresh enrichment row without county/parcel identity: {row.get('parcel_apn')!r}")
+        if key in fresh_by_key:
+            raise ProducerError(f"fresh enrichment repeats property {key}")
+        fresh_by_key[key] = row
+
+    cols = list(fresh_cols) + [c for c in prior_cols if c not in fresh_cols]
+    for c in UNIVERSE_IDENTITY:
+        if c not in cols:
+            cols.append(c)
+    seen: set[tuple[str, str]] = set()
+    out_rows: list[dict[str, str]] = []
+    on_fresh = carried = 0
+    for old in prior_rows:
+        key = universe_key(old["county_fips"], old["parcel_apn"])
+        if key in seen:
+            raise ProducerError(f"prior universe repeats property {key}")
+        seen.add(key)
+        src = fresh_by_key.get(key)
+        if src is None:
+            row = {c: old.get(c, "") for c in cols}
+            carried += 1
+        else:
+            row = {c: src.get(c, "") for c in cols}
+            on_fresh += 1
+        for c in UNIVERSE_IDENTITY:
+            row[c] = old.get(c, "")
+        out_rows.append(row)
+    added_keys = sorted(k for k in fresh_by_key if k not in seen)
+    for key in added_keys:
+        src = fresh_by_key[key]
+        row = {c: src.get(c, "") for c in cols}
+        # A new property's identity is the one the export gives it and the estate ADDs it under
+        # (source_row_id = property_key); the receipts projection refuses a row without it.
+        row["property_key"] = row["property_key"] or export_property_key(src)
+        row["source_row_id"] = row["source_row_id"] or row["property_key"]
+        out_rows.append(row)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=cols)
+        writer.writeheader()
+        writer.writerows(out_rows)
+    return {
+        "contract": "landos.full-universe-ranking-input.v2",
+        "prior": {"path": str(prior), "sha256": sha256_file(prior), "rows": len(prior_rows)},
+        "fresh": {"path": str(fresh), "sha256": sha256_file(fresh), "rows": len(fresh_rows)},
+        "output": {"path": str(out), "sha256": sha256_file(out), "rows": len(out_rows), "columns": len(cols)},
+        "rows_on_fresh_facts": on_fresh,
+        "rows_on_prior_facts": carried,
+        "rows_added_from_fresh": len(added_keys),
+        "added_sample": [f"NC:{k[0]}:{fresh_by_key[k]['parcel_apn']}" for k in added_keys[:10]],
+    }
+
+
+def one_ranking_court(rows: list[dict[str, Any]], projection: Path, universe_rows: int) -> dict[str, Any]:
+    """The estate's list rank and the engine's global rank must be the same number
+    from the same run, on every row, over the same universe. Refuses otherwise."""
+    _, proj = _read_csv(projection)
+    run_ids = {r.get("ranking_run_id") for r in proj}
+    if len(run_ids) != 1:
+        raise ProducerError(f"receiver projection carries {len(run_ids)} ranking runs, not one")
+    engine_rank: dict[tuple[str, str], int] = {}
+    for r in proj:
+        key = universe_key(r["county_fips"], r["parcel_apn"])
+        if key in engine_rank:
+            raise ProducerError(f"receiver projection repeats property {key}")
+        engine_rank[key] = int(r["global_rank"])
+    if not (len(rows) == len(proj) == universe_rows):
+        raise ProducerError(f"one universe required: revise rows {len(rows)}, projection {len(proj)}, "
+                            f"universe {universe_rows}")
+    ranks = sorted(engine_rank.values())
+    if ranks != list(range(1, len(ranks) + 1)):
+        raise ProducerError("engine global ranks are not 1..N")
+    disagree = []
+    for r in rows:
+        want = engine_rank.get(universe_key(r["county_fips"], r["parcel_apn"]))
+        if want is None or r.get("global_rank") != want:
+            disagree.append(r["property_key"])
+    if disagree:
+        raise ProducerError(f"{len(disagree)} revise rows carry a list rank that is not the engine's "
+                            f"global rank (first {disagree[:3]})")
+    return {"ranking_run_id": run_ids.pop(), "rows": len(rows), "list_rank_equals_engine_rank": len(rows)}
+
+
 def revise_rows(payload: dict[str, Any], *, full_universe: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The payload's rows, cut to the revise contract. global_rank is nulled
     unless the caller asserts a full-estate universe (see module docstring)."""
@@ -170,18 +313,44 @@ def _step(receipt: dict[str, Any], name: str, cmd: list[str], cwd: Path, outputs
     entry["outputs"] = {str(p): sha256_file(p) for p in outputs}
 
 
+class DegradedEnrichment(ProducerError):
+    """The enrichment ran but a source failed (e.g. OneMap unreachable), so its output is partial."""
+
+
+def enrichment_check(enrich_dir: Path, *, allow_degraded: bool) -> dict[str, Any]:
+    """The enrichment exits 0 even when a source fails: it records the failure in its summary's
+    source_errors and emits what it has (2026-09-15: a DNS failure on the Mecklenburg owner match
+    dropped 1,895 of 8,333 properties, exit 0). A partial enrichment is never produced silently."""
+    summary_path = enrich_dir / "LANDOS_ENRICHMENT_SUMMARY.json"
+    if not summary_path.exists():
+        raise ProducerError(f"enrichment wrote no {summary_path.name}; its source errors cannot be checked")
+    errors = json.loads(summary_path.read_text()).get("source_errors") or []
+    checked = {"summary_sha256": sha256_file(summary_path), "source_errors": errors,
+               "degraded_allowed": bool(errors and allow_degraded)}
+    if errors and not allow_degraded:
+        raise DegradedEnrichment(f"enrichment degraded: {len(errors)} source error(s), first {str(errors[0])[:200]!r} "
+                                 "(--allow-degraded to produce anyway)")
+    return checked
+
+
 def produce(factory_run: Path, output: Path, *, recipe_engine: Path, deedsonar: Path,
             recipe_python: str, node: str, mecklenburg_taxpayers: Path | None,
-            full_universe: bool, allow_dirty: bool, now: datetime | None = None) -> dict[str, Any]:
+            full_universe: bool, allow_dirty: bool, universe: Path | None = None,
+            allow_degraded: bool = False, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc).replace(microsecond=0)
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     output.mkdir(parents=True, exist_ok=True)
+    if universe is not None and not universe.is_file():
+        raise ProducerError(f"--universe {universe} is not a file")
+    keep_rank = full_universe or universe is not None
     receipt: dict[str, Any] = {
         "producer_version": PRODUCER_VERSION, "started_at": now.isoformat(),
         "writes_database": False,
         "repos": {"landos-engine": git_state(ENGINE_ROOT), "recipe-engine": git_state(recipe_engine),
                   "deedsonar": git_state(deedsonar)},
-        "global_rank_policy": "KEEP (caller asserts full universe)" if full_universe
+        "global_rank_policy": ("KEEP (full universe = prior universe + this run's properties; "
+                               "list rank == engine global rank, asserted)") if universe is not None
+                              else "KEEP (caller asserts full universe)" if full_universe
                               else "WITHHELD (partial universe; ranking authority = a full recipe-engine re-rank)",
         "steps": [],
     }
@@ -213,10 +382,26 @@ def produce(factory_run: Path, output: Path, *, recipe_engine: Path, deedsonar: 
     if mecklenburg_taxpayers:
         cmd += ["--mecklenburg-taxpayers", str(mecklenburg_taxpayers)]
     _step(receipt, "1_enrich", cmd, ENGINE_ROOT, [enriched])
+    receipt["enrichment"] = enrichment_check(enrich_dir, allow_degraded=allow_degraded)
+
+    rank_input = enriched
+    if universe is not None:
+        rank_input = output / "01b_universe" / UNIVERSE_INPUT_NAME
+        receipt["universe"] = assemble_universe(universe, enriched, rank_input)
 
     ranked = rank_dir / "NC_CURATIVE_ALL.csv"
     _step(receipt, "2_rank", [recipe_python, "-m", "scripts.rank_nc_curative_raw_v3",
-                              "--input", str(enriched), "--output", str(rank_dir)], recipe_engine, [ranked])
+                              "--input", str(rank_input), "--output", str(rank_dir)], recipe_engine, [ranked])
+
+    projection = None
+    if universe is not None:
+        proj_dir = output / "02b_projection"
+        projection = proj_dir / RECEIVER_PROJECTION_NAME
+        # ranking_run_id = ranking_run_<run date>_<sha256(universe input)[:12]>, stamped by recipe-engine.
+        _step(receipt, "2b_project", [recipe_python, "-m", "scripts.project_deedsonar_receiver",
+                                      "--ranked", str(ranked), "--input", str(rank_input),
+                                      "--output-dir", str(proj_dir), "--run-date", now.strftime("%Y%m%d")],
+              recipe_engine, [projection, proj_dir / MEMBERSHIP_PROJECTION_NAME])
 
     _step(receipt, "3_export", [sys.executable, "-m", "scripts.export_opportunities",
                                 "--source", str(ranked), "--output", str(export_dir), "--scope", "full",
@@ -242,7 +427,18 @@ def produce(factory_run: Path, output: Path, *, recipe_engine: Path, deedsonar: 
           deedsonar, [payload_path])
     payload = json.loads(payload_path.read_text())
 
-    rows, stats = revise_rows(payload, full_universe=full_universe)
+    rows, stats = revise_rows(payload, full_universe=keep_rank)
+    if projection is not None:
+        court = one_ranking_court(rows, projection, receipt["universe"]["output"]["rows"])
+        receipt["receipts"] = {
+            "ranking_run_id": court["ranking_run_id"],
+            "receiver_projection": {"path": str(projection), "sha256": sha256_file(projection),
+                                    "rows": court["rows"]},
+            "list_rank_equals_engine_rank": court["list_rank_equals_engine_rank"],
+            "t5_action": ("AFTER the revise below: truncate public.recipe_engine_receipts_stage; \\copy the "
+                          "receiver projection into it; select public.recipe_engine_receipts_apply_v1("
+                          f"true, {court['rows']})"),
+        }
     revise_dir.mkdir(parents=True, exist_ok=True)
     chunks = []
     for i in range(0, len(rows), CHUNK_ROWS):
@@ -277,7 +473,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mecklenburg-taxpayers", type=Path)
     ap.add_argument("--full-universe", action="store_true",
                     help="keep global_rank: asserts the factory run covers the whole estate")
+    ap.add_argument("--universe", type=Path,
+                    help="prior FULL_UNIVERSE_RANKING_INPUT.csv: rank the whole estate (plus this run's new "
+                         "properties) in one run and emit the receipts projection for it")
     ap.add_argument("--allow-dirty", action="store_true")
+    ap.add_argument("--allow-degraded", action="store_true",
+                    help="produce even when the enrichment reports source errors (recorded in the receipt)")
     args = ap.parse_args(argv)
     recipe_python = args.recipe_python or next(
         (str(p) for p in (args.recipe_engine / ".venv" / "bin" / "python",) if p.exists()), sys.executable)
@@ -285,12 +486,14 @@ def main(argv: list[str] | None = None) -> int:
         receipt = produce(args.factory_run, args.output, recipe_engine=args.recipe_engine,
                           deedsonar=args.deedsonar, recipe_python=recipe_python, node=args.node,
                           mecklenburg_taxpayers=args.mecklenburg_taxpayers,
-                          full_universe=args.full_universe, allow_dirty=args.allow_dirty)
+                          full_universe=args.full_universe, allow_dirty=args.allow_dirty,
+                          universe=args.universe, allow_degraded=args.allow_degraded)
     except ProducerError as exc:
         print(json.dumps({"state": "REFUSED", "reason": str(exc)}), file=sys.stderr)
         return 2
     print(json.dumps({"state": "PRODUCED", "producer_run_id": receipt["producer_run_id"],
                       "revise": receipt["revise"]["stats"],
+                      "ranking_run_id": (receipt.get("receipts") or {}).get("ranking_run_id"),
                       "receipt": str(args.output / "PRODUCER_RECEIPT.json")}, indent=2))
     return 0
 
