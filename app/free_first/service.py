@@ -127,7 +127,7 @@ def research(*, ledger: FreeFirstLedger, tenant_id: str, fact: str, target: Mapp
                            "EXHAUSTED": "FREE_EXHAUSTED", "FREE_PATH_OPEN": "FREE_PATH_OPEN"}[verdict],
         "resolved_evidence": [ev for a in state_after.attempts if a["outcome"] == "HIT" for ev in a["evidence_found"]],
         "paid": paid, "spent_usd": state_after.spent_usd(),
-        "ledger": {"path": str(ledger.path), "tail_sha": ledger.verify()["tail_sha"]},
+        "ledger": {"path": str(ledger.path), "tail_sha": ledger.tip()["tail_sha"]},
     }
 
 
