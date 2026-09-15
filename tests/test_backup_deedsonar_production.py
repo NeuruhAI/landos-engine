@@ -71,6 +71,20 @@ class BackupDeedsonarProductionTests(unittest.TestCase):
         self.assertFalse([n for n in names if n.endswith(".partial")])
         self.assertIn("--format=custom", self.calls.read_text())
 
+    def test_the_password_never_reaches_pg_dump_argv(self):
+        seen = self.tmp / "pg_dump.env"
+        _exe(self.pg_dump,
+             f'echo "$@" >> "{self.calls}"\n'
+             f'echo "PGHOST=$PGHOST PGUSER=$PGUSER PGDATABASE=$PGDATABASE PGPASSWORD_SET=${{PGPASSWORD:+yes}}" > "{seen}"\n'
+             'for a in "$@"; do case "$a" in --file=*) printf dump > "${a#--file=}";; esac; done\n')
+        r = self.run_script([f"DEEDSONAR_DATABASE_URL={EFXO}"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = self.calls.read_text()
+        self.assertNotIn(":pw@", argv)
+        self.assertNotIn("--dbname", argv)
+        self.assertNotIn("postgresql://", argv)
+        self.assertIn("PGPASSWORD_SET=yes", seen.read_text())
+
     def test_the_dsn_is_never_printed(self):
         r = self.run_script([f"DEEDSONAR_DATABASE_URL={EFXO}"])
         self.assertEqual(r.returncode, 0, r.stderr)
