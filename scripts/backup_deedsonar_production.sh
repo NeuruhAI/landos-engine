@@ -53,6 +53,31 @@ case "$DBURL" in
   *) die "DEEDSONAR_DATABASE_URL does not name production $CANONICAL_REF; refusing to back up an unproven target" ;;
 esac
 
+# --- hand the DSN to libpq through its environment, never argv ------------------------
+# `ps` shows every argument to every local user, so `pg_dump "$DBURL"` published the
+# password for the length of each dump. python3 reads the URL from the environment
+# (not argv) and prints shell-quoted PG* exports; the URL value is never echoed.
+pg_env_from_url() {
+  DBURL_FOR_ENV="$1" "$(command -v python3 || echo /usr/bin/python3)" - <<'PY'
+import os, shlex, sys, urllib.parse
+u = urllib.parse.urlsplit(os.environ["DBURL_FOR_ENV"])
+if u.scheme not in ("postgres", "postgresql") or not u.hostname or "," in u.netloc:
+    sys.exit("not a single-host postgres URL (value not shown)")
+env = {"PGHOST": u.hostname, "PGPORT": str(u.port or 5432),
+       "PGUSER": urllib.parse.unquote(u.username or ""),
+       "PGDATABASE": urllib.parse.unquote(u.path.lstrip("/")) or "postgres"}
+if u.password:
+    env["PGPASSWORD"] = urllib.parse.unquote(u.password)
+for k, v in urllib.parse.parse_qsl(u.query):
+    if k != "sslmode":
+        sys.exit("unsupported URL parameter " + k)
+    env["PGSSLMODE"] = v
+print("\n".join("export %s=%s" % (k, shlex.quote(v)) for k, v in env.items()))
+PY
+}
+PGENV_LINES="$(pg_env_from_url "$DBURL")" || die "DEEDSONAR_DATABASE_URL is not a single-host postgres URL"
+eval "$PGENV_LINES"; unset PGENV_LINES
+
 # --- cold custody must be present; never fall back to the internal disk -------------
 [ -d "$VOLUME" ] || die "backup volume not present: $VOLUME (is NEURUH-HD mounted?)"
 mkdir -p "$OUT_DIR"
@@ -62,7 +87,7 @@ OUT="$OUT_DIR/deedsonar-${CANONICAL_REF}-${STAMP}.dump"
 TMP="$OUT.partial"
 
 echo "backup_deedsonar_production: dumping production ($CANONICAL_REF) -> $OUT"
-if ! "$PGDUMP" --format=custom --no-password --dbname="$DBURL" --file="$TMP"; then
+if ! "$PGDUMP" --format=custom --no-password --file="$TMP"; then
   rm -f "$TMP"; die "pg_dump failed; partial removed"
 fi
 
