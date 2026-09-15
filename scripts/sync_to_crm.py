@@ -58,6 +58,36 @@ THRESHOLD = 0.6  # {{CONFIDENCE_THRESHOLD}} — same cutoff the importer validat
 # cash value (statute) -> x2. Unmapped state -> equity stays NULL (pending), never guessed.
 MARKET_MULT = {"26": 2.0}
 
+# Census state FIPS -> USPS code: the PROPERTY's own state, from its county FIPS. The
+# owner_out_of_state projection used to compare every mailing state against "IN" (written
+# for the Vanderburgh tax-sale wave), so every NC owner mailing inside NC (6,965 leads)
+# and every MI owner mailing inside MI (479) was projected out-of-state (T8 2026-09-15).
+STATE_FIPS_USPS = {
+    "01": "AL", "02": "AK", "04": "AZ", "05": "AR", "06": "CA", "08": "CO", "09": "CT",
+    "10": "DE", "11": "DC", "12": "FL", "13": "GA", "15": "HI", "16": "ID", "17": "IL",
+    "18": "IN", "19": "IA", "20": "KS", "21": "KY", "22": "LA", "23": "ME", "24": "MD",
+    "25": "MA", "26": "MI", "27": "MN", "28": "MS", "29": "MO", "30": "MT", "31": "NE",
+    "32": "NV", "33": "NH", "34": "NJ", "35": "NM", "36": "NY", "37": "NC", "38": "ND",
+    "39": "OH", "40": "OK", "41": "OR", "42": "PA", "44": "RI", "45": "SC", "46": "SD",
+    "47": "TN", "48": "TX", "49": "UT", "50": "VT", "51": "VA", "53": "WA", "54": "WV",
+    "55": "WI", "56": "WY", "72": "PR",
+}
+
+
+def property_state_from_fips(county_fips):
+    """USPS state of the property from its 5-digit county FIPS; None when not derivable."""
+    return STATE_FIPS_USPS.get((county_fips or "").strip()[:2])
+
+
+def owner_out_of_state(mailing_state, county_fips):
+    """Property-relative absentee tell: True/False only when BOTH the owner's mailing state
+    and the property's state are known; None (unknown) otherwise — never a guess."""
+    mail = (mailing_state or "").strip().upper()
+    prop = property_state_from_fips(county_fips)
+    if not mail or not prop:
+        return None
+    return mail != prop
+
 
 def dnc_verdict(raw):
     """Map only explicit scrub truth; unknown information stays unknown."""
@@ -728,13 +758,14 @@ def main(dry_run: bool = False, lead_ids=None, batch_size=None, checkpoint_path=
                     else:
                         pm_dict = parcel_meta_from_raw(r["raw_meta"]) if (is_disc and r["raw_meta"]) else None
                     if pm_dict and r.get("owner_mailing_address"):
-                        # owner mailing (step 4d) -> on the card; out-of-state mailing = absentee signal
-                        st = (r.get("owner_mailing_state") or "").strip().upper()
+                        # owner mailing (step 4d) -> on the card; out-of-state mailing = absentee
+                        # signal, relative to the PROPERTY's state (never a hard-coded one).
                         pm_dict["owner_mailing"] = {"address": r["owner_mailing_address"],
                                                     "city": r.get("owner_mailing_city"),
                                                     "state": r.get("owner_mailing_state"),
                                                     "zip": r.get("owner_mailing_zip")}
-                        pm_dict["owner_out_of_state"] = bool(st) and st != "IN"
+                        pm_dict["owner_out_of_state"] = owner_out_of_state(
+                            r.get("owner_mailing_state"), r.get("county_fips"))
                     pm = Jsonb(pm_dict) if pm_dict else None
                     disc_addr = r["situs_address"] if is_disc else None
                     # FIX-1 (2026-07-01): discovered rows minted name-less get their enriched
