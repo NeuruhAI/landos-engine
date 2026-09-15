@@ -61,6 +61,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from scripts.export_opportunities import property_key as export_property_key
+
 PRODUCER_VERSION = "estate_producer.v1"
 REVISE_SOURCE = "landos_estate_producer"
 CHUNK_ROWS = 1000
@@ -219,7 +221,12 @@ def assemble_universe(prior: Path, fresh: Path, out: Path) -> dict[str, Any]:
     added_keys = sorted(k for k in fresh_by_key if k not in seen)
     for key in added_keys:
         src = fresh_by_key[key]
-        out_rows.append({c: src.get(c, "") for c in cols})
+        row = {c: src.get(c, "") for c in cols}
+        # A new property's identity is the one the export gives it and the estate ADDs it under
+        # (source_row_id = property_key); the receipts projection refuses a row without it.
+        row["property_key"] = row["property_key"] or export_property_key(src)
+        row["source_row_id"] = row["source_row_id"] or row["property_key"]
+        out_rows.append(row)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", newline="", encoding="utf-8") as fh:

@@ -180,9 +180,11 @@ def test_universe_keeps_every_prior_property_on_its_freshest_facts_and_adds_new_
     assert (tracer["property_key"], tracer["parcel_apn"]) == ("NC:37179:09222012", "09222012")
     # no fresher source: the prior row, unchanged
     assert carried == {**{c: "" for c in rows[0]}, **PRIOR[1]}
-    # a property this run found that the prior universe lacked is ranked, not left out
+    # a property this run found that the prior universe lacked is ranked, not left out, under the
+    # identity the export gives it and the revise ADDs it with (the projection refuses a blank key)
     assert (added["county_fips"], added["parcel_apn"], added["tax_balance"]) == ("37063", "115923", "2200")
-    assert added["property_key"] == "" and got["added_sample"] == ["NC:37063:115923"]
+    assert added["property_key"] == added["source_row_id"] == "NC:37063:115923"
+    assert added["candidate_id"] == "" and got["added_sample"] == ["NC:37063:115923"]
 
 
 def test_universe_refuses_a_property_repeated_on_either_side(tmp_path):
