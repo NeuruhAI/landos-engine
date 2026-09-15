@@ -60,3 +60,9 @@ def parse_territory_string(s):
     if len(parts) != 2:
         raise ValueError(f"expected 'County Name, ST', got {s!r}")
     return resolve_county(state=parts[1], county=parts[0])
+
+
+def state_county_fips(state):
+    """Every county fips in ``state`` (census table), e.g. the 100 NC counties."""
+    st = (state or "").strip().upper()
+    return frozenset(f for f, row in _table()[0].items() if row["state"] == st)

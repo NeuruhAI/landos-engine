@@ -163,3 +163,41 @@ def test_local_cache_reads_the_engine_cache_when_given_a_connection(tmp_path):
 
 def test_masking_never_leaks_a_number():
     assert mask_phone("+19195550101") == "***-***-0101" and mask_phone(None) == "***"
+
+
+def test_t6_applies_in_every_nc_county_and_an_uncovered_county_stays_open(tmp_path):
+    """NCSBE publishes the voter file statewide: a phone ladder in an NC county the lane
+    has not reached (Pender) carries T6 / I2 / I3 and stays FREE_PATH_OPEN -- it is never
+    vacuously 'machine exhausted' with only the manual step left."""
+    from app.free_first.knowledge import plan_ladder
+    from app.fips import state_county_fips
+    assert len(state_county_fips("NC")) == 100
+    steps = {s.step_id for s in plan_ladder("contact.phone", state="NC", county_fips="37141").steps}
+    assert {"route.T6", "route.I2", "route.I3", "route.T10"} <= steps
+    ledger = FreeFirstLedger(tmp_path / "ff.jsonl")
+    j = open_job(ledger, tenant_id="t14", fact="contact.phone", target={"target_key": "parcel:37141:X1", "apn": "X1"},
+                 state="NC", county_fips="37141", requested_by={"kind": "court"})
+    run = run_free_ladder(ledger, j.job_id, SpineRoutes(Spine(estate=())).executors(), worker_id="court")
+    assert run.exhaustion["verdict"] == "FREE_PATH_OPEN" and not run.exhaustion["machine_exhausted"]
+    with G.bound_job(ledger, j.job_id), pytest.raises(G.PaidCallBlocked) as blocked:
+        G.clear_paid_call("tracerfy", items=[("contact.phone", j.target_key)], est_cost_usd=0.02, caller="court")
+    assert any("FREE_PATH_OPEN:route.I2,route.I3,route.T6" in r for r in blocked.value.reasons)
+    t6 = next(s for s in run.exhaustion["steps"] if s["step_id"] == "route.T6")
+    assert t6["status"] == "UNWIRED" and t6["detail"] == "parcel is not in the estate the T6 lane covers"
+
+
+def test_a_job_opened_before_the_coverage_grew_is_extended_not_left_exhausted(tmp_path, monkeypatch):
+    from app.free_first import knowledge
+    ledger = FreeFirstLedger(tmp_path / "ff.jsonl")
+    narrow = {**knowledge.ROUTE_COVERAGE, **{r: (knowledge.ROUTE_COVERAGE[r][0], frozenset({"37183"}))
+                                             for r in ("T6", "I2", "I3")}}
+    monkeypatch.setattr(knowledge, "ROUTE_COVERAGE", narrow)
+    target = {"target_key": "parcel:37141:X2", "apn": "X2"}
+    j = open_job(ledger, tenant_id="t14", fact="contact.phone", target=target, state="NC", county_fips="37141",
+                 requested_by={"kind": "court"})
+    assert {s["step_id"] for s in j.steps} == {"route.T10"}
+    monkeypatch.undo()
+    again = open_job(ledger, tenant_id="t14", fact="contact.phone", target=target, state="NC", county_fips="37141",
+                     requested_by={"kind": "court"})
+    assert {"route.T6", "route.I2", "route.I3"} <= {s["step_id"] for s in again.steps}
+    assert exhaustion(again).verdict == "FREE_PATH_OPEN"

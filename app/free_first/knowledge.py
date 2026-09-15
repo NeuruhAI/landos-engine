@@ -23,6 +23,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
+from app.fips import state_county_fips
 from app.free_routes.registry import FREE_ROUTES_REGISTER_VERSION, ROUTES, Route
 from app.providers.config import (COLLIGO_ENDPOINTS, COUNTY_REST_ENDPOINTS, FETCHGIS_ENDPOINTS,
                                   PARCEL_PROVIDER_CHAIN)
@@ -66,10 +67,13 @@ ROUTE_FACTS: Mapping[str, Tuple[str, ...]] = {
     "I3": ("contact.phone",),
 }
 
-#: Where each route applies. The registry is NC-built: eCourts / ncnotices / SOS are
-#: statewide, T6 covers the seven CURRENT counties, T7 / T8 name their counties, and
-#: the people-search and obituary sites are national (manual either way).
-_NC_ALL = frozenset(NC_COUNTIES.values())
+#: Where each route's SOURCE applies -- not where a lane has already run. The registry
+#: is NC-built: eCourts / ncnotices / SOS are statewide; NCSBE publishes the voter file
+#: for all 100 NC counties, so T6 (and the identity graph the NC lanes feed, I2 / I3)
+#: applies in every NC county, and whether the lane has covered a parcel is the
+#: executor's answer (UNWIRED until it has: the free path stays open, never vacuously
+#: exhausted). T7 / T8 name their counties; people-search and obituaries are national.
+_NC_ALL = state_county_fips("NC")
 ROUTE_COVERAGE: Mapping[str, Tuple[str, frozenset]] = {
     "T1": ("STATE", frozenset({"NC"})),
     "T2": ("STATE", frozenset({"NC"})),

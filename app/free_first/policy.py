@@ -92,8 +92,10 @@ def step_status(state: JobState, step: Mapping[str, Any], now: datetime, *, min_
         return StepStatus(**base, status="EXHAUSTED", detail=f"error budget spent ({len(errors)} errors)")
     if errors:
         return StepStatus(**base, status="RETRYABLE", detail=f"{len(errors)}/{MAX_ERROR_ATTEMPTS} errors")
-    if any(a["outcome"] == "UNWIRED" for a in fresh):
-        return StepStatus(**base, status="UNWIRED", detail="no executor in the runtime that tried it")
+    unwired = [a for a in fresh if a["outcome"] == "UNWIRED"]
+    if unwired:       # the executor's own reason (lane not run yet, stale lane) when it gave one
+        why = (unwired[-1].get("error") or {}).get("message")
+        return StepStatus(**base, status="UNWIRED", detail=why or "no executor in the runtime that tried it")
     return StepStatus(**base, status="STALE", detail=f"every terminal attempt is older than {ttl}d")
 
 
