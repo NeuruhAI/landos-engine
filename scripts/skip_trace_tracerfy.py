@@ -281,11 +281,19 @@ def build_trace_csv(targets):
 
 
 def submit_trace(targets, key):
-    """POST {BASE}/trace/ as multipart (csv_file + column map) -> queue_id. Fails loud on no queue_id."""
+    """POST {BASE}/trace/ as multipart (csv_file + column map) -> queue_id. Fails loud on no queue_id.
+
+    Billable: every target must clear the FREE-FIRST guard (its own free-first job,
+    free path exhausted, spend authorized) before the upload is built."""
+    from app.free_first.guard import paid_call
     fields = dict(TRACE_COLUMN_MAP)
     fields["trace_type"] = TRACERFY_TRACE_TYPE
-    ct, body = _multipart(fields, "csv_file", "targets.csv", build_trace_csv(targets))
-    d = _json(_request("POST", f"{TRACERFY_BASE}/trace/", key, body=body, content_type=ct))
+    credits = CREDITS_PER_TRACE.get(TRACERFY_TRACE_TYPE, 1)
+    with paid_call("tracerfy", items=[("contact.phone", f"lead:{t['lead_id']}") for t in targets],
+                   est_cost_usd=round(len(targets) * credits * COST_PER_CREDIT, 4),
+                   caller="scripts/skip_trace_tracerfy.py:submit_trace"):
+        ct, body = _multipart(fields, "csv_file", "targets.csv", build_trace_csv(targets))
+        d = _json(_request("POST", f"{TRACERFY_BASE}/trace/", key, body=body, content_type=ct))
     qid = _extract_queue_id(d)
     if not qid:
         raise TracerfyContractError(f"/trace/ returned no queue_id; top-level keys={list(d)[:8]}")
@@ -294,9 +302,14 @@ def submit_trace(targets, key):
 
 def submit_dnc(numbers, key):
     """POST {BASE}/dnc/scrub/ as JSON {"phones":[...]} -> dnc_queue_id. SEPARATE per-phone billing."""
-    body = json.dumps({"phones": list(numbers)}).encode("utf-8")
-    d = _json(_request("POST", f"{TRACERFY_BASE}/dnc/scrub/", key, body=body,
-                       content_type="application/json"))
+    from app.free_first.guard import paid_call
+    numbers = list(numbers)
+    with paid_call("tracerfy_dnc", items=[("contact.dnc_status", f"phone:{n}") for n in numbers],
+                   est_cost_usd=round(len(numbers) * COST_PER_CREDIT, 4),
+                   caller="scripts/skip_trace_tracerfy.py:submit_dnc"):
+        body = json.dumps({"phones": numbers}).encode("utf-8")
+        d = _json(_request("POST", f"{TRACERFY_BASE}/dnc/scrub/", key, body=body,
+                           content_type="application/json"))
     qid = _extract_queue_id(d)
     if not qid:
         raise TracerfyContractError(f"/dnc/scrub/ returned no queue id; top-level keys={list(d)[:8]}")
