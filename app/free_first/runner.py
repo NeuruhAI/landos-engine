@@ -113,8 +113,12 @@ def parcel_tier_executor(tenant_id: str, *, registry: Optional[Mapping[str, Any]
     without a connection it is UNWIRED (the cache may already hold the answer, so a
     runtime that cannot read it must not pay for it)."""
     from app.providers.base import ProviderUnavailable
-    from app.providers.chain import PROVIDER_REGISTRY
-    reg = registry or PROVIDER_REGISTRY
+    # The free tiers only: app.providers.chain would import local_cache -> app.config -> the
+    # engine database, which a free-tier executor never needs.
+    from app.providers.colligo import ColligoProvider
+    from app.providers.county_rest import CountyRESTProvider
+    from app.providers.fetchgis import FetchGISProvider
+    reg = registry or {"county_rest": CountyRESTProvider, "fetchgis": FetchGISProvider, "colligo": ColligoProvider}
 
     def _run(step: Mapping[str, Any], state: JobState) -> AttemptResult:
         tier = step["source_id"]
