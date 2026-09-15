@@ -26,3 +26,6 @@ data/**/*.log
 # Run receipts written by estate resolvers at runtime
 data/estate_geocode_runs/
 data/estate_geometry_runs/
+
+# Estate producer runs: revise chunks and projections carry owner names (PII) as JSON/CSV
+data/estate_producer/
