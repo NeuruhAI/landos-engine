@@ -91,30 +91,75 @@ class JobState:
 
 
 class FreeFirstLedger:
+    """Append-only, hash-chained, flock-serialised JSONL.
+
+    Opening the ledger and ``verify()`` re-verify the WHOLE chain from genesis. Between
+    them the ledger keeps a verified view (entries, per-job index, byte offset, tip) and
+    each read or append verifies only the bytes appended since, as a continuation of the
+    verified tip -- so a national run is linear, not quadratic, in the ledger's length. If
+    the verified prefix changed underneath (the file shrank, or the last verified line is
+    no longer where it was) the whole chain is re-verified. A tampered entry can never be
+    extended into a valid chain: its seal no longer matches, so the next full verification
+    (every receipt calls ``verify()``) refuses the ledger."""
+
     def __init__(self, path: str | os.PathLike) -> None:
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
-        self._verify(self._read())
+        self._reset()
+        self._sync(full=True)
 
     # ------------------------------------------------------------------ chain
-    def _read(self) -> List[Dict[str, Any]]:
-        out = []
-        with self.path.open(encoding="utf-8") as fh:
-            for n, line in enumerate(fh, 1):
-                line = line.strip()
-                if not line:
-                    continue
+    def _reset(self) -> None:
+        self._entries: List[Dict[str, Any]] = []
+        self._by_job: Dict[str, List[Dict[str, Any]]] = {}
+        self._offset, self._tail_line = 0, b""
+        self._seq, self._tip = 0, GENESIS_SHA
+
+    def _extend(self, data: bytes, base: int) -> None:
+        """Verify and index complete lines of ``data`` (which starts at byte ``base``)."""
+        end = data.rfind(b"\n") + 1                 # a writer mid-line is not yet an entry
+        pos = 0
+        for raw in data[:end].split(b"\n")[:-1]:
+            line_end = pos + len(raw) + 1
+            text = raw.decode("utf-8").strip()
+            if text:
                 try:
-                    out.append(json.loads(line))
+                    rec = json.loads(text)
                 except json.JSONDecodeError as exc:
-                    raise LedgerCorrupt(f"{self.path}: line {n} is not JSON") from exc
-        return out
+                    raise LedgerCorrupt(f"{self.path}: entry {self._seq + 1} is not JSON") from exc
+                self._seq, self._tip = self._verify([rec], start=(self._seq, self._tip))
+                self._entries.append(rec)
+                self._by_job.setdefault(rec["job_id"], []).append(rec)
+                self._tail_line = raw + b"\n"
+            pos = line_end
+        self._offset = base + end
+
+    def _sync(self, *, full: bool = False) -> None:
+        with self.path.open("rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            if not full and self._offset and size >= self._offset:
+                fh.seek(self._offset - len(self._tail_line))
+                if fh.read(len(self._tail_line)) == self._tail_line:
+                    if size > self._offset:
+                        self._extend(fh.read(), self._offset)
+                    return
+            elif not full and not self._offset and size == 0:
+                return
+            fh.seek(0)
+            data = fh.read()
+        self._reset()
+        self._extend(data, 0)
+
+    def _read(self) -> List[Dict[str, Any]]:
+        self._sync()
+        return list(self._entries)
 
     @staticmethod
-    def _verify(entries: List[Dict[str, Any]]) -> tuple:
-        seq, prev = 0, GENESIS_SHA
-        for n, rec in enumerate(entries, 1):
+    def _verify(entries: List[Dict[str, Any]], start: tuple = (0, GENESIS_SHA)) -> tuple:
+        seq, prev = start
+        for rec in entries:
+            n = seq + 1
             if set(rec) != ENTRY_FIELDS or rec.get("version") != LEDGER_VERSION:
                 raise LedgerCorrupt(f"entry {n} has an invalid field set")
             if rec["seq"] != seq + 1:
@@ -129,8 +174,15 @@ class FreeFirstLedger:
         return seq, prev
 
     def verify(self) -> Dict[str, Any]:
-        seq, tip = self._verify(self._read())
-        return {"version": LEDGER_VERSION, "entries": seq, "tail_sha": tip, "genesis_sha": GENESIS_SHA,
+        """FULL re-verification from genesis (receipts cite this)."""
+        self._sync(full=True)
+        return {"version": LEDGER_VERSION, "entries": self._seq, "tail_sha": self._tip, "genesis_sha": GENESIS_SHA,
+                "path": str(self.path)}
+
+    def tip(self) -> Dict[str, Any]:
+        """The verified tip without a full re-verification (per-operation bookkeeping)."""
+        self._sync()
+        return {"version": LEDGER_VERSION, "entries": self._seq, "tail_sha": self._tip, "genesis_sha": GENESIS_SHA,
                 "path": str(self.path)}
 
     def append(self, kind: str, job_id: str, body: Mapping[str, Any], *, at: Optional[str] = None) -> Dict[str, Any]:
@@ -140,24 +192,26 @@ class FreeFirstLedger:
         with self.path.open("a+", encoding="utf-8") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             try:
-                fh.seek(0)
-                entries = [json.loads(line) for line in fh.read().splitlines() if line.strip()]
-                seq, tip = self._verify(entries)
-                entry = {"version": LEDGER_VERSION, "seq": seq + 1, "kind": kind, "job_id": job_id,
-                         "at": at or utc_now_iso(), "body": dict(body), "prev_sha": tip}
+                self._sync()                              # other writers' entries, verified, under the lock
+                if os.fstat(fh.fileno()).st_size != self._offset:
+                    # under the lock no writer is mid-line: trailing bytes are a writer that died mid-write
+                    raise LedgerCorrupt(f"{self.path}: trailing partial entry after seq {self._seq}")
+                entry = {"version": LEDGER_VERSION, "seq": self._seq + 1, "kind": kind, "job_id": job_id,
+                         "at": at or utc_now_iso(), "body": dict(body), "prev_sha": self._tip}
                 entry["entry_sha"] = _seal(entry)
+                line = canonical_json(entry) + "\n"
                 fh.seek(0, os.SEEK_END)
-                fh.write(canonical_json(entry) + "\n")
+                fh.write(line)
                 fh.flush()
                 os.fsync(fh.fileno())
+                self._extend(line.encode("utf-8"), self._offset)
             finally:
                 fcntl.flock(fh, fcntl.LOCK_UN)
         return entry
 
     def entries(self, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        entries = self._read()
-        self._verify(entries)
-        return [e for e in entries if job_id is None or e["job_id"] == job_id]
+        self._sync()
+        return list(self._entries) if job_id is None else list(self._by_job.get(job_id, ()))
 
     # ------------------------------------------------------------------ replay
     def job_state(self, job_id: str) -> JobState:
@@ -191,14 +245,12 @@ class FreeFirstLedger:
         return state
 
     def job_ids(self) -> List[str]:
-        seen: List[str] = []
-        for e in self._read():
-            if e["kind"] == "JOB_OPENED" and e["job_id"] not in seen:
-                seen.append(e["job_id"])
-        return seen
+        self._sync()
+        return [j for j, es in self._by_job.items() if any(e["kind"] == "JOB_OPENED" for e in es)]
 
     def has_job(self, job_id: str) -> bool:
-        return any(e["kind"] == "JOB_OPENED" and e["job_id"] == job_id for e in self._read())
+        self._sync()
+        return any(e["kind"] == "JOB_OPENED" for e in self._by_job.get(job_id, ()))
 
 
 def iter_attempt_rows(ledger: FreeFirstLedger) -> Iterable[Dict[str, Any]]:
