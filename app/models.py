@@ -126,6 +126,26 @@ class HuntRequest(BaseModel):
     requested_by: Optional[str] = None
 
 
+# --- FREE-FIRST: loopback research (one fact about one target per item) ---
+class FreeFirstResearchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fact: str
+    target: dict                       # {target_key, apn?, owner_name?, ...}
+    state: str
+    county_fips: str
+    extra_free_sources: list[dict] = []
+    supplied_evidence: dict = {}       # answers the caller's OWN extra steps only
+
+
+class FreeFirstResearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tenant_id: str = Field(min_length=1)
+    requested_by: dict
+    parent_receipt: Optional[dict] = None
+    items: list[FreeFirstResearchItem] = Field(min_length=1, max_length=200)
+    probe_paid: bool = True
+
+
 # --- RECIPE-2: composer (compose a goal into a proposal; decide it) ---
 class DispoInventoryItem(BaseModel):
     lead_id: str

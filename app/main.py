@@ -36,6 +36,7 @@ from .models import (
     LandDDRequest,
 )
 from .models import HuntRequest, ComposeRequest, DecideRequest, ComplianceCertBatchRequest
+from .models import FreeFirstResearchRequest
 from .models import FieldPinCaptureRequest
 from .models import OpportunityIntelligenceRequest
 from . import field_pins as field_pins_mod
@@ -395,6 +396,32 @@ def hunt_create(req: HuntRequest, _=Depends(auth_hunt)):
             "next": "python -m app.hunt_worker --job <job_id>  (or the night chain) "
                     "advances it to awaiting_operator_mint; the mint itself is "
                     "operator-fired via python -m app.hunt_mint <job_id>."}
+
+
+@app.post("/v1/free-first/research")
+def free_first_research(req: FreeFirstResearchRequest, _=Depends(auth_hunt)):
+    """FREE-FIRST research on the engine's own ladder, executors and paid gate, for callers
+    that must stay loopback-only (a neuruh-workers job's receipts are 127.0.0.1-only, so it
+    reaches county GIS, the DeedSonar spine and the engine cache through this organ).
+    Writes only the free-first ledger; guarded like /hunt (never open)."""
+    from .free_first import connections, route_executors, service
+    from .free_first.ledger import FreeFirstLedger
+    ledger = FreeFirstLedger(service.default_ledger_path())
+    conns = connections.open_research_connections()
+    try:
+        executors = route_executors.default_executors(engine_conn=conns.get("engine"), spine_conn=conns.get("spine"))
+        results = [service.research(
+            ledger=ledger, tenant_id=req.tenant_id, fact=item.fact, target=item.target, state=item.state,
+            county_fips=item.county_fips, requested_by=req.requested_by, worker_id="landos-engine:api",
+            executors=executors, extra_free_sources=item.extra_free_sources, supplied_evidence=item.supplied_evidence,
+            parent_receipt=req.parent_receipt, probe_paid=req.probe_paid) for item in req.items]
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        connections.close_all(conns)
+    return {"results": results, "ledger": ledger.verify(),
+            "connections": {"spine": conns.get("spine_authority") or conns.get("spine_refused"),
+                            "engine": "UP" if conns.get("engine") is not None else conns.get("engine_refused")}}
 
 
 @app.get("/hunt/{job_id}")
