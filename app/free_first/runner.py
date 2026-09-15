@@ -106,12 +106,15 @@ _NOT_APPLICABLE_MARKERS = ("no county rest endpoint", "unverified", "not configu
                            "no fetchgis", "no colligo")
 
 
-def parcel_tier_executor(tenant_id: str, *, registry: Optional[Mapping[str, Any]] = None) -> Executor:
+def parcel_tier_executor(tenant_id: str, *, registry: Optional[Mapping[str, Any]] = None,
+                         local_cache_conn: Any = None) -> Executor:
     """A live, free, per-parcel query against the county's own published GIS.
 
-    target: {apn} (preferred) or {owner_name}. local_cache needs the engine database;
-    without a connection it is UNWIRED (the cache may already hold the answer, so a
-    runtime that cannot read it must not pay for it)."""
+    target: {apn} (preferred) or {owner_name}. local_cache reads the engine's own
+    landos.owner_leads through LocalCacheProvider on ``local_cache_conn``; without a
+    connection it is UNWIRED (the cache may already hold the answer, so a runtime that
+    cannot read it must not pay for it). A cache row is dated by nothing but its row
+    bookkeeping, so its evidence carries no as-of: freshness UNKNOWN, never faked."""
     from app.providers.base import ProviderUnavailable
     # The free tiers only: app.providers.chain would import local_cache -> app.config -> the
     # engine database, which a free-tier executor never needs.
@@ -124,9 +127,13 @@ def parcel_tier_executor(tenant_id: str, *, registry: Optional[Mapping[str, Any]
         tier = step["source_id"]
         target, fips = state.opened["target"], state.county_fips
         if tier == "local_cache":
-            return AttemptResult("UNWIRED", error={"class": "UNWIRED", "permanent": False,
-                                                   "message": "local_cache needs the engine database connection"})
-        provider = reg[tier](tenant_id)
+            if local_cache_conn is None:
+                return AttemptResult("UNWIRED", error={"class": "UNWIRED", "permanent": False,
+                                                       "message": "local_cache needs the engine database connection"})
+            from app.providers.local_cache import LocalCacheProvider
+            provider = LocalCacheProvider(tenant_id, conn=local_cache_conn)
+        else:
+            provider = reg[tier](tenant_id)
         apn, owner = target.get("apn"), target.get("owner_name")
         op, arg = ("lookup_by_apn", apn) if apn else ("search_by_owner", owner)
         if not arg:
@@ -161,7 +168,7 @@ def parcel_tier_executor(tenant_id: str, *, registry: Optional[Mapping[str, Any]
         raw = [{k: v for k, v in r.items() if k != "raw_meta"} for r in rows]
         ev = make_evidence(fact=state.fact, source_id=f"{tier}:{fips}", value=value, retrieved_at=retrieved_at,
                            confidence=confidence, locator=f"{best.get('provenance')}?{op}={arg}", raw_payload=raw,
-                           live_query=True, source_record_id=best.get("parcel_apn"))
+                           live_query=tier != "local_cache", source_record_id=best.get("parcel_apn"))
         return AttemptResult("HIT", evidence_found=[ev])
 
     return _run
