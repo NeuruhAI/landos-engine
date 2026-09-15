@@ -16,7 +16,9 @@ the estate a week staler than its own source. This is that consumer:
      their origin/main (detached) before the run and refused if dirty. The shared
      clones are not used: the recipe-engine runtime clone is dirtied by its own
      daily job, and the shared deedsonar clone carries whatever branch a lane left;
-  4. estate_producer --universe into data/estate_producer/runs/<factory run id>/.
+  4. estate_producer --universe into data/estate_producer/runs/<factory run id>/. An enrichment
+     that reports a source error (OneMap / DNS) is refused, kept aside as <run>.degraded-<n>,
+     and retried ONCE after --retry-wait seconds; a second degraded attempt stops the run.
 
 It WRITES NO DATABASE. The revise rows and the receipts projection it produces are
 applied by the production promotion (a T5 / founder action). Only after production
@@ -37,6 +39,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -126,11 +129,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     heads = {"recipe-engine": sync_checkout(args.recipe_engine), "deedsonar": sync_checkout(args.deedsonar)}
     recipe_python = next((str(p) for p in (args.recipe_engine / ".venv" / "bin" / "python",
                                            args.recipe_python_fallback) if p and Path(p).exists()), sys.executable)
-    receipt = ep.produce(factory, args.out_root / "runs" / factory.name, recipe_engine=args.recipe_engine,
-                         deedsonar=args.deedsonar, recipe_python=recipe_python, node=args.node,
-                         mecklenburg_taxpayers=None, full_universe=False, allow_dirty=False,
-                         universe=Path(universe["path"]))
+    output = args.out_root / "runs" / factory.name
+    degraded: list[str] = []
+    # ONE bounded retry, and only for a degraded enrichment (a county endpoint or DNS blip):
+    # every other refusal is a contract failure that a second attempt would only repeat.
+    for attempt in range(1, getattr(args, "attempts", 2) + 1):
+        try:
+            receipt = ep.produce(factory, output, recipe_engine=args.recipe_engine,
+                                 deedsonar=args.deedsonar, recipe_python=recipe_python, node=args.node,
+                                 mecklenburg_taxpayers=None, full_universe=False, allow_dirty=False,
+                                 universe=Path(universe["path"]))
+            break
+        except ep.DegradedEnrichment as exc:
+            degraded.append(str(exc))
+            if output.exists():  # custody of the refused attempt; the retry starts clean
+                output.rename(output.with_name(f"{output.name}.degraded-{attempt}"))
+            if attempt == getattr(args, "attempts", 2):
+                raise
+            time.sleep(getattr(args, "retry_wait", 300))
     return {"state": "PRODUCED", "factory_run": factory.name, "producer_run_id": receipt["producer_run_id"],
+            "degraded_attempts": degraded,
             "prior_ranking_run_id": universe["ranking_run_id"],
             "ranking_run_id": receipt["receipts"]["ranking_run_id"], "checkouts": heads,
             "revise": receipt["revise"]["stats"],
@@ -152,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
     # the dedicated recipe-engine checkout has no venv of its own; the runtime clone's venv runs its code
     r.add_argument("--recipe-python-fallback", default=str(HOME / "neuruh-repos/NeuruhAI/recipe-engine/.venv/bin/python"))
     r.add_argument("--node", default=shutil.which("node") or "/opt/homebrew/bin/node")
+    r.add_argument("--attempts", type=int, default=2, help="bounded attempts when the enrichment is degraded")
+    r.add_argument("--retry-wait", type=int, default=300, help="seconds before retrying a degraded enrichment")
     p = sub.add_parser("promote-universe")
     p.add_argument("--producer-run", required=True, type=Path)
     p.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)

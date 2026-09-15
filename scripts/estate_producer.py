@@ -313,10 +313,30 @@ def _step(receipt: dict[str, Any], name: str, cmd: list[str], cwd: Path, outputs
     entry["outputs"] = {str(p): sha256_file(p) for p in outputs}
 
 
+class DegradedEnrichment(ProducerError):
+    """The enrichment ran but a source failed (e.g. OneMap unreachable), so its output is partial."""
+
+
+def enrichment_check(enrich_dir: Path, *, allow_degraded: bool) -> dict[str, Any]:
+    """The enrichment exits 0 even when a source fails: it records the failure in its summary's
+    source_errors and emits what it has (2026-09-15: a DNS failure on the Mecklenburg owner match
+    dropped 1,895 of 8,333 properties, exit 0). A partial enrichment is never produced silently."""
+    summary_path = enrich_dir / "LANDOS_ENRICHMENT_SUMMARY.json"
+    if not summary_path.exists():
+        raise ProducerError(f"enrichment wrote no {summary_path.name}; its source errors cannot be checked")
+    errors = json.loads(summary_path.read_text()).get("source_errors") or []
+    checked = {"summary_sha256": sha256_file(summary_path), "source_errors": errors,
+               "degraded_allowed": bool(errors and allow_degraded)}
+    if errors and not allow_degraded:
+        raise DegradedEnrichment(f"enrichment degraded: {len(errors)} source error(s), first {str(errors[0])[:200]!r} "
+                                 "(--allow-degraded to produce anyway)")
+    return checked
+
+
 def produce(factory_run: Path, output: Path, *, recipe_engine: Path, deedsonar: Path,
             recipe_python: str, node: str, mecklenburg_taxpayers: Path | None,
             full_universe: bool, allow_dirty: bool, universe: Path | None = None,
-            now: datetime | None = None) -> dict[str, Any]:
+            allow_degraded: bool = False, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc).replace(microsecond=0)
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     output.mkdir(parents=True, exist_ok=True)
@@ -362,6 +382,7 @@ def produce(factory_run: Path, output: Path, *, recipe_engine: Path, deedsonar: 
     if mecklenburg_taxpayers:
         cmd += ["--mecklenburg-taxpayers", str(mecklenburg_taxpayers)]
     _step(receipt, "1_enrich", cmd, ENGINE_ROOT, [enriched])
+    receipt["enrichment"] = enrichment_check(enrich_dir, allow_degraded=allow_degraded)
 
     rank_input = enriched
     if universe is not None:
@@ -456,6 +477,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="prior FULL_UNIVERSE_RANKING_INPUT.csv: rank the whole estate (plus this run's new "
                          "properties) in one run and emit the receipts projection for it")
     ap.add_argument("--allow-dirty", action="store_true")
+    ap.add_argument("--allow-degraded", action="store_true",
+                    help="produce even when the enrichment reports source errors (recorded in the receipt)")
     args = ap.parse_args(argv)
     recipe_python = args.recipe_python or next(
         (str(p) for p in (args.recipe_engine / ".venv" / "bin" / "python",) if p.exists()), sys.executable)
@@ -464,7 +487,7 @@ def main(argv: list[str] | None = None) -> int:
                           deedsonar=args.deedsonar, recipe_python=recipe_python, node=args.node,
                           mecklenburg_taxpayers=args.mecklenburg_taxpayers,
                           full_universe=args.full_universe, allow_dirty=args.allow_dirty,
-                          universe=args.universe)
+                          universe=args.universe, allow_degraded=args.allow_degraded)
     except ProducerError as exc:
         print(json.dumps({"state": "REFUSED", "reason": str(exc)}), file=sys.stderr)
         return 2

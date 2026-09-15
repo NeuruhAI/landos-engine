@@ -110,6 +110,47 @@ def test_the_schedule_ranks_against_the_pointer_universe_on_origin_main_checkout
     assert got["checkouts"] == {"recipe-engine": "head-of-re", "deedsonar": "head-of-ds"}
 
 
+def test_a_degraded_enrichment_is_retried_once_and_the_refused_attempt_is_kept(tmp_path, monkeypatch):
+    runs = tmp_path / "runs"
+    factory = _run_dir(runs, "run-20260914T124500Z")
+    args = _args(tmp_path, runs)
+    args.retry_wait = 0
+    csv_path, digest = _universe_csv(tmp_path)
+    wk.write_universe(args.out_root, csv_path, f"ranking_run_20260914_{digest[:12]}", basis="t")
+    monkeypatch.setattr(wk, "sync_checkout", lambda p: "head")
+    attempts = []
+
+    def produce(factory_run, output, **kw):
+        attempts.append(output)
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "partial.csv").write_text("x\n")
+        if len(attempts) == 1:
+            raise ep.DegradedEnrichment("enrichment degraded: 1 source error(s)")
+        return {"producer_run_id": "estate-x", "receipts": {"ranking_run_id": "r"}, "revise": {"stats": {}}}
+    monkeypatch.setattr(ep, "produce", produce)
+    got = wk.run(args)
+    assert got["state"] == "PRODUCED" and len(got["degraded_attempts"]) == 1
+    assert (args.out_root / "runs" / f"{factory.name}.degraded-1" / "partial.csv").exists()
+
+    # a second degraded attempt stops the run; any other refusal is never retried
+    attempts.clear()
+    monkeypatch.setattr(ep, "produce", lambda *a, **k: (attempts.append(1), (_ for _ in ()).throw(
+        ep.DegradedEnrichment("enrichment degraded: again")))[1])
+    args.out_root = tmp_path / "out2"
+    wk.write_universe(args.out_root, csv_path, f"ranking_run_20260914_{digest[:12]}", basis="t")
+    with pytest.raises(ep.DegradedEnrichment):
+        wk.run(args)
+    assert len(attempts) == 2
+    attempts.clear()
+    monkeypatch.setattr(ep, "produce", lambda *a, **k: (attempts.append(1), (_ for _ in ()).throw(
+        ep.ProducerError("one universe required")))[1])
+    args.out_root = tmp_path / "out3"
+    wk.write_universe(args.out_root, csv_path, f"ranking_run_20260914_{digest[:12]}", basis="t")
+    with pytest.raises(ep.ProducerError, match="one universe"):
+        wk.run(args)
+    assert len(attempts) == 1
+
+
 def test_promote_universe_refuses_a_partial_run_and_advances_on_a_full_one(tmp_path, capsys):
     out = tmp_path / "out"
     partial = tmp_path / "partial"

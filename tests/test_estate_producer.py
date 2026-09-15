@@ -226,7 +226,7 @@ def test_one_ranking_court_requires_list_rank_to_be_the_engine_rank_on_every_row
         ep.one_ranking_court([rows[0], {**rows[1], "global_rank": 3}], gap, 2)
 
 
-def _fake_stages(calls: dict):
+def _fake_stages(calls: dict, source_errors: list | None = None):
     """Stand-ins for the stage CLIs that do what the contract says each one does,
     so the wiring between them is what the test pins."""
     def step(receipt, name, cmd, cwd, outputs):
@@ -234,6 +234,8 @@ def _fake_stages(calls: dict):
         arg = lambda flag: Path(cmd[cmd.index(flag) + 1])  # noqa: E731
         if name == "1_enrich":
             _csv(outputs[0], FRESH)
+            (outputs[0].parent / "LANDOS_ENRICHMENT_SUMMARY.json").write_text(
+                json.dumps({"source_errors": source_errors or []}))
         elif name == "2_rank":
             rows = _rows(arg("--input"))
             rows.sort(key=lambda r: -float(r["tax_balance"]))
@@ -292,6 +294,32 @@ def test_without_a_universe_a_factory_run_still_withholds_rank_and_projects_noth
                          full_universe=False, allow_dirty=True)
     assert "2b_project" not in calls and "receipts" not in receipt
     assert receipt["revise"]["stats"]["global_rank_withheld"] == receipt["revise"]["stats"]["rows"] == 2
+
+
+DNS = ("37119-owner-match:RuntimeError:NC OneMap POST query failed after 4 attempts: "
+       "<urlopen error [Errno 8] nodename nor servname provided, or not known>")
+
+
+def test_an_enrichment_that_reports_a_source_error_is_never_produced_silently(tmp_path, monkeypatch):
+    # 2026-09-15: the enrichment exited 0 after a DNS failure on the Mecklenburg owner match and
+    # emitted 6,438 of 8,333 properties; nothing downstream noticed.
+    calls: dict = {}
+    monkeypatch.setattr(ep, "_step", _fake_stages(calls, source_errors=[DNS]))
+    kw = dict(recipe_engine=tmp_path, deedsonar=tmp_path, recipe_python="python", node="node",
+              mecklenburg_taxpayers=None, full_universe=False, allow_dirty=True,
+              universe=_csv(tmp_path / "prior.csv", PRIOR))
+    with pytest.raises(ep.DegradedEnrichment, match="1 source error"):
+        ep.produce(_factory_run(tmp_path), tmp_path / "out", **kw)
+    assert "2_rank" not in calls and not (tmp_path / "out" / "PRODUCER_RECEIPT.json").exists()
+    (tmp_path / "b").mkdir()
+    receipt = ep.produce(_factory_run(tmp_path / "b"), tmp_path / "out2", allow_degraded=True, **kw)
+    assert receipt["enrichment"]["source_errors"] == [DNS] and receipt["enrichment"]["degraded_allowed"]
+
+
+def test_an_enrichment_without_a_summary_cannot_be_checked_and_is_refused(tmp_path):
+    (tmp_path / "e").mkdir()
+    with pytest.raises(ep.ProducerError, match="cannot be checked"):
+        ep.enrichment_check(tmp_path / "e", allow_degraded=True)
 
 
 def test_a_missing_universe_file_is_refused_before_any_stage_runs(tmp_path, monkeypatch):
