@@ -25,7 +25,9 @@ from psycopg.types.json import Jsonb
 from .receipt import section_hash, sha256_text
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
-INGEST_ROOT = os.path.expanduser("~/repos/landos-ingest/data/strategy/signals")
+# Canonical landos-ingest repo. (~/repos/landos-ingest is only a personal symlink to
+# this path — depending on it silently breaks on any host without that symlink.)
+INGEST_ROOT = os.path.expanduser("~/neuruh-repos/NeuruhAI/landos-ingest/data/strategy/signals")
 STAGED_TAXSALE_DIR = os.path.join(INGEST_ROOT, "tax_sale", "staged")
 
 # ---- $0 source registry (DATA — the census consults, never guesses) ----------
