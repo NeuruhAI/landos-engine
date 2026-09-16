@@ -59,6 +59,41 @@ def test_a_writer_that_died_mid_line_blocks_the_next_append(tmp_path):
         ledger.append("PAID_DECISION", "j", {"i": 3})
 
 
+def test_the_guard_opens_one_ledger_per_thread_not_one_per_paid_call(tmp_path, monkeypatch):
+    """Every clearance rebuilt the ledger, so each paid probe re-verified the whole chain:
+    1.09 s at 12,265 entries x ~14 probes per researched candidate."""
+    import threading
+
+    import app.free_first.guard as G
+    from app.free_first.jobs import open_job
+
+    monkeypatch.delenv(G.ENV_LEDGER, raising=False)
+    monkeypatch.delenv(G.ENV_JOBS, raising=False)
+    ledger = FreeFirstLedger(tmp_path / "ff.jsonl")
+    job = open_job(ledger, tenant_id="court", fact="contact.phone", target={"target_key": "party:wake:1"},
+                   state="NC", county_fips="37183", requested_by={"kind": "court", "id": "t14"})
+    _fill(ledger, 200)
+    opened = []
+    real_init = FreeFirstLedger.__init__
+    monkeypatch.setattr(FreeFirstLedger, "__init__",
+                        lambda self, path: (opened.append(str(path)), real_init(self, path))[1])
+    monkeypatch.setattr(G, "_READERS", threading.local())
+    with G.bound_job(ledger, job.job_id):
+        for _ in range(12):                                  # ~ the paid probes one candidate makes
+            with pytest.raises(G.PaidCallBlocked):
+                G.clear_paid_call("tracerfy", items=[("contact.phone", "party:wake:1")], est_cost_usd=0.02,
+                                  caller="court")
+    assert len(opened) == 1                                  # one reader for all twelve clearances
+    assert all(e["body"].get("allow") is False for e in ledger.entries(job.job_id)
+               if e["kind"] == "PAID_DECISION")              # still blocked, still recorded
+
+    other: list = []
+    thread = threading.Thread(target=lambda: other.append(G.ledger_reader(ledger.path)))
+    thread.start()
+    thread.join()
+    assert len(opened) == 2 and other[0] is not G.ledger_reader(ledger.path)      # per thread, never shared
+
+
 def test_a_thousand_jobs_stay_fast(tmp_path):
     ledger = FreeFirstLedger(tmp_path / "ff.jsonl")
     t0 = time.monotonic()
