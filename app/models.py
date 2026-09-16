@@ -120,8 +120,21 @@ class HuntTerritoryEntry(BaseModel):
     county: Optional[str] = None
 
 
+class HuntGeography(BaseModel):
+    """ZIP, county, state, or list of counties — resolved by app.fips.resolve_geography.
+    Berrien / NC rows are data, not request defaults."""
+    kind: Optional[str] = None          # zip | county | state | counties
+    value: Optional[str] = None
+    zip: Optional[str] = None
+    fips: Optional[str] = None
+    state: Optional[str] = None
+    county: Optional[str] = None
+    counties: Optional[list[HuntTerritoryEntry]] = None
+
+
 class HuntRequest(BaseModel):
-    territory: list[HuntTerritoryEntry]
+    territory: list[HuntTerritoryEntry] = Field(default_factory=list)
+    geography: Optional[HuntGeography | list[HuntGeography]] = None
     recipe: Optional[dict] = None       # {signal_types: [...], thresholds: {...}}
     requested_by: Optional[str] = None
 
