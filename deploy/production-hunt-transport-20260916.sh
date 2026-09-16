@@ -88,7 +88,7 @@ chmod 600 "$API_PLIST"
 # proposal state. No owner_leads write occurs before operator mint.
 cat > "$WORKER_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.neuruh.landos-engine.hunt-worker</string>
   <key>ProgramArguments</key><array>
@@ -129,7 +129,7 @@ ingress:
   - service: http_status:404
 YAML
 chmod 600 "$CF_CONFIG"
-cloudflared tunnel ingress validate --config "$CF_CONFIG"
+cloudflared tunnel --config "$CF_CONFIG" ingress validate
 
 cat > "$TUNNEL_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
