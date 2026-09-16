@@ -113,10 +113,13 @@ PLIST
 chmod 600 "$WORKER_PLIST"
 
 # Create/adopt the dedicated outbound Cloudflare tunnel.
-if ! cloudflared tunnel list --output json 2>/dev/null | grep -q "\"name\":\"$TUNNEL\""; then
+# Do not use grep against --output json here: cloudflared emits formatted JSON
+# that may contain whitespace, and a false negative would attempt duplicate creation.
+if ! UUID="$(cloudflared tunnel list --output json 2>/dev/null | python3 -c "import json,sys; data=json.load(sys.stdin); items=data if isinstance(data,list) else data.get('tunnels',data); print(next(t['id'] for t in items if t.get('name')=='$TUNNEL'))")"; then
   cloudflared tunnel create "$TUNNEL"
+  UUID="$(cloudflared tunnel list --output json | python3 -c "import json,sys; data=json.load(sys.stdin); items=data if isinstance(data,list) else data.get('tunnels',data); print(next(t['id'] for t in items if t.get('name')=='$TUNNEL'))")"
 fi
-UUID="$(cloudflared tunnel list --output json | python3 -c "import json,sys; print(next(t['id'] for t in json.load(sys.stdin) if t['name']=='$TUNNEL'))")"
+[[ -n "$UUID" ]] || fail "unable to resolve Cloudflare tunnel id for $TUNNEL"
 cloudflared tunnel route dns --overwrite-dns "$TUNNEL" "$HOSTNAME"
 cat > "$CF_CONFIG" <<YAML
 # Dedicated LandOS Hunt transport. Public path is HTTPS at the edge;
