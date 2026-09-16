@@ -49,7 +49,7 @@ from . import hunt_core
 from . import recipe_core
 from .insight import service as insight_service
 from . import valuation as valuation_mod
-from .fips import resolve_county
+from .fips import resolve_hunt_inputs
 from . import opportunity_intelligence as opportunity_intelligence_mod
 
 app = FastAPI(title="LandOS Engine", version="1.0.0")
@@ -377,15 +377,14 @@ def auth_hunt(authorization: str = Header(default=""),
 def hunt_create(req: HuntRequest, _=Depends(auth_hunt)):
     """HUNT-V2: create a net-new territory hunt job. Validates every territory entry
     against the census table (fips wins; else state+county must resolve — never
-    guessed). The job is only QUEUED here: the runner (python -m app.hunt_worker,
-    night-chain-compatible) advances it census -> stage -> score -> DRY-RUN mint and
-    parks it at awaiting_operator_mint. NO owner_leads write ever happens from the
-    API or the worker — the operator fires the mint (python -m app.hunt_mint <id>)."""
-    if not req.territory:
-        raise HTTPException(status_code=422, detail="territory must name >=1 county")
+    guessed). Optional geography (zip | county | state | counties) is resolved
+    through resolve_geography and unioned with territory[]. The job is only QUEUED
+    here: the runner (python -m app.hunt_worker, night-chain-compatible) advances
+    it census -> stage -> score -> DRY-RUN mint and parks it at
+    awaiting_operator_mint. NO owner_leads write ever happens from the API or the
+    worker — the operator fires the mint (python -m app.hunt_mint <id>)."""
     try:
-        resolved = [resolve_county(fips=e.fips, state=e.state, county=e.county)
-                    for e in req.territory]
+        resolved = resolve_hunt_inputs(req.territory, req.geography)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     with pool.connection() as conn:
