@@ -12,7 +12,7 @@ set -euo pipefail
 
 REPO="${HOME}/neuruh-repos/NeuruhAI/landos-engine"
 PY="${REPO}/.venv/bin/python"
-PORT="8400"
+PORT="8410"
 HOSTNAME="landos.neuruh.com"
 TUNNEL="neuruh-landos-origin"
 SECRET_DIR="${HOME}/.neuruh/secrets"
