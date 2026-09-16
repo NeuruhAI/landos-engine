@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import contextvars
 import os
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from .authority import AuthorityRefused, configured_authority
@@ -35,6 +37,28 @@ UNBOUND_JOB = "ffj_unbound"
 ENV_LEDGER, ENV_JOB, ENV_JOBS = "LANDOS_FREE_FIRST_LEDGER", "LANDOS_FREE_FIRST_JOB", "LANDOS_FREE_FIRST_JOBS"
 
 Item = Tuple[str, str]          # (fact, target_key)
+
+_READERS = threading.local()
+
+
+def ledger_reader(path: str | os.PathLike) -> FreeFirstLedger:
+    """The guard's ledger for ``path`` on this thread, opened once.
+
+    ``FreeFirstLedger.__init__`` verifies the whole chain; the instance then syncs
+    incrementally, so reopening it per paid call made every clearance O(entries) -- 1.09 s at
+    12,265 entries, ~14 paid probes per researched candidate, so a national run's research got
+    slower the more its own ledger recorded. The reader is per THREAD, not global: a ledger's
+    in-memory view is not thread-safe, and appends stay flock-serialised across processes and
+    threads either way. A reader never goes stale -- every read and append syncs first, and a
+    tail that no longer matches re-reads and re-verifies the file."""
+    cache = getattr(_READERS, "ledgers", None)
+    if cache is None:
+        cache = _READERS.ledgers = {}
+    key = str(Path(path).expanduser())
+    reader = cache.get(key)
+    if reader is None:
+        reader = cache[key] = FreeFirstLedger(path)
+    return reader
 
 
 class PaidCallBlocked(RuntimeError):
@@ -89,7 +113,7 @@ def current_binding() -> Optional[Binding]:
     ids = [j for j in (os.environ.get(ENV_JOBS) or os.environ.get(ENV_JOB) or "").split(",") if j.strip()]
     if not path or not ids:
         return None
-    ledger = FreeFirstLedger(path)
+    ledger = ledger_reader(path)
     jobs = {}
     for jid in ids:
         try:
@@ -132,7 +156,7 @@ def _record_unbound(provider: str, items: Sequence[Item], caller: str, reasons: 
     path = os.environ.get(ENV_LEDGER)
     if not path:
         return None
-    entry = FreeFirstLedger(path).append("PAID_DECISION", UNBOUND_JOB, {
+    entry = ledger_reader(path).append("PAID_DECISION", UNBOUND_JOB, {
         "allow": False, "provider": provider, "reasons": reasons, "caller": caller,
         "items": [list(i) for i in items], "authority": None, "binding": None})
     return entry["entry_sha"]
@@ -149,7 +173,7 @@ def clear_paid_call(provider: str, *, items: Sequence[Item], est_cost_usd: Optio
         reasons = ["NO_FREE_FIRST_JOB"]
         sha = _record_unbound(provider, items, caller, reasons)
         raise PaidCallBlocked(provider, reasons, decision_shas=[sha] if sha else [])
-    ledger = FreeFirstLedger(binding.ledger_path)
+    ledger = ledger_reader(binding.ledger_path)
     authority = configured_authority()
     now = datetime.now(timezone.utc)
     per_item = None if est_cost_usd is None else round(float(est_cost_usd) / len(items), 6)
