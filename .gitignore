@@ -29,3 +29,4 @@ data/estate_geometry_runs/
 
 # Estate producer runs: revise chunks and projections carry owner names (PII) as JSON/CSV
 data/estate_producer/
+data/hunt-runtime/
