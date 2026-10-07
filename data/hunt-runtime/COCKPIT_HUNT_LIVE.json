@@ -1,0 +1,26 @@
+{
+  "schema": "neuruh.cockpit.hunt_live_projection.v1",
+  "at_utc": "2026-09-16T22:14:26Z",
+  "deedsonar_main": "b67222d5be7d3817cbd4369c0a5a7ca75d01881b",
+  "pr124": "MERGED",
+  "production_deploy": "dpl_3EdvXXCnry3bc4WBx8DMGJJvUKVx",
+  "hunt_job_ids": {
+    "substrate": "aa5752e2-3a9e-4d7b-b645-5d6cd619ce20",
+    "closure": "02c57def-2097-4c8a-adc3-6f802b8ca02e"
+  },
+  "territory": [
+    "26021",
+    "26035",
+    "26027",
+    "26009",
+    "26075"
+  ],
+  "source": "taxsale",
+  "result_mode": "RAW_RANKED",
+  "result_count": 408,
+  "opportunity": "605d1be2-2f34-41d5-bad3-2f182f9622c6",
+  "next_scheduled": "com.neuruh.landos-engine.hunt-worker ~15s",
+  "landos_main": "e8c002c",
+  "workers_main": "60fd4423",
+  "efxow_APPLY": "NO"
+}
