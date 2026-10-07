@@ -42,7 +42,7 @@ REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 
 OUT_FIELDS = [
-    "rank", "owner_name", "owner_type", "absentee_tier", "situs_address",
+    "rank", "owner_name", "owner_type", "lens", "absentee_tier", "situs_address",
     "mailing_address", "apn", "land_use", "acreage", "absentee_score",
     "signal_overlap", "final_lead_score", "skip_trace_status", "push_status",
 ]
@@ -165,10 +165,17 @@ def main() -> None:
                 "situs_state": rm.get("situs_state"), "situs_zip": rm.get("situs_zip"),
             })
             res = score_lead(merged, sig_types, oz, county_geo)
+            # Persist the cold-call lens INTO signal_overlap jsonb (additive, no
+            # migration) so downstream consumers (export_callable / sync_to_crm)
+            # can filter the human-seller queue without re-deriving it.
+            overlap_obj = dict(res["signal_overlap"])
+            overlap_obj["lens"] = res["lens"]
             scored.append({
                 "lead_id": lead["lead_id"],
                 "owner_name": lead.get("owner_name") or "",
                 "owner_type": res["owner_type"],
+                "lens": res["lens"],
+                "cold_call_eligible": res["cold_call_eligible"],
                 "absentee_tier": res["absentee_tier"],
                 "absentee_flag": res["absentee_flag"],
                 "situs_address": lead.get("situs_address") or "",
@@ -178,7 +185,7 @@ def main() -> None:
                 "acreage": _f(lead.get("acreage")) or "",
                 "absentee_score": res["absentee_score"],
                 "signal_overlap": _overlap_str(res["signal_overlap"]),
-                "_overlap_obj": res["signal_overlap"],
+                "_overlap_obj": overlap_obj,
                 "_raw": res["raw_fused_score"],
                 "skip_trace_status": lead.get("skip_trace_status") or "not_traced",
                 "push_status": lead.get("push_status") or "not_pushed",
@@ -218,11 +225,18 @@ def main() -> None:
                 )
         conn.commit()
 
-    # LIVE QUEUE = exclude discovery_seed bootstrap leads (kept scored in the DB as the
-    # validator test set, but never shown as live). All leads were scored above; only
-    # the ranked OUTPUT is filtered. --include-discovery overrides.
+    # LIVE COLD-CALL QUEUE = human SELLERS only, minus discovery_seed bootstrap.
+    # DOCTRINE (v1.2.0): absentee is a dimension, not a thesis. An institution
+    # (bank/LLC/inc/corp/facilities/trust/authority) is a commercial holder, not a
+    # motivated cold-call seller — it drops out of THIS queue into the entity/
+    # commercial lens. Govt is a disposition channel (land bank / surplus). All
+    # rows stay scored in the DB (each lens keeps its score); only the ranked
+    # cold-call OUTPUT is filtered. --include-discovery re-admits the seed set.
     excluded = [r for r in scored if r["discovery_seed"]]
-    live = scored if args.include_discovery else [r for r in scored if not r["discovery_seed"]]
+    institution_lens = [r for r in scored if r["lens"] == "institution" and not r["discovery_seed"]]
+    govt_lens = [r for r in scored if r["lens"] == "govt" and not r["discovery_seed"]]
+    live = [r for r in scored
+            if (args.include_discovery or not r["discovery_seed"]) and r["cold_call_eligible"]]
     for i, r in enumerate(live, 1):
         r["rank"] = i
 
@@ -270,8 +284,20 @@ def main() -> None:
     if excluded and not args.include_discovery:
         print(f"\nexcluded {len(excluded)} discovery_seed leads from live queue "
               f"(kept scored in DB as validator test set; --include-discovery to show)")
-    print("tier breakdown (live): " + ", ".join(f"{k}={v}" for k, v in sorted(tiers.items())))
-    print(f"leads with signal overlap: {overlap_n}/{len(live)}")
+    # Lens diversion (v1.2.0): institutions + govt are NOT cold-call sellers. Show
+    # WHAT was diverted (and the top few) so the operator sees they were routed, not
+    # lost — an absentee LLC is still a real entity/commercial lead in its own lens.
+    print(f"\nLENS SPLIT: cold-call SELLERS (human) = {len(live)}  |  "
+          f"entity/commercial (institution) = {len(institution_lens)}  |  "
+          f"govt/disposition = {len(govt_lens)}")
+    if institution_lens:
+        institution_lens.sort(key=lambda r: r["_raw"], reverse=True)
+        print("  diverted institutions (top 5 by raw — entity/commercial lens, NOT cold-call):")
+        for r in institution_lens[:5]:
+            print(f"    - {r['owner_name'][:38]:<38} raw={r['_raw']:>7.2f} "
+                  f"[{r['signal_overlap'][:24]}]")
+    print("tier breakdown (live sellers): " + ", ".join(f"{k}={v}" for k, v in sorted(tiers.items())))
+    print(f"sellers with signal overlap: {overlap_n}/{len(live)}")
     print(f"\n========  TOP 20 LIVE — county={args.county}  (score=normalized 0-100, raw=unclamped)  ========")
     print(f"{'#':>2} {'score':>6} {'raw':>7} {'abss':>4} {'tier':<13}{'type':<11}{'#sg':>3} {'acre':>6}  owner / situs [overlap]")
     for r in live[:20]:

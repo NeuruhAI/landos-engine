@@ -7,10 +7,16 @@ skip_trace_tracerfy.py — CONTACTABILITY via Tracerfy skip-trace (AXON, additiv
     python -m scripts.skip_trace_tracerfy --batch --confirm --dnc  # + DNC scrub (separate ~$0.02/PHONE)
     python -m scripts.skip_trace_tracerfy --from-export FILE.csv    # ingest a web export, $0
 
-Vendor is locked to Tracerfy. This writes through the EXISTING contact rail (no second writer):
+Vendor is locked to Tracerfy. Contact rail (no second CRM writer):
 
-    Tracerfy  ->  resolved CSV (import_resolved schema)  ->  scripts.import_resolved.run()
-              ->  landos.owner_leads.skip_trace_meta  ->  sync_to_crm  ->  acquisition_leads
+    Tracerfy /trace/  ->  resolved CSV (import_resolved schema)  ->  import_resolved
+    Tracerfy /dnc/    ->  staged DNC receipt CSV + provenance     ->  intake_tracerfy_phones
+                      ->  landos.owner_leads.skip_trace_meta
+                      ->  sync_to_crm (targeted --lead-id)        ->  public.callable_leads
+
+write_resolved never stamps dnc_status='clear'. Clean provider numbers land
+'unchecked' until canonical intake consumes the staged receipt. A phone existing
+is not permission to call. Unknown DNC stays non-callable.
 
 So idempotency, the audit manifest, and the DNC gate are inherited. sync_to_crm suppresses any row whose
 skip_trace_meta.dnc_status == 'do_not_call'. Phones are stamped source/verified_via='tracerfy'.
@@ -62,6 +68,14 @@ from psycopg.rows import dict_row
 
 from app.config import DATABASE_URL
 from scripts import import_resolved
+from scripts.dnc_staged_receipt import (
+    CRM_TARGET_KEY_SQL,
+    DncReceiptError,
+    compile_crm_target_key_map,
+    owner_ids_with_phones,
+    persist_dnc_staged_receipt,
+    persist_vendor_payload,
+)
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
 TRACERFY_BASE = os.environ.get("TRACERFY_API_BASE", "https://tracerfy.com/v1/api").rstrip("/")
@@ -267,11 +281,19 @@ def build_trace_csv(targets):
 
 
 def submit_trace(targets, key):
-    """POST {BASE}/trace/ as multipart (csv_file + column map) -> queue_id. Fails loud on no queue_id."""
+    """POST {BASE}/trace/ as multipart (csv_file + column map) -> queue_id. Fails loud on no queue_id.
+
+    Billable: every target must clear the FREE-FIRST guard (its own free-first job,
+    free path exhausted, spend authorized) before the upload is built."""
+    from app.free_first.guard import paid_call
     fields = dict(TRACE_COLUMN_MAP)
     fields["trace_type"] = TRACERFY_TRACE_TYPE
-    ct, body = _multipart(fields, "csv_file", "targets.csv", build_trace_csv(targets))
-    d = _json(_request("POST", f"{TRACERFY_BASE}/trace/", key, body=body, content_type=ct))
+    credits = CREDITS_PER_TRACE.get(TRACERFY_TRACE_TYPE, 1)
+    with paid_call("tracerfy", items=[("contact.phone", f"lead:{t['lead_id']}") for t in targets],
+                   est_cost_usd=round(len(targets) * credits * COST_PER_CREDIT, 4),
+                   caller="scripts/skip_trace_tracerfy.py:submit_trace"):
+        ct, body = _multipart(fields, "csv_file", "targets.csv", build_trace_csv(targets))
+        d = _json(_request("POST", f"{TRACERFY_BASE}/trace/", key, body=body, content_type=ct))
     qid = _extract_queue_id(d)
     if not qid:
         raise TracerfyContractError(f"/trace/ returned no queue_id; top-level keys={list(d)[:8]}")
@@ -280,16 +302,103 @@ def submit_trace(targets, key):
 
 def submit_dnc(numbers, key):
     """POST {BASE}/dnc/scrub/ as JSON {"phones":[...]} -> dnc_queue_id. SEPARATE per-phone billing."""
-    body = json.dumps({"phones": list(numbers)}).encode("utf-8")
-    d = _json(_request("POST", f"{TRACERFY_BASE}/dnc/scrub/", key, body=body,
-                       content_type="application/json"))
+    from app.free_first.guard import paid_call
+    numbers = list(numbers)
+    with paid_call("tracerfy_dnc", items=[("contact.dnc_status", f"phone:{n}") for n in numbers],
+                   est_cost_usd=round(len(numbers) * COST_PER_CREDIT, 4),
+                   caller="scripts/skip_trace_tracerfy.py:submit_dnc"):
+        body = json.dumps({"phones": numbers}).encode("utf-8")
+        d = _json(_request("POST", f"{TRACERFY_BASE}/dnc/scrub/", key, body=body,
+                           content_type="application/json"))
     qid = _extract_queue_id(d)
     if not qid:
         raise TracerfyContractError(f"/dnc/scrub/ returned no queue id; top-level keys={list(d)[:8]}")
     return qid, d
 
 
-def _poll(url, key, cap=POLL_CAP_SECONDS, settle=2, min_wait=15):
+def _queue_response_identity(payload):
+    """Return one unambiguous top-level queue identity, or fail closed.
+
+    Queue GET responses are evidence.  Do not reuse the permissive submit-time
+    extractor here: if multiple identity fields disagree, accepting either one
+    could attach results from the wrong paid batch.
+    """
+    if not isinstance(payload, dict):
+        raise TracerfyContractError(
+            "queue identity is not provable from a non-object response")
+    identities = {
+        str(payload[name]).strip()
+        for name in ("id", "dnc_queue_id", "queue_id", "queueId")
+        if isinstance(payload.get(name), (str, int))
+        and str(payload[name]).strip()
+    }
+    if not identities:
+        raise TracerfyContractError(
+            f"queue response has no identity; top-level keys={list(payload)[:12]}")
+    if len(identities) != 1:
+        raise TracerfyContractError(
+            f"queue response has conflicting identities={sorted(identities)}")
+    return identities.pop()
+
+
+def _dnc_phone_key(value):
+    """Strict NANP comparison key used only for DNC queue reconciliation."""
+    number = re.sub(r"\D", "", value or "")
+    if len(number) == 10:
+        return number
+    if len(number) == 11 and number.startswith("1"):
+        return number[1:]
+    raise TracerfyContractError(
+        f"DNC phone has unsupported digit length={len(number)}")
+
+
+def _assert_dnc_phone_membership(queue_id, rows, expected_phones):
+    """Prove the completed DNC result is exactly the submitted phone cohort.
+
+    On failure the local operator gets the exact canonical missing/extra sets.
+    This intentionally happens before a caller can accept or persist results.
+    """
+    expected = [_dnc_phone_key(value) for value in expected_phones]
+    expected_set = set(expected)
+    if len(expected_set) != len(expected):
+        duplicates = sorted(
+            key for key in expected_set if expected.count(key) > 1)
+        raise TracerfyContractError(
+            f"DNC expected-phone alias collision: queue_id={queue_id} "
+            f"duplicate_keys={duplicates}")
+
+    returned = []
+    for index, row in enumerate(rows or []):
+        if not isinstance(row, dict):
+            raise TracerfyContractError(
+                f"DNC queue result is not an object: queue_id={queue_id} row={index}")
+        number = next(
+            (str(row[name]).strip()
+             for name in ("phone", "phone_number", "number")
+             if row.get(name) is not None and str(row[name]).strip()),
+            None,
+        )
+        if number is None:
+            raise TracerfyContractError(
+                f"DNC queue result has no phone: queue_id={queue_id} row={index}")
+        returned.append(_dnc_phone_key(number))
+
+    returned_set = set(returned)
+    missing = sorted(expected_set - returned_set)
+    extra = sorted(returned_set - expected_set)
+    duplicate_keys = sorted(
+        key for key in returned_set if returned.count(key) > 1)
+    if (missing or extra or duplicate_keys
+            or len(returned) != len(expected)
+            or len(returned_set) != len(expected_set)):
+        raise TracerfyContractError(
+            f"DNC queue result mismatch: queue_id={queue_id} "
+            f"missing={missing} extra={extra} duplicate_keys={duplicate_keys} "
+            f"returned_rows={len(returned)} unique_returned={len(returned_set)}")
+
+
+def _poll(url, key, cap=POLL_CAP_SECONDS, settle=2, min_wait=15,
+          expected_queue_id=None):
     """Poll a queue with backoff (2,4,8,16…) up to `cap`s.
       - object with pending=false  -> results inline or from download_url (a CSV; fetched WITHOUT auth).
       - bare list (trace results carry NO completion flag and GROW as hits land) -> wait until the row
@@ -300,6 +409,12 @@ def _poll(url, key, cap=POLL_CAP_SECONDS, settle=2, min_wait=15):
     last_len, stable = None, 0
     while True:
         d = _json(_request("GET", url, key))
+        if expected_queue_id is not None:
+            actual_queue_id = _queue_response_identity(d)
+            if actual_queue_id != str(expected_queue_id):
+                raise TracerfyContractError(
+                    f"queue identity mismatch: requested={expected_queue_id} "
+                    f"returned={actual_queue_id}")
         if isinstance(d, list):
             if d:
                 stable = stable + 1 if len(d) == last_len else 0
@@ -333,8 +448,16 @@ def poll_queue(queue_id, key, cap=POLL_CAP_SECONDS):
     return _poll(f"{TRACERFY_BASE}/queue/{queue_id}", key, cap)
 
 
-def poll_dnc(queue_id, key, cap=POLL_CAP_SECONDS):
-    return _poll(f"{TRACERFY_BASE}/dnc/queue/{queue_id}", key, cap)
+def poll_dnc(queue_id, key, cap=POLL_CAP_SECONDS, expected_phones=None):
+    rows = _poll(
+        f"{TRACERFY_BASE}/dnc/queue/{queue_id}",
+        key,
+        cap,
+        expected_queue_id=str(queue_id),
+    )
+    if expected_phones is not None:
+        _assert_dnc_phone_membership(str(queue_id), rows, expected_phones)
+    return rows
 
 
 def _val(rec, *keys):
@@ -403,13 +526,21 @@ def _pair_results(results, targets):
 
 
 def _as_bool(v):
+    """Provider nullable boolean. None/missing/unrecognized stay None. Never None→False."""
+    if v is None:
+        return None
     if isinstance(v, bool):
         return v
     if isinstance(v, (int, float)):
         return v != 0
     if isinstance(v, str):
-        return v.strip().lower() in ("true", "yes", "1", "y", "t")
-    return False
+        s = v.strip().lower()
+        if s in ("true", "yes", "1", "y", "t"):
+            return True
+        if s in ("false", "no", "0", "n", "f"):
+            return False
+        return None
+    return None
 
 
 def _digits(s):
@@ -436,23 +567,32 @@ def _dnc_index(rows):
 
 
 def _apply_dnc(recs, dnc_map):
-    """Stamp dnc on each phone. Strict: callable ONLY if is_clean (i.e. national/state/dma/litigator
-    all false). A number Tracerfy did not return in the scrub is left unflagged (unchecked)."""
+    """Stamp dnc on each phone. Callable ONLY on explicit is_clean True with no explicit
+    block flags. Explicit False or explicit national/state/dma/litigator True is blocked.
+    Missing vendor rows and is_clean None stay unflagged (unchecked). Never None→False."""
+    flag_names = ("national_dnc", "state_dnc", "dma", "litigator")
     for _, c in recs:
         for p in c["phones"]:
             info = dnc_map.get(_digits(p["number"]))
             if info is None:
                 continue
-            p["dnc"] = not info["is_clean"] or info["national_dnc"] or info["state_dnc"] \
-                or info["dma"] or info["litigator"]
+            flags = any(info.get(name) is True for name in flag_names)
+            is_clean = info.get("is_clean")
+            if is_clean is True and not flags:
+                p["dnc"] = False
+            elif flags or is_clean is False:
+                p["dnc"] = True
 
 
-def trace_pool(targets, key, do_dnc=False, dnc_budget_usd=None, resume_queue_id=None):
+def trace_pool(targets, key, do_dnc=False, dnc_budget_usd=None, resume_queue_id=None,
+               resume_dnc_queue_id=None):
     """Submit ALL targets as ONE multipart batch, poll, map, then (optionally) DNC-scrub the numbers and
     apply flags at the write boundary. Returns (recs, stats). Raises TracerfyError on any failure.
     DNC is skipped (not submitted) if its estimated cost exceeds dnc_budget_usd — the trace data is still
     written, just left unscrubbed (caller reports it) so an autonomous run can never breach the cap.
-    resume_queue_id polls an EXISTING trace queue (recover a paid batch after a crash — no re-spend)."""
+    resume_queue_id polls an EXISTING trace queue (recover a paid batch after a crash — no re-spend).
+    resume_dnc_queue_id polls an EXISTING DNC queue (recover a paid scrub — no re-spend) and is the
+    source of the staged intake receipt."""
     if resume_queue_id:
         qid = str(resume_queue_id)
         print(f"  RESUMING trace queue_id={qid} (no new /trace/ submit — no re-spend)")
@@ -462,22 +602,30 @@ def trace_pool(targets, key, do_dnc=False, dnc_budget_usd=None, resume_queue_id=
     results = poll_queue(qid, key)
     recs = [(t, result_to_contacts(r) if r is not None else {"phones": [], "emails": []})
             for t, r in _pair_results(results, targets)]
-    scrubbed, dnc_note = 0, None
+    scrubbed, dnc_note, dqid, dnc_rows = 0, None, None, None
     if do_dnc:
         nums = sorted({p["number"] for _, c in recs for p in c["phones"]})
         if nums:
             est = len(nums) * COST_PER_CREDIT
-            if dnc_budget_usd is not None and est > dnc_budget_usd:
+            if resume_dnc_queue_id:
+                dqid = str(resume_dnc_queue_id)
+                print(f"  RESUMING dnc_queue_id={dqid} (no new /dnc/scrub/ — no re-spend)")
+                dnc_rows = poll_dnc(dqid, key, expected_phones=nums)
+                _apply_dnc(recs, _dnc_index(dnc_rows))
+                scrubbed = len(nums)
+            elif dnc_budget_usd is not None and est > dnc_budget_usd:
                 dnc_note = (f"SKIPPED — est ${est:.2f} for {len(nums)} numbers exceeds the "
                             f"${dnc_budget_usd:.2f} DNC budget; phones left unscrubbed (unchecked)")
                 print(f"  /dnc/scrub/ {dnc_note}")
             else:
                 dqid, _ = submit_dnc(nums, key)
                 print(f"  /dnc/scrub/ accepted {len(nums)} numbers -> dnc_queue_id={dqid}")
-                _apply_dnc(recs, _dnc_index(poll_dnc(dqid, key)))
+                dnc_rows = poll_dnc(dqid, key, expected_phones=nums)
+                _apply_dnc(recs, _dnc_index(dnc_rows))
                 scrubbed = len(nums)
     return recs, {"submitted": len(targets), "results": len(results),
-                  "dnc_scrubbed": scrubbed, "dnc_note": dnc_note}
+                  "dnc_scrubbed": scrubbed, "dnc_note": dnc_note,
+                  "trace_queue_id": qid, "dnc_queue_id": dqid, "dnc_rows": dnc_rows}
 
 
 # ---------------------------------------------------------------- web-export ingest ($0)
@@ -628,6 +776,7 @@ def run_dry(targets):
     print(f"  trace_type  : {TRACERFY_TRACE_TYPE!r} ({credits} credit/lead)")
     print(f"  est cost    : {len(targets)} x {credits} x ${COST_PER_CREDIT} = ${worst:.2f} (misses free)")
     print(f"  DNC         : OFF by default — separate ~${COST_PER_CREDIT}/PHONE charge (enable with --dnc)")
+    print("  DNC receipt : NOT written on dry-run (no provider result to persist)")
     if targets:
         print(f"  example row : {json.dumps(build_trace_row(targets[0]))}")
     if worst > BATCH_CAP_USD:
@@ -659,7 +808,69 @@ def run_probe(targets, key):
           "(add --dnc only when you want the separate per-phone DNC spend).")
 
 
-def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None, signal_filter=True):
+def _map_crm_target_keys(owner_lead_ids):
+    """Read-only hop: landos.owner_leads.lead_id -> public.acquisition_leads.lead_id.
+
+    Intake will refuse LandOS keys (routes them to import_resolved) and will
+    refuse mixed/colliding conventions. The staged DNC receipt must use CRM
+    acquisition_leads.lead_id as target_key. Exact-id any() — no broad scan.
+    """
+    ids = [str(x) for x in owner_lead_ids]
+    if not ids:
+        return {}
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        conn.read_only = True
+        with conn.cursor() as cur:
+            cur.execute("set statement_timeout = 60000")
+            cur.execute(CRM_TARGET_KEY_SQL, {"tenant": TENANT, "owner_lead_ids": ids})
+            rows = list(cur.fetchall())
+    return compile_crm_target_key_map(rows, ids)
+
+
+def persist_batch_dnc_receipt(recs, stats, *, out_dir=OUT_DIR, map_keys=_map_crm_target_keys,
+                              scrubbed_at=None, provider_base=None):
+    """Provider result -> staged intake CSV. File-only. No CRM write. No re-spend."""
+    dqid = stats.get("dnc_queue_id")
+    dnc_rows = stats.get("dnc_rows")
+    if not dqid or not stats.get("dnc_scrubbed"):
+        return None
+    if dnc_rows is None:
+        raise DncReceiptError("STOP — DNC queue completed but vendor rows were not retained")
+    vendor_dump = persist_vendor_payload(
+        out_dir,
+        dnc_queue_id=dqid,
+        vendor_rows=dnc_rows,
+        trace_queue_id=stats.get("trace_queue_id"),
+        provider_base=provider_base or TRACERFY_BASE,
+    )
+    print(f"  DNC vendor dump: {vendor_dump['path']} sha256={vendor_dump['sha256']}")
+    owner_ids = owner_ids_with_phones(recs)
+    target_key_by_owner = map_keys(owner_ids)
+    when = scrubbed_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    receipt = persist_dnc_staged_receipt(
+        recs,
+        _dnc_index(dnc_rows),
+        output_dir=out_dir,
+        dnc_queue_id=dqid,
+        target_key_by_owner=target_key_by_owner,
+        scrubbed_at=when,
+        trace_queue_id=stats.get("trace_queue_id"),
+        vendor_rows=dnc_rows,
+        provider_base=provider_base or TRACERFY_BASE,
+    )
+    print(f"  DNC staged receipt: {receipt['csv']} sha256={receipt['csv_sha256']} "
+          f"clean={receipt['manifest_body']['clean']} dnc={receipt['manifest_body']['dnc']} "
+          f"unchecked={receipt['manifest_body']['unchecked']}")
+    print("  Next (canonical intake, landos.* only): "
+          f"python -m scripts.intake_tracerfy_phones --csv {receipt['csv']} --apply")
+    print("  Then (sole CRM writer, targeted): "
+          "python -m scripts.sync_to_crm --lead-id <crm_lead_id> ...")
+    print("  Callability authority remains public.callable_leads (unknown stays NOT callable).")
+    return receipt
+
+
+def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None, signal_filter=True,
+              resume_dnc_queue_id=None):
     worst, credits = _est(len(targets))
     if not confirm:
         sys.exit(f"STOP — --batch is GATED. Re-run with --confirm to authorize up to ${worst:.2f} for "
@@ -673,9 +884,15 @@ def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None, signal_fi
     dnc_budget = max(0.0, HARD_CAP_USD - worst - 0.50)   # leave headroom for the probe + any overage
     try:
         recs, stats = trace_pool(targets, key, do_dnc=do_dnc, dnc_budget_usd=dnc_budget,
-                                  resume_queue_id=resume_queue_id)
+                                  resume_queue_id=resume_queue_id,
+                                  resume_dnc_queue_id=resume_dnc_queue_id)
     except TracerfyError as ex:
         sys.exit(f"BATCH STOPPED (no partial fabrication): {ex}")
+    receipt = None
+    try:
+        receipt = persist_batch_dnc_receipt(recs, stats)
+    except DncReceiptError as ex:
+        print(f"  DNC RECEIPT STOP: {ex}")
     out = os.path.join(OUT_DIR, f"tracerfy_resolved_{ts}.csv")
     n = write_resolved(out, recs, signal_filter=signal_filter)
     with_contact = sum(1 for _, c in recs if c["phones"] or c["emails"])
@@ -685,11 +902,20 @@ def run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=None, signal_fi
         print(f"  DNC: {stats['dnc_note']}")
     if n:
         import_resolved.run(out)
-    print("Next: python -m scripts.sync_to_crm (projects callable phones; DNC suppressed at the boundary).")
+    if stats.get("dnc_scrubbed") and receipt is None:
+        sys.exit("BATCH STOPPED — DNC vendor result was not persisted as the staged "
+                 "intake receipt; phones remain unchecked; callable_leads stays 0. "
+                 "Reconcile from data/incoming/tracerfy_dnc_vendor_<queue>.json "
+                 "via --resume-queue / --resume-dnc-queue (no re-spend).")
+    print("Next: python -m scripts.intake_tracerfy_phones --csv "
+          "<tracerfy_dnc_receipt_*.csv> --apply")
+    print("Then: python -m scripts.sync_to_crm --lead-id ... "
+          "(projects callable phones; DNC suppressed at the boundary).")
 
 
 def main(mode="dry-run", limit=None, provenance=None, from_export=None, confirm=False, do_dnc=False,
-         resume_queue_id=None, signal_filter=True, county=None, only_leads=None):
+         resume_queue_id=None, signal_filter=True, county=None, only_leads=None,
+         resume_dnc_queue_id=None):
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     if from_export:
         run_from_export(from_export, provenance, limit, ts, signal_filter=signal_filter)
@@ -708,7 +934,7 @@ def main(mode="dry-run", limit=None, provenance=None, from_export=None, confirm=
         run_probe(targets, key)
     elif mode == "batch":
         run_batch(targets, key, confirm, do_dnc, ts, resume_queue_id=resume_queue_id,
-                  signal_filter=signal_filter)
+                  signal_filter=signal_filter, resume_dnc_queue_id=resume_dnc_queue_id)
     else:
         sys.exit(f"unknown mode: {mode}")
 
@@ -735,6 +961,10 @@ if __name__ == "__main__":
     ap.add_argument("--resume-queue", type=int,
                     help="poll an existing trace queue_id instead of a new /trace/ submit (recover a paid "
                          "batch after a crash — no re-trace spend)")
+    ap.add_argument("--resume-dnc-queue", type=int,
+                    help="poll an existing dnc_queue_id instead of a new /dnc/scrub/ submit (recover a paid "
+                         "DNC result after a crash — no re-DNC spend). Requires --dnc. Writes the staged "
+                         "intake receipt from the recovered vendor rows.")
     ap.add_argument("--no-signal-filter", action="store_false", dest="signal_filter",
                     help="disable the owner-occupant doctrine (let SURNAME_ONLY leads be callable); "
                          "by default surname-only leads are forced to mail-only")
@@ -742,7 +972,9 @@ if __name__ == "__main__":
                     help="comma-separated owner_leads lead_ids to scope the trace to (intersected with "
                          "the qualified individual pool) — the exact-cohort spend gate")
     a = ap.parse_args()
+    if a.resume_dnc_queue and not a.dnc:
+        sys.exit("STOP — --resume-dnc-queue requires --dnc")
     only = [s.strip() for s in a.only_leads.split(",") if s.strip()] if a.only_leads else None
     main(mode=a.mode, limit=a.limit, provenance=a.provenance, from_export=a.from_export,
          confirm=a.confirm, do_dnc=a.dnc, resume_queue_id=a.resume_queue, signal_filter=a.signal_filter,
-         county=a.county, only_leads=only)
+         county=a.county, only_leads=only, resume_dnc_queue_id=a.resume_dnc_queue)

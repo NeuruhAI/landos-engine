@@ -24,6 +24,7 @@ never invented. A genuine API/auth failure (bad client key, HTTP error, status
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.parse
@@ -64,6 +65,17 @@ def _num(v: Any) -> Optional[float]:
         return f
     except (TypeError, ValueError):
         return None
+
+
+def reportall_target_key(county_fips: str, extra: Dict[str, Any]) -> str:
+    """The free-first target a ReportAll query is about: the parcel id or owner it names,
+    else the query itself (a bulk discovery pull is a target too, and it is paid)."""
+    if extra.get("parcel_id"):
+        return f"parcel:{county_fips}:{str(extra['parcel_id']).strip()}"
+    if extra.get("owner"):
+        return f"owner:{county_fips}:{str(extra['owner']).strip().upper()}"
+    digest = json.dumps(extra, sort_keys=True, default=str)
+    return f"reportall_query:{county_fips}:{hashlib.sha256(digest.encode()).hexdigest()[:16]}"
 
 
 def reportall_parcel_id(csv_apn: str, strip_prefix: str) -> str:
@@ -110,28 +122,35 @@ class ReportAllOwnerNormalizer:
 
     def _search(self, extra: Dict[str, Any], label: str) -> Dict[str, Any]:
         """Low-level ReportAll call: region + extra attribute clause(s). Raises on
-        HTTP / network / non-OK (fatal — the run STOPS with the exact message)."""
-        params = urllib.parse.urlencode({
-            "client": self.client_key, "v": API_VERSION,
-            "region": self.cfg["region"], **extra,
-        })
-        req = urllib.request.Request(f"{API_URL}?{params}",
-                                     headers={"User-Agent": "landos-engine/1.0"})
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                body = r.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="replace")[:300]
-            raise RuntimeError(f"ReportAll HTTP {e.code} for {label}: {detail}")
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"ReportAll network error for {label}: {e.reason}")
-        self.calls_made += 1
-        try:
-            data = json.loads(body)
-        except json.JSONDecodeError:
-            raise RuntimeError(f"ReportAll non-JSON response for {label}: {body[:200]}")
-        if data.get("status") != "OK":
-            raise RuntimeError(f"ReportAll error for {label}: {data.get('message', data)}")
+        HTTP / network / non-OK (fatal — the run STOPS with the exact message).
+
+        ReportAll is metered: every call first clears the FREE-FIRST guard
+        (app/free_first/guard.py) for the parcel / owner it asks about. A blocked
+        call raises PaidCallBlocked (a RuntimeError) before any request is built."""
+        from app.free_first.guard import paid_call
+        with paid_call("reportall", items=[("parcel.owner_identity", reportall_target_key(self.county_fips, extra))],
+                       est_cost_usd=None, caller="app/normalizers/reportall_owner.py:ReportAllOwnerNormalizer._search"):
+            params = urllib.parse.urlencode({
+                "client": self.client_key, "v": API_VERSION,
+                "region": self.cfg["region"], **extra,
+            })
+            req = urllib.request.Request(f"{API_URL}?{params}",
+                                         headers={"User-Agent": "landos-engine/1.0"})
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                    body = r.read().decode("utf-8", errors="replace")
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode("utf-8", errors="replace")[:300]
+                raise RuntimeError(f"ReportAll HTTP {e.code} for {label}: {detail}")
+            except urllib.error.URLError as e:
+                raise RuntimeError(f"ReportAll network error for {label}: {e.reason}")
+            self.calls_made += 1
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                raise RuntimeError(f"ReportAll non-JSON response for {label}: {body[:200]}")
+            if data.get("status") != "OK":
+                raise RuntimeError(f"ReportAll error for {label}: {data.get('message', data)}")
         return data
 
     def _query(self, parcel_id: str) -> Dict[str, Any]:

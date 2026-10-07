@@ -33,6 +33,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.comps import arbitrage_feasibility  # pure (no DB/network), like this module
+from app.projection.code_vacancy import expand_recipe_tokens
 
 
 # Engine distress token  ->  composite distress key (app.scoring DEFAULT_WEIGHTS["distress"]).
@@ -49,6 +50,8 @@ DISTRESS_TOKEN_MAP: Dict[str, str] = {
     # future engine tokens that already have a model slot:
     "code_violation": "code_violation",
     "vacancy": "vacancy",
+    "nc_dps:code_violation": "code_violation",
+    "nc_dps:vacancy": "vacancy",
     "long_hold": "long_hold",
     "pre_foreclosure": "pre_foreclosure",
 }
@@ -166,7 +169,7 @@ def assemble(lead: Dict[str, Any], weights: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     # ---------------- DISTRESS axis -------------------------------------------
-    tokens = [str(t).strip().lower() for t in (lead.get("distress_tokens") or []) if t]
+    tokens = [str(t).strip().lower() for t in expand_recipe_tokens(lead.get("distress_tokens") or []) if t]
     # Part-201 / brownfield contamination badge: drives the BEA gate and marks the
     # arbitrage axis GROSS-of-remediation (a comp-grounded spread is NOT net of cleanup).
     requires_bea = any(t in ("environmental_part201", "brownfield") for t in tokens)

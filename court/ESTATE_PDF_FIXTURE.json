@@ -1,0 +1,61 @@
+{
+  "court_id": "landos-engine.estate-pdf-fixture.v1",
+  "mission_id": "NEURUH-LANDOS-PDF-FIXTURE-20260902",
+  "courted_at": "2026-09-02",
+  "status": "LIVE_PROVEN",
+  "blocked_external": false,
+  "repo": "NeuruhAI/landos-engine",
+  "head_at_start": "7c9405ff550b839779f06ccc9293f34a0daff41f",
+  "pr16": {
+    "merged": true,
+    "sha": "7c9405ff550b839779f06ccc9293f34a0daff41f",
+    "note": "AOC-E-201 / AOC-E-505 PDF intake. This court extends that path through candidate, recipe, and contact state."
+  },
+  "path": [
+    "PDF",
+    "estate CSV",
+    "import contract",
+    "LandOS candidate",
+    "recipe",
+    "contact state"
+  ],
+  "fixture": {
+    "pdf": "tests/fixtures/estate/pdf/synthetic_aoc_e_201.pdf",
+    "worklist": "tests/fixtures/estate/synthetic_wake_worklist.csv",
+    "candidate_id": "synthetic-wake-estate-001",
+    "apn": "SYNTH-WAKE-0001",
+    "county": "Wake",
+    "fips": "37183",
+    "form": "AOC-E-201",
+    "real_pii": false
+  },
+  "contact_state": {
+    "contact_resolution_state": "HEIR_ON_ROLL_NO_ACCEPTED_PHONE",
+    "callability_status": "NOT_AUTHORIZED",
+    "phone_present": "NO",
+    "has_living_identity": true,
+    "attorney_phones_accepted": false
+  },
+  "gates": {
+    "skip_trace": "OFF",
+    "tracerfy": false,
+    "legal_authority_written": false,
+    "scoring_weights_exposed": false,
+    "landos_ingest_written": false,
+    "deedsonar_written": false,
+    "recipe_engine_written": false,
+    "neuruh_property_scan_written": false
+  },
+  "fulfillment_pin": {
+    "sha": "1779abf265814f5595e1153a531c4a0ee09a0faa",
+    "unfreeze": false,
+    "opportunity_intelligence_py_identical": true
+  },
+  "pytest": {
+    "fixture_and_intake": "12 passed",
+    "related_including_oi": "67 passed",
+    "poppler": "pdftotext 24.02.0"
+  },
+  "next_child_mission_id": "NEURUH-PROPERTY-SCAN-SELLABLE-BIND-20260902",
+  "next_child_scope": "NeuruhAI/neuruh-property-scan only. Recourt this LIVE_PROVEN fixture. Do not write landos-engine. Do not unfreeze 1779abf2."
+}
