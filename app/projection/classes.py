@@ -1,0 +1,66 @@
+"""Fable unlock classifications. Closed set — new families fail loudly."""
+from __future__ import annotations
+
+from typing import NoReturn
+
+FAMILY_VALUATION = "VALUATION"
+FAMILY_PARCEL = "PARCEL"
+FAMILY_CODE_VACANCY = "CODE_VACANCY"
+FAMILY_TAX_YEARS_THRESHOLD = "TAX_YEARS_THRESHOLD"
+FAMILY_PARCEL_GRAPH = "PARCEL_GRAPH"
+FAMILY_TAX_SALE_CALENDAR = "TAX_SALE_CALENDAR"
+
+GAP_NORMALIZED_FACT_MISSING = "NORMALIZED_FACT_MISSING"
+GAP_PROJECTION_MISSING = "PROJECTION_MISSING"
+GAP_RECIPE_BINDING_MISSING = "RECIPE_BINDING_MISSING"
+# This lane is never a raw-source hole. A scraper would be the wrong unlock.
+NOT_RAW_SOURCE_MISSING = "RAW_SOURCE_MISSING"
+
+UNLOCK_DERIVED_FROM_EXISTING = "DERIVED_FROM_EXISTING"
+UNLOCK_PROJECTION_OF_INGESTED = "PROJECTION_OF_INGESTED"
+UNLOCK_PROMOTION_THEN_ACQUISITION_FREE = "PROMOTION_THEN_ACQUISITION_FREE"
+UNLOCK_EXPOSE_EXISTING_PLUS_CONFIG = "EXPOSE_EXISTING_PLUS_CONFIG"
+UNLOCK_DERIVED_FROM_GEOMETRY = "DERIVED_FROM_GEOMETRY"
+UNLOCK_PERSIST_FROM_EXISTING_NORMALIZER = "PERSIST_FROM_EXISTING_NORMALIZER"
+
+STATE_KNOWN = "KNOWN"
+STATE_UNKNOWN = "UNKNOWN"
+
+INGREDIENT_EQUITY_PCT = "equity.estimated_pct"
+INGREDIENT_ACREAGE = "acreage.acres"
+INGREDIENT_LAND_USE = "land.use"
+INGREDIENT_LAND_VALUE = "parcel.land_value"
+INGREDIENT_IMPROVEMENT_VALUE = "parcel.improvement_value"
+INGREDIENT_CODE_VIOLATION = "code_violation"
+INGREDIENT_VACANCY = "vacancy"
+# One disjunctive fact (nc_dps:vacancy_or_code): vacancy OR code, never either one.
+INGREDIENT_CODE_OR_VACANCY = "code_vacancy.either"
+INGREDIENT_TAX_DELINQUENT_YEARS = "tax.delinquent_years"
+INGREDIENT_ADJACENT_APNS = "parcel.adjacent_apns"
+INGREDIENT_SHARED_BOUNDARY = "parcel.shared_boundary"
+INGREDIENT_SAME_OWNER_ADJACENT = "parcel.same_owner_adjacent"
+INGREDIENT_TAX_SALE_DATE = "tax.sale_date"
+INGREDIENT_TAX_REDEMPTION_DEADLINE = "tax.redemption_deadline"
+INGREDIENT_TAX_MIN_BID = "tax.min_bid"
+INGREDIENT_TAX_JURISDICTION = "tax.jurisdiction"
+
+
+def _unhandled(family: str) -> NoReturn:
+    raise AssertionError(f"unhandled unlock family: {family!r}")
+
+
+def unlock_classes(family: str) -> tuple[str, str]:
+    """(gap_class, unlock_mode) for a Fable source family."""
+    if family == FAMILY_VALUATION:
+        return GAP_NORMALIZED_FACT_MISSING, UNLOCK_DERIVED_FROM_EXISTING
+    if family == FAMILY_PARCEL:
+        return GAP_PROJECTION_MISSING, UNLOCK_PROJECTION_OF_INGESTED
+    if family == FAMILY_CODE_VACANCY:
+        return GAP_RECIPE_BINDING_MISSING, UNLOCK_PROMOTION_THEN_ACQUISITION_FREE
+    if family == FAMILY_TAX_YEARS_THRESHOLD:
+        return GAP_PROJECTION_MISSING, UNLOCK_EXPOSE_EXISTING_PLUS_CONFIG
+    if family == FAMILY_PARCEL_GRAPH:
+        return GAP_NORMALIZED_FACT_MISSING, UNLOCK_DERIVED_FROM_GEOMETRY
+    if family == FAMILY_TAX_SALE_CALENDAR:
+        return GAP_NORMALIZED_FACT_MISSING, UNLOCK_PERSIST_FROM_EXISTING_NORMALIZER
+    _unhandled(family)

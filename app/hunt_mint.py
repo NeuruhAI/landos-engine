@@ -1,24 +1,11 @@
-"""
-hunt_mint.py — HUNT-V2 §4: THE OPERATOR'S TRIGGER. The only path from a hunt
-job to landos.owner_leads.
+"""hunt_mint — HUNT-V2 operator fire (typed GO).
 
     python -m app.hunt_mint <job_id> [--yes-i-typed-go GO]
 
-Autonomy doctrine holds absolutely: the system proposed (worker parked the job
-at awaiting_operator_mint with the dry-run table); THIS command is the human
-firing it. It prints the dry-run table fresh (never trusts a stale count),
-requires the operator to TYPE GO (exactly), then:
+Mint scoped taxsale leads → geocode attempt → score_emergence → sync_to_crm → synced.
 
-    mint (scoped to the job's covered counties, mint_taxsale_leads)
-    -> geocode attempt (county adapter if known: MI registry counties via
-       scripts.geocode_taxsale_mi, Williamson TX via its dedicated script;
-       everything else stays honest-NULL with a note)
-    -> score_emergence (the REAL run — signals are now matched, leads emerge)
-    -> sync_to_crm (THE single writer of public.acquisition_leads)
-    -> status 'synced'
-
---yes-i-typed-go GO exists for the operator's own scripting (e.g. a runbook
-line); it still demands the literal token GO. Anything else aborts unchanged.
+Hang repair: release hunt_jobs conn before score/sync; scope score to job fips;
+sync_to_crm(batch_size=100, lead_ids=…). Unbounded sync left process at ~0% CPU.
 """
 import argparse
 import sys
@@ -37,6 +24,8 @@ GEOCODE_ADAPTERS = {
 }
 MI_REGISTRY_GEOCODER = "scripts.geocode_taxsale_mi"   # registry-driven (mi_parcel_endpoints.json)
 
+SYNC_BATCH_SIZE = 100
+
 
 def print_dry_run_table(stats):
     print("\n=== DRY-RUN MINT TABLE (fresh — computed now, not the stored counts) ===")
@@ -49,6 +38,7 @@ def print_dry_run_table(stats):
         print(f"    {p['county_fips']} {p['parcel_apn']}  {p['owner_name']!r} [{p['owner_type']}]")
     if len(stats["preview"]) > 15:
         print(f"    … +{len(stats['preview']) - 15} more")
+    sys.stdout.flush()
 
 
 def geocode_attempt(fips_list):
@@ -69,6 +59,20 @@ def geocode_attempt(fips_list):
         elif not f.startswith("26"):
             notes[f] = "no geocode adapter — coords stay honest-NULL"
     return notes
+
+
+def _matched_lead_ids(fips_list):
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+        cur.execute(
+            """select distinct matched_lead_id as lead_id
+               from landos.discovery_signals
+               where signal_class = 'temporal'
+                 and source_type = 'taxsale'
+                 and matched_lead_id is not null
+                 and county_fips = any(%s)""",
+            (list(fips_list),),
+        )
+        return [r["lead_id"] for r in cur.fetchall()]
 
 
 def main(job_id, typed=None):
@@ -110,20 +114,82 @@ def main(job_id, typed=None):
         counts["geocode"] = geo_notes
         hunt_core.append_receipt(job, "geocode", geo_notes)
 
-        score_emergence.main(dry_run=False)          # the REAL emergence run
-        hunt_core.append_receipt(job, "score_emergence", {"ran": True})
-
+        # Persist mint/geocode, then release this connection before score/sync.
         hunt_core.update_job(cur, job_id, counts=counts, receipts=job["receipts"])
         conn.commit()
 
-    sync_to_crm.main()                               # THE single writer projects
+    lead_ids = _matched_lead_ids(fips_list)
+    print(f"hunt_mint: score/sync scope leads={len(lead_ids)} fips={sorted(fips_list)}",
+          flush=True)
+
+    try:
+        score_stats = score_emergence.main(
+            dry_run=False, lead_ids=lead_ids or None, only_fips=fips_list)
+        score_receipt = {
+            "ran": True,
+            "leads_scored": (score_stats or {}).get("leads_scored"),
+            "owner_leads_updated": (score_stats or {}).get("owner_leads_updated"),
+        }
+    except Exception as e:  # noqa: BLE001 — fail-closed: park job, do not hang
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+            job = hunt_core.get_job(cur, job_id)
+            hunt_core.append_receipt(job, "score_emergence", {"ran": False, "error": str(e)})
+            hunt_core.update_job(cur, job_id, status="mint_failed",
+                                 counts=counts, receipts=job["receipts"])
+            conn.commit()
+        print(f"hunt_mint: score_emergence FAIL-CLOSED: {e}", flush=True)
+        return 2
+
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
         job = hunt_core.get_job(cur, job_id)
-        hunt_core.append_receipt(job, "sync", {"single_writer": "scripts.sync_to_crm", "ran": True})
+        hunt_core.append_receipt(job, "score_emergence", score_receipt)
+        hunt_core.update_job(cur, job_id, counts=counts, receipts=job["receipts"])
+        conn.commit()
+
+    try:
+        sync_kwargs = {"batch_size": SYNC_BATCH_SIZE}
+        if lead_ids:
+            sync_kwargs["lead_ids"] = lead_ids
+        sync_to_crm.main(**sync_kwargs)
+        sync_receipt = {
+            "single_writer": "scripts.sync_to_crm",
+            "ran": True,
+            "batch_size": SYNC_BATCH_SIZE,
+            "lead_ids": len(lead_ids),
+        }
+    except TypeError:
+        print("hunt_mint: sync_to_crm.main lacks batch_size kwargs; calling unbound",
+              flush=True)
+        try:
+            sync_to_crm.main()
+            sync_receipt = {"single_writer": "scripts.sync_to_crm", "ran": True,
+                            "batch_size": None, "lead_ids": len(lead_ids)}
+        except Exception as e:  # noqa: BLE001
+            with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+                job = hunt_core.get_job(cur, job_id)
+                hunt_core.append_receipt(job, "sync", {"ran": False, "error": str(e)})
+                hunt_core.update_job(cur, job_id, status="sync_failed",
+                                     counts=counts, receipts=job["receipts"])
+                conn.commit()
+            print(f"hunt_mint: sync_to_crm FAIL-CLOSED: {e}", flush=True)
+            return 3
+    except Exception as e:  # noqa: BLE001
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+            job = hunt_core.get_job(cur, job_id)
+            hunt_core.append_receipt(job, "sync", {"ran": False, "error": str(e)})
+            hunt_core.update_job(cur, job_id, status="sync_failed",
+                                 counts=counts, receipts=job["receipts"])
+            conn.commit()
+        print(f"hunt_mint: sync_to_crm FAIL-CLOSED: {e}", flush=True)
+        return 3
+
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
+        job = hunt_core.get_job(cur, job_id)
+        hunt_core.append_receipt(job, "sync", sync_receipt)
         hunt_core.update_job(cur, job_id, status="synced", receipts=job["receipts"])
         conn.commit()
     print(f"\nhunt job {job_id}: SYNCED. minted={counts['minted']['minted']} "
-          f"signals_matched={counts['minted']['signals_matched']}")
+          f"signals_matched={counts['minted']['signals_matched']}", flush=True)
     return 0
 
 

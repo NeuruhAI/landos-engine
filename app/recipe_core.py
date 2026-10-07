@@ -35,6 +35,7 @@ from psycopg.types.json import Jsonb
 
 from app.config import DATABASE_URL
 from app.fips import _table  # census name<->fips (module-private, reused read-only)
+from app.projection.code_vacancy import RECIPE_DIM_TAGS
 from app.receipt import section_hash, sha256_text
 
 TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"
@@ -361,18 +362,26 @@ def compose_dispose(cur, goal_text, dispo, tenant=TENANT):
 # has no equity/tax_delinquent/rank columns, so approving would silently drop
 # F2 + rank. That fidelity gap is surfaced IN the punch_list, not hidden.
 # ---------------------------------------------------------------------------
-DISTRESS_DIMENSIONS = ["absentee", "code_violation", "divorce", "lis_pendens", "probate"]
+DISTRESS_DIMENSIONS = ["absentee", "code_violation", "vacancy", "divorce", "lis_pendens", "probate"]
 
 # how each dimension is DETECTED in the spine (so coverage lights up on its own
 # when a lane lands): emerging_signals.source_type aliases + signal_tag fallbacks.
 _DIM_SOURCE_TYPES = {
     "probate": ["probate", "probate_in"],
     "code_violation": ["code_violation", "codeviolation"],
+    "vacancy": ["vacancy"],
     "divorce": ["divorce"],
     "lis_pendens": ["lis_pendens", "lispendens"],
     "absentee": ["absentee"],
 }
-_DIM_TAGS = {"absentee": ["absentee", "owner_out_of_state"]}
+# absentee tags were already bound. CODE_VACANCY binds the existing NC DPS tags
+# (nc_dps:code_violation / nc_dps:vacancy / nc_dps:vacancy_or_code) — no invented
+# strings. See app.projection.code_vacancy.TAG_CENSUS.
+_DIM_TAGS = {
+    "absentee": ["absentee", "owner_out_of_state"],
+    "code_violation": list(RECIPE_DIM_TAGS["code_violation"]),
+    "vacancy": list(RECIPE_DIM_TAGS["vacancy"]),
+}
 # parcel_meta boolean keys that evidence a dimension ($0, in-spine). absentee is
 # already carried as parcel_meta.owner_out_of_state on ~450 MI leads.
 _DIM_META = {"absentee": ["owner_out_of_state"]}

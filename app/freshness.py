@@ -98,3 +98,75 @@ def upcoming_taxsale(sale_date, detail_json, owner_name, today):
         return (False, f"surplus>0 (sale already settled): {surplus}")
 
     return (True, f"upcoming {d.isoformat()}")
+
+
+# ---------------------------------------------------------------------------
+# CONTACT-FIELD FRESHNESS (B1, 2026-09-02). Rules, not ML. Published as
+# docs/FRESHNESS_RULES.md; the DeedSonar RPC and export mirror these constants
+# so the screen, the SQL and the CSV agree to the day.
+#
+# Every contact-bearing field carries: source, source_as_of (the date the source
+# says the value is true), observed_at (when we read it), confidence,
+# provenance_url. staleness_days = today - source_as_of. Unknown stays unknown:
+# a field without source_as_of is STALE by rule, never given a default date.
+# ---------------------------------------------------------------------------
+FRESH = "FRESH"
+AGING = "AGING"
+STALE = "STALE"
+UNKNOWN_AS_OF = "UNKNOWN"   # reported alongside STALE so "unknown" is never hidden
+
+#: field -> (fresh_max_days, aging_max_days). Beyond aging_max_days = STALE.
+FRESHNESS_RULES = {
+    "phone":          (90, 365),
+    "mailing_address": (180, 365),
+    "email":          (180, 365),
+    "heir_link":      (365, 730),
+    "owner_name":     (365, 730),
+    "assessed_value": (365, 730),
+    "arrears":        (90, 365),
+    "deed":           (365, 730),
+}
+DEFAULT_RULE = (90, 365)
+
+
+def staleness_days(source_as_of, today):
+    """Days between the source's as-of date and today; None when as-of is unknown."""
+    d = _to_date(source_as_of)
+    t = _to_date(today)
+    if d is None or t is None:
+        return None
+    return (t - d).days
+
+
+def field_freshness(field, source_as_of, today):
+    """(state, staleness_days, as_of_known) for one contact-bearing field.
+
+    FRESH  : staleness <= fresh_max_days
+    AGING  : fresh_max_days < staleness <= aging_max_days
+    STALE  : staleness > aging_max_days, a negative (future) as-of, or unknown as-of
+    """
+    fresh_max, aging_max = FRESHNESS_RULES.get(field, DEFAULT_RULE)
+    days = staleness_days(source_as_of, today)
+    if days is None:
+        return STALE, None, False
+    if days < 0:
+        return STALE, days, True
+    if days <= fresh_max:
+        return FRESH, days, True
+    if days <= aging_max:
+        return AGING, days, True
+    return STALE, days, True
+
+
+def row_freshness_score(fields, today):
+    """Row score from its fields: {field: source_as_of}. The row is FRESH only when
+    every present contact field is FRESH; AGING when none is STALE; else STALE.
+    A row with no contact field at all is STALE (nothing is known to be current)."""
+    states = [field_freshness(f, as_of, today)[0] for f, as_of in fields.items()]
+    if not states:
+        return STALE
+    if all(s == FRESH for s in states):
+        return FRESH
+    if any(s == STALE for s in states):
+        return STALE
+    return AGING

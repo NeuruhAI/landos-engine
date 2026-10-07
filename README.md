@@ -93,6 +93,26 @@ python -m scripts.export_outreach --county berrien
 Each `owner_leads` run prints the ranked-CSV path, the run manifest path, and the
 output CSV's SHA-256, and appends a row to `owner_leads_run_log`.
 
+### Explainable opportunity intelligence
+
+`POST /v1/opportunity-intelligence/evaluate` consumes the Recipe Engine wire
+contract `neuruh.opportunity-intelligence.input.v1` and emits
+`neuruh.opportunity-intelligence.result.v1`. The route is authenticated, pure,
+and read-only: it performs no database write, seller contact, or offer action.
+
+The evaluator (`app/opportunity_intelligence.py`) carries T50 research attempts
+through `research_result.v1`, preserves raw evidence/graph lineage in an
+opportunity genome, scores only named recipe deltas, keeps confidence separate,
+and returns authority/contact/deal/offer readiness, next source/action,
+priority/routing, and a deterministic SHA-256 receipt. Missing inputs remain
+`UNKNOWN`; conflicting signals receive no guessed score delta.
+
+`neuruh.opportunity-intelligence.property-population.v1` keeps raw signal
+observations separate from deduped properties. LandOS validates the
+source-factory/Territory parcel-address-unresolved identity rules and preserves
+`source_factory.run_receipt.v1` rollup provenance; `stacked_signals.observation_count`
+is never presented as a property count.
+
 ## Tests
 
 ```bash

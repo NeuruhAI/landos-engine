@@ -28,21 +28,25 @@ class RegridProvider(ParcelProvider):
     name = "regrid"
     cost_note = "premium paid national fallback — dormant until REGRID_API_KEY set"
 
-    def _gate(self) -> None:
+    def _gate(self, target_key: str) -> None:
         key = (os.environ.get("REGRID_API_KEY") or "").strip()
         if not key:
             raise ProviderUnavailable(
                 "regrid: dormant (no REGRID_API_KEY in .env) — documented stub; "
                 "add the key AND implement the API mapping to arm")
+        # Armed means paid: the FREE-FIRST guard stands in front of any future request.
+        from app.free_first.guard import clear_paid_call
+        clear_paid_call("regrid", items=[("parcel.owner_identity", target_key)], est_cost_usd=None,
+                        caller="app/providers/regrid_provider.py:RegridProvider._gate")
         raise RuntimeError(
             "REGRID_API_KEY is set but the Regrid integration is not implemented "
             "yet — wire the v2 API mapping in regrid_provider.py before arming."
         )
 
     def lookup_by_apn(self, county_fips: str, apn: str) -> List[ParcelDict]:
-        self._gate()
+        self._gate(f"parcel:{county_fips}:{(apn or '').strip()}")
         return []   # unreachable
 
     def search_by_owner(self, county_fips: str, owner_name: str) -> List[ParcelDict]:
-        self._gate()
+        self._gate(f"owner:{county_fips}:{(owner_name or '').strip().upper()}")
         return []   # unreachable

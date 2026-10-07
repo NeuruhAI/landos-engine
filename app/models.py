@@ -7,7 +7,7 @@ BEFORE any of our code runs. Defaults mean every field is optional — a parcel
 with only a couple of known signals still scores fine.
 """
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DistressSignals(BaseModel):
@@ -120,10 +120,43 @@ class HuntTerritoryEntry(BaseModel):
     county: Optional[str] = None
 
 
+class HuntGeography(BaseModel):
+    """ZIP, county, state, or list of counties — resolved by app.fips.resolve_geography.
+    Berrien / NC rows are data, not request defaults."""
+    kind: Optional[str] = None          # zip | county | state | counties
+    value: Optional[str] = None
+    zip: Optional[str] = None
+    fips: Optional[str] = None
+    state: Optional[str] = None
+    county: Optional[str] = None
+    counties: Optional[list[HuntTerritoryEntry]] = None
+
+
 class HuntRequest(BaseModel):
-    territory: list[HuntTerritoryEntry]
+    territory: list[HuntTerritoryEntry] = Field(default_factory=list)
+    geography: Optional[HuntGeography | list[HuntGeography]] = None
     recipe: Optional[dict] = None       # {signal_types: [...], thresholds: {...}}
     requested_by: Optional[str] = None
+
+
+# --- FREE-FIRST: loopback research (one fact about one target per item) ---
+class FreeFirstResearchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fact: str
+    target: dict                       # {target_key, apn?, owner_name?, ...}
+    state: str
+    county_fips: str
+    extra_free_sources: list[dict] = []
+    supplied_evidence: dict = {}       # answers the caller's OWN extra steps only
+
+
+class FreeFirstResearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tenant_id: str = Field(min_length=1)
+    requested_by: dict
+    parent_receipt: Optional[dict] = None
+    items: list[FreeFirstResearchItem] = Field(min_length=1, max_length=200)
+    probe_paid: bool = True
 
 
 # --- RECIPE-2: composer (compose a goal into a proposal; decide it) ---
@@ -154,3 +187,50 @@ class ComplianceCertBatchRequest(BaseModel):
     # A data buyer / tenant pulls a batch of Compliance Certificates for leads they hold.
     lead_ids: List[str]                  # engine owner_leads.lead_id OR board acquisition_leads.lead_id
     format: Optional[str] = "json"       # "json" (programmatic) | "html" (rendered document)
+
+
+class FieldPinCaptureRequest(BaseModel):
+    """FIELD PIN V1 capture (windshield sensor). The GPS observation as the phone
+    saw it; the engine builds the ray, resolves it, and receipts the capture.
+    Deep validation (ranges, vocabularies, timestamps) is fail-closed in
+    app/field_pins.validate_capture — this model only carries the shape."""
+    tenant_id: str
+    device_id: str
+    lat: float
+    lon: float
+    observed_at: str                     # ISO-8601 WITH timezone; the sighting moment
+    heading_source: str                  # gps_course | fix_delta | compass | unknown
+    side: str                            # left | right | ahead | at | unknown
+    category: str
+    accuracy_m: Optional[float] = None
+    heading_deg: Optional[float] = None  # required unless heading_source='unknown'
+    speed_mps: Optional[float] = None
+    assumed_offset_m: Optional[float] = None
+    spoken_text: Optional[str] = None
+    operator_label: Optional[str] = None
+    idempotency_key: Optional[str] = None  # replay-safe capture; same key -> same pin
+
+
+class OpportunityIntelligenceRequest(BaseModel):
+    """Portable Recipe Engine -> LandOS intelligence request.
+
+    Deep validation is intentionally owned by ``app.opportunity_intelligence``
+    because it validates the recipe's own versioned vocabulary as well as the
+    request.  Extra top-level fields are preserved for forward-compatible
+    fixture notices/extensions rather than silently dropped by Pydantic.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: str
+    as_of: str
+    recipe: dict
+    subject: dict
+    asset: dict
+    signals: list[dict]
+    property_population: dict
+    readiness: dict
+    research_attempts: list[dict]
+    lineage: dict
+    resolution_context: Optional[dict] = None
+    extensions: Optional[dict] = None

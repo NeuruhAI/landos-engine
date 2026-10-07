@@ -1,0 +1,574 @@
+{
+  "run_id": "estate-geometry-20260818T225454Z",
+  "generated_at": "2026-08-18T22:55:51.023136Z",
+  "applied": false,
+  "unresolved_total": 812,
+  "counties_total": 49,
+  "counties_servable": [
+    "26031",
+    "26051",
+    "26075",
+    "26077",
+    "26095",
+    "26103"
+  ],
+  "counties_unattempted": {
+    "26003": {
+      "rows": 6,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26007": {
+      "rows": 1,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26013": {
+      "rows": 14,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26025": {
+      "rows": 54,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26033": {
+      "rows": 20,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26035": {
+      "rows": 27,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26037": {
+      "rows": 10,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26039": {
+      "rows": 27,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26041": {
+      "rows": 22,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26043": {
+      "rows": 23,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26053": {
+      "rows": 19,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26057": {
+      "rows": 12,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26061": {
+      "rows": 13,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26063": {
+      "rows": 25,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26069": {
+      "rows": 3,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26071": {
+      "rows": 11,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26073": {
+      "rows": 11,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26079": {
+      "rows": 16,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26083": {
+      "rows": 5,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26087": {
+      "rows": 14,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26093": {
+      "rows": 8,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26097": {
+      "rows": 6,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26107": {
+      "rows": 58,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26109": {
+      "rows": 7,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26113": {
+      "rows": 5,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26119": {
+      "rows": 16,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26125": {
+      "rows": 6,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26127": {
+      "rows": 1,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26129": {
+      "rows": 24,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26131": {
+      "rows": 10,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26135": {
+      "rows": 13,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26137": {
+      "rows": 43,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26141": {
+      "rows": 1,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26149": {
+      "rows": 23,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26151": {
+      "rows": 7,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26153": {
+      "rows": 9,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26155": {
+      "rows": 19,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "26159": {
+      "rows": 29,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "37025": {
+      "rows": 39,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "37101": {
+      "rows": 15,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "37119": {
+      "rows": 12,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "37179": {
+      "rows": 8,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    },
+    "37183": {
+      "rows": 78,
+      "reason": "COUNTY_ENDPOINT_MISSING"
+    }
+  },
+  "attempted": 42,
+  "outcomes": {
+    "INSUFFICIENT_IDENTITY": 2,
+    "APN_NOT_IN_LAYER": 40
+  },
+  "results": [
+    {
+      "property_key": "MI:26031:Parcel ID is TBD Cheboygan (A)",
+      "county_fips": "26031",
+      "apn": "Parcel ID is TBD Cheboygan (A)",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:54:55.102400Z",
+      "outcome": "INSUFFICIENT_IDENTITY",
+      "detail": "APN field holds placeholder text: 'Parcel ID is TBD Cheboygan (A)'"
+    },
+    {
+      "property_key": "MI:26051:030-120-008-010-10",
+      "county_fips": "26051",
+      "apn": "030-120-008-010-10",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:54:56.107483Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26075:000-14-17-227-003-00",
+      "county_fips": "26075",
+      "apn": "000-14-17-227-003-00",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:54:57.468456Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26075:Parcel ID is TBD Jackson",
+      "county_fips": "26075",
+      "apn": "Parcel ID is TBD Jackson",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:54:58.812480Z",
+      "outcome": "INSUFFICIENT_IDENTITY",
+      "detail": "APN field holds placeholder text: 'Parcel ID is TBD Jackson'"
+    },
+    {
+      "property_key": "MI:26077:06-10-314-002",
+      "county_fips": "26077",
+      "apn": "06-10-314-002",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:54:59.817577Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-10-382-103",
+      "county_fips": "26077",
+      "apn": "06-10-382-103",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:01.275992Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-10-392-021",
+      "county_fips": "26077",
+      "apn": "06-10-392-021",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:02.659795Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-14-211-014",
+      "county_fips": "26077",
+      "apn": "06-14-211-014",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:03.980660Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-15-117-085",
+      "county_fips": "26077",
+      "apn": "06-15-117-085",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:05.294082Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-15-146-007",
+      "county_fips": "26077",
+      "apn": "06-15-146-007",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:06.622334Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-15-150-020",
+      "county_fips": "26077",
+      "apn": "06-15-150-020",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:07.963200Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-16-102-002",
+      "county_fips": "26077",
+      "apn": "06-16-102-002",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:09.359697Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-16-146-040",
+      "county_fips": "26077",
+      "apn": "06-16-146-040",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:10.874349Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-16-228-016",
+      "county_fips": "26077",
+      "apn": "06-16-228-016",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:12.347300Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-16-239-002",
+      "county_fips": "26077",
+      "apn": "06-16-239-002",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:13.653502Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-16-261-002",
+      "county_fips": "26077",
+      "apn": "06-16-261-002",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:14.961478Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-16-415-026",
+      "county_fips": "26077",
+      "apn": "06-16-415-026",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:16.274181Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-21-264-001",
+      "county_fips": "26077",
+      "apn": "06-21-264-001",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:17.573470Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-22-277-105",
+      "county_fips": "26077",
+      "apn": "06-22-277-105",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:18.869421Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-23-174-027",
+      "county_fips": "26077",
+      "apn": "06-23-174-027",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:20.187027Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-23-317-122",
+      "county_fips": "26077",
+      "apn": "06-23-317-122",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:21.553605Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-23-356-323",
+      "county_fips": "26077",
+      "apn": "06-23-356-323",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:22.846377Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-23-451-001",
+      "county_fips": "26077",
+      "apn": "06-23-451-001",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:24.134907Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-23-466-498",
+      "county_fips": "26077",
+      "apn": "06-23-466-498",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:25.494136Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-26-106-012",
+      "county_fips": "26077",
+      "apn": "06-26-106-012",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:26.803139Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-26-202-002",
+      "county_fips": "26077",
+      "apn": "06-26-202-002",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:28.149264Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-26-221-008",
+      "county_fips": "26077",
+      "apn": "06-26-221-008",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:29.513468Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-27-124-019",
+      "county_fips": "26077",
+      "apn": "06-27-124-019",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:30.809900Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-27-140-011",
+      "county_fips": "26077",
+      "apn": "06-27-140-011",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:32.105183Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-27-214-018",
+      "county_fips": "26077",
+      "apn": "06-27-214-018",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:33.438064Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-27-281-003",
+      "county_fips": "26077",
+      "apn": "06-27-281-003",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:34.798208Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:06-33-491-178",
+      "county_fips": "26077",
+      "apn": "06-33-491-178",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:36.139114Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26077:90-0280-030-O",
+      "county_fips": "26077",
+      "apn": "90-0280-030-O",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:37.477810Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26095:001-002-010-0700",
+      "county_fips": "26095",
+      "apn": "001-002-010-0700",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:38.833287Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26095:003-008-001-0700",
+      "county_fips": "26095",
+      "apn": "003-008-001-0700",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:40.367864Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26095:003-016-017-0500",
+      "county_fips": "26095",
+      "apn": "003-016-017-0500",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:41.853492Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26103:52-02-305-022-50",
+      "county_fips": "26103",
+      "apn": "52-02-305-022-50",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:43.347382Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26103:52-03-114-015-20",
+      "county_fips": "26103",
+      "apn": "52-03-114-015-20",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:44.852681Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26103:52-12-018-014-10",
+      "county_fips": "26103",
+      "apn": "52-12-018-014-10",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:46.302635Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26103:52-12-510-071-00",
+      "county_fips": "26103",
+      "apn": "52-12-510-071-00",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:47.767721Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26103:52-13-004-006-15",
+      "county_fips": "26103",
+      "apn": "52-13-004-006-15",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:49.222769Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    },
+    {
+      "property_key": "MI:26103:52-14-015-020-70",
+      "county_fips": "26103",
+      "apn": "52-14-015-020-70",
+      "state": "MI",
+      "retrieved_at": "2026-08-18T22:55:50.641589Z",
+      "outcome": "APN_NOT_IN_LAYER",
+      "detail": "county layer answered with no parcel for this APN"
+    }
+  ]
+}

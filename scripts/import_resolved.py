@@ -114,6 +114,62 @@ def build_phones(row: Dict[str, str], sources: List[str]) -> List[Dict[str, Any]
     return phones
 
 
+FILE_STAMP_RE = re.compile(r"(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z")
+
+
+def as_of_from_filename(csv_path: str) -> Optional[str]:
+    """The trace date a tracerfy_resolved_<YYYYMMDDTHHMMSSZ>.csv carries in its name
+    (ISO date). None when the name carries no stamp — never a default date."""
+    m = FILE_STAMP_RE.search(os.path.basename(csv_path or ""))
+    if not m:
+        return None
+    y, mo, d = m.group(1), m.group(2), m.group(3)
+    return f"{y}-{mo}-{d}"
+
+
+def stamp_phones(phones: List[Dict[str, Any]], *, source_stamp: Optional[str],
+                 source_as_of: Optional[str], observed_at: str) -> List[Dict[str, Any]]:
+    """Freshness stamps on every phone (B1): source = the trace label when the CSV
+    names no per-phone source, source_as_of = the date the source says it is true
+    (the trace date), observed_at = when this import read it. Unknown stays None."""
+    out = []
+    for p in phones:
+        q = dict(p)
+        if source_stamp and not q.get("source"):
+            q["source"] = source_stamp
+        q["source_as_of"] = source_as_of
+        q["observed_at"] = observed_at
+        out.append(q)
+    return out
+
+
+def merge_never_downgrade(existing: List[Dict[str, Any]],
+                          incoming: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Never overwrite a higher-confidence value with a lower one.
+
+    Returns (merged, blocked). A number already present keeps its existing entry
+    when the incoming confidence is lower; an equal-or-higher confidence replaces
+    it (and carries the new stamps). Numbers only in `existing` are preserved;
+    numbers only in `incoming` are added. Nothing is ever dropped."""
+    by_num = {p.get("number"): dict(p) for p in existing if p.get("number")}
+    blocked: List[Dict[str, Any]] = []
+    for p in incoming:
+        n = p.get("number")
+        if not n:
+            continue
+        cur = by_num.get(n)
+        if cur is None:
+            by_num[n] = dict(p)
+            continue
+        cur_c = cur.get("confidence")
+        new_c = p.get("confidence")
+        if cur_c is not None and (new_c is None or new_c < cur_c):
+            blocked.append({"number": n, "existing_confidence": cur_c, "incoming_confidence": new_c})
+            continue
+        by_num[n] = dict(p)
+    return list(by_num.values()), blocked
+
+
 def build_relatives(row: Dict[str, str]) -> List[Dict[str, Any]]:
     """relative_1/2 -> kin-graph candidates. 'HEIR:' name prefix (runbook
     SOP-1b) or recipe R4 marks heirs."""
@@ -167,10 +223,17 @@ TRACERFY_BATCH_CAP_USD = 10.0  # CONTACT-1 B5 hard cap: above this, the operator
 
 
 def run(csv_path: str, threshold: float = DEFAULT_THRESHOLD,
-        dry_run: bool = False, confirm_spend: bool = False) -> Dict[str, Any]:
+        dry_run: bool = False, confirm_spend: bool = False,
+        source_stamp: Optional[str] = None, as_of: Optional[str] = None,
+        receipt_path: Optional[str] = None) -> Dict[str, Any]:
     run_id = str(uuid.uuid4())
     started = utc_now()
     csv_sha = sha256_file(csv_path)
+    # B1 freshness: the date the source says its numbers are true is the trace
+    # file's date, never today. --as-of overrides; a file without a stamp and no
+    # --as-of imports with source_as_of=None (unknown stays unknown).
+    source_as_of = as_of or as_of_from_filename(csv_path)
+    observed_at = started.isoformat().replace("+00:00", "Z")
 
     with open(csv_path, newline="") as f:
         rows = list(csv.DictReader(f))
@@ -193,6 +256,9 @@ def run(csv_path: str, threshold: float = DEFAULT_THRESHOLD,
                "worked": 0, "skipped_unworked": 0, "unknown_lead": 0,
                "traced_web": 0, "traced_paid": 0, "no_hit": 0,
                "relations_inserted": 0, "relations_updated": 0,
+               "downgrade_blocked": 0, "phones_loaded": 0,
+               "source_stamp": source_stamp, "source_as_of": source_as_of,
+               "observed_at": observed_at, "dry_run": dry_run,
                "row_outcomes": []}
 
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
@@ -201,6 +267,7 @@ def run(csv_path: str, threshold: float = DEFAULT_THRESHOLD,
                 lead_id = (row.get("lead_id") or "").strip()
                 if not is_worked(row):
                     summary["skipped_unworked"] += 1
+                    summary["row_outcomes"].append({"lead_id": lead_id, "status": "REJECTED", "reason": "unworked_row"})
                     continue
                 cur.execute(
                     "select lead_id, skip_trace_meta from landos.owner_leads "
@@ -210,14 +277,22 @@ def run(csv_path: str, threshold: float = DEFAULT_THRESHOLD,
                 if not existing:
                     print(f"  WARN unknown lead_id {lead_id!r} — skipped")
                     summary["unknown_lead"] += 1
+                    summary["row_outcomes"].append({"lead_id": lead_id, "status": "REJECTED", "reason": "unknown_lead_id"})
                     continue
                 summary["worked"] += 1
 
                 sources = parse_sources(row.get("verified_via"))
-                phones = build_phones(row, sources)
+                phones = stamp_phones(build_phones(row, sources), source_stamp=source_stamp,
+                                      source_as_of=source_as_of, observed_at=observed_at)
                 relatives = build_relatives(row)
+                # Never overwrite a higher-confidence phone with a lower one; never
+                # drop a number the spine already holds (A1 rule). Status and the
+                # confidence score are computed on the merged set.
+                existing_meta = dict(existing["skip_trace_meta"] or {})
+                phones, blocked = merge_never_downgrade(list(existing_meta.get("phones") or []), phones)
+                summary["downgrade_blocked"] += len(blocked)
                 confidences = [p["confidence"] for p in phones
-                               if p["confidence"] is not None]
+                               if p.get("confidence") is not None]
                 top_conf = max(confidences) if confidences else None
 
                 callable_ = bool(
@@ -249,7 +324,7 @@ def run(csv_path: str, threshold: float = DEFAULT_THRESHOLD,
                                   for r in relatives],
                     "verified_via": sources,
                     "resolved_at": (row.get("resolved_at") or "").strip()
-                                   or started.date().isoformat(),
+                                   or source_as_of,
                     "va_notes": (row.get("va_notes") or "").strip() or None,
                     "dnc_status": (row.get("dnc_status") or "unchecked").strip(),
                 })
@@ -259,12 +334,15 @@ def run(csv_path: str, threshold: float = DEFAULT_THRESHOLD,
                     meta["primary_target"] = target
                 meta["import_provenance"] = {
                     "run_id": run_id,
-                    "imported_at": started.isoformat().replace("+00:00", "Z"),
+                    "imported_at": observed_at,
                     "csv_file": os.path.basename(csv_path),
                     "csv_sha256": csv_sha,
                     "status_set": status,
                     "threshold": threshold,
+                    "source": source_stamp,
+                    "source_as_of": source_as_of,
                 }
+                summary["phones_loaded"] += len(phones)
 
                 if not dry_run:
                     cur.execute(
@@ -306,6 +384,7 @@ def run(csv_path: str, threshold: float = DEFAULT_THRESHOLD,
                 summary["row_outcomes"].append({
                     "lead_id": lead_id, "status": status,
                     "confidence_score": top_conf, "phones": len(phones),
+                    "downgrade_blocked": blocked,
                     "relatives": len(relatives), "recipe": recipe or None,
                 })
                 print(f"  {lead_id[:8]}…  {status:<11} conf={top_conf} "
@@ -345,6 +424,11 @@ def run(csv_path: str, threshold: float = DEFAULT_THRESHOLD,
         else:
             conn.commit()
 
+    if receipt_path:
+        os.makedirs(os.path.dirname(os.path.abspath(receipt_path)), exist_ok=True)
+        with open(receipt_path, "w") as f:
+            json.dump(summary, f, indent=2, default=str)
+        print(f"receipt written: {receipt_path}")
     print(f"\nimport summary: worked={summary['worked']} "
           f"(traced_web={summary['traced_web']} traced_paid={summary['traced_paid']} "
           f"no_hit={summary['no_hit']}) skipped_unworked={summary['skipped_unworked']} "
@@ -361,10 +445,16 @@ def main() -> None:
                     help="operator confirmation for an armed Tracerfy batch "
                          f"over the ${TRACERFY_BATCH_CAP_USD:.0f} cap")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--source-stamp", default=None,
+                    help="source label stamped on every phone without a per-phone source and on the provenance block (e.g. tracerfy_20260805)")
+    ap.add_argument("--as-of", default=None,
+                    help="ISO date the source says its numbers are true; default = the timestamp in the file name; never today")
+    ap.add_argument("--receipt", default=None, help="write the run summary (matched / loaded / rejected with reasons) as JSON here")
     args = ap.parse_args()
     if not os.path.exists(args.csv_path):
         sys.exit(f"no such file: {args.csv_path}")
-    run(args.csv_path, args.threshold, args.dry_run, args.confirm_spend)
+    run(args.csv_path, args.threshold, args.dry_run, args.confirm_spend,
+        source_stamp=args.source_stamp, as_of=args.as_of, receipt_path=args.receipt)
 
 
 if __name__ == "__main__":

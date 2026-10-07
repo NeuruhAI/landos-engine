@@ -10,7 +10,14 @@ import uuid
 
 import pytest
 
-from app.fips import parse_territory_string, resolve_county
+from app.fips import (
+    parse_territory_string,
+    resolve_county,
+    resolve_geography,
+    resolve_hunt_inputs,
+    resolve_zip,
+)
+from app.models import HuntRequest
 from app import hunt_core
 
 
@@ -27,6 +34,64 @@ def test_fips_resolution_refuses_unknown():
         resolve_county(state="TX", county="Definitely Not A County")
     with pytest.raises(ValueError):
         resolve_county(fips="99999")
+
+
+def test_resolve_zip_49022_is_berrien_mi():
+    """Fixture ZIP 49022 → Berrien County MI. Data row, not a product default."""
+    assert resolve_zip("49022") == [
+        {"fips": "26021", "state": "MI", "county": "Berrien County"}
+    ]
+    assert resolve_geography(zip_code="49022") == resolve_zip("49022")
+    assert resolve_geography(kind="zip", value="49022") == resolve_zip("49022")
+
+
+def test_multi_territory_sw_michigan_counties():
+    """Explicit multi-fips territory: Berrien + Cass + Van Buren MI."""
+    want = [
+        {"fips": "26021", "state": "MI", "county": "Berrien County"},
+        {"fips": "26027", "state": "MI", "county": "Cass County"},
+        {"fips": "26159", "state": "MI", "county": "Van Buren County"},
+    ]
+    fipses = ["26021", "26027", "26159"]
+    assert [resolve_county(fips=f) for f in fipses] == want
+    assert resolve_geography(counties=fipses) == want
+    assert resolve_geography(kind="counties", counties=[{"fips": f} for f in fipses]) == want
+    assert resolve_hunt_inputs(territory=[{"fips": f} for f in fipses]) == want
+
+
+def test_hunt_create_geography_or_territory():
+    """POST /hunt accepts territory[] as today and/or geography that resolves
+    through resolve_geography. Empty input does not fall back to Berrien/NC."""
+    via_territory = resolve_hunt_inputs(
+        territory=[{"fips": "26021"}, {"fips": "26027"}, {"fips": "26159"}]
+    )
+    via_zip = resolve_hunt_inputs(geography={"zip": "49022"})
+    via_both = resolve_hunt_inputs(
+        territory=[{"fips": "26027"}],
+        geography={"zip": "49022"},
+    )
+    assert via_zip == [{"fips": "26021", "state": "MI", "county": "Berrien County"}]
+    assert [e["county"] for e in via_territory] == [
+        "Berrien County", "Cass County", "Van Buren County"
+    ]
+    assert [e["fips"] for e in via_both] == ["26027", "26021"]
+    with pytest.raises(ValueError, match="territory or geography"):
+        resolve_hunt_inputs(territory=[], geography=None)
+    req = HuntRequest(geography={"kind": "zip", "value": "49022"})
+    assert req.territory == []
+    assert resolve_hunt_inputs(req.territory, req.geography) == via_zip
+    # existing required-shape still parses
+    legacy = HuntRequest(territory=[{"state": "TX", "county": "Travis"}])
+    assert resolve_hunt_inputs(legacy.territory, legacy.geography) == [
+        {"fips": "48453", "state": "TX", "county": "Travis County"}
+    ]
+
+
+def test_resolve_zip_unknown_is_not_guessed():
+    with pytest.raises(ValueError):
+        resolve_zip("00000")
+    with pytest.raises(ValueError):
+        resolve_geography(kind="nope", value="49022")
 
 
 def test_staged_key_matches_ingest_convention():

@@ -1,0 +1,78 @@
+{
+  "schema_version": "nc_dps_single_writer.v1",
+  "domains": {
+    "county_source_registry": {
+      "writer": "NeuruhAI/landos-ingest",
+      "consumers": [
+        "NeuruhAI/landos-engine"
+      ]
+    },
+    "source_acquisition": {
+      "writer": "NeuruhAI/landos-ingest",
+      "consumers": [
+        "NeuruhAI/landos-engine"
+      ]
+    },
+    "source_provenance": {
+      "writer": "NeuruhAI/landos-ingest",
+      "consumers": [
+        "NeuruhAI/landos-engine"
+      ]
+    },
+    "property_master": {
+      "writer": "NeuruhAI/landos-engine",
+      "consumers": [
+        "NeuruhAI/recipe-engine",
+        "DeedSonar CRM"
+      ]
+    },
+    "ownership_claim_graph": {
+      "writer": "NeuruhAI/landos-engine",
+      "consumers": [
+        "NeuruhAI/recipe-engine",
+        "DeedSonar CRM"
+      ],
+      "restriction": "Preliminary and evidence-linked; not a legal heirship declaration."
+    },
+    "equity_calculation": {
+      "writer": "NeuruhAI/landos-engine",
+      "consumers": [
+        "NeuruhAI/recipe-engine",
+        "DeedSonar CRM"
+      ]
+    },
+    "dps_scoring": {
+      "writer": "NeuruhAI/landos-engine",
+      "consumers": [
+        "NeuruhAI/recipe-engine",
+        "DeedSonar CRM"
+      ]
+    },
+    "strategy_comparison": {
+      "writer": "NeuruhAI/recipe-engine",
+      "consumers": [
+        "DeedSonar CRM"
+      ]
+    },
+    "crm_projection_payload": {
+      "writer": "NeuruhAI/landos-engine",
+      "consumer": "DeedSonar CRM"
+    },
+    "crm_record_mutation": {
+      "writer": "DeedSonar CRM",
+      "restriction": "Requires the approved CRM API and operator gate."
+    },
+    "legal_ownership_determination": {
+      "writer": "Human counsel"
+    },
+    "final_title_cure": {
+      "writer": "Human counsel and principal"
+    },
+    "seller_contact_authority": {
+      "writer": "Human principal"
+    },
+    "payment_authority": {
+      "writer": "Human principal"
+    }
+  }
+}

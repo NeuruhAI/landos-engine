@@ -305,7 +305,7 @@ def fire(sources):
             results.append((src, lens, minted, before, after))
             print(f"  FIRED {src} [{lens}]: minted={minted}  owner_leads[signal:{src}] {before}->{after}")
     print("\nNext: `python -m scripts.sync_to_crm` (single writer) projects these to "
-          "public.acquisition_leads as status='discovered'.")
+          "public.acquisition_leads as status='new_lead'.")
     return results
 
 

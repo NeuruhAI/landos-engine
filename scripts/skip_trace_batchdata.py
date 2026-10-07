@@ -107,7 +107,17 @@ def select_targets(cur, provenance, limit):
 # ---------------------------------------------------------------- API mode
 def _api_call(target, key):
     """One documented BatchData skip-trace request. Fail-loud on an unrecognized response shape
-    (never fabricate a phone). Returns {phones:[{number,type,confidence,dnc}], emails:[...]}"""
+    (never fabricate a phone). Returns {phones:[{number,type,confidence,dnc}], emails:[...]}
+
+    Billable: clears the FREE-FIRST guard for this lead before the request is built."""
+    from app.free_first.guard import paid_call
+    with paid_call("batchdata", items=[("contact.phone", f"lead:{target['lead_id']}")],
+                   est_cost_usd=COST_PER_LOOKUP, caller="scripts/skip_trace_batchdata.py:_api_call"):
+        return _api_call_cleared(target, key)
+
+
+def _api_call_cleared(target, key):
+    """The vendor request itself; reachable only through _api_call's clearance."""
     a = addr_parts(target)
     first, last = split_name(target["owner_name"])
     body = {"requests": [{

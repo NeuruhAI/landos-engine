@@ -59,7 +59,17 @@ def tracerfy_batch_trace(leads: List[Dict[str, Any]], api_key: str) -> Dict[str,
     """REAL Tracerfy batch skip-trace call. Returns {lead_id: {phone,email,...}}.
 
     GATED: only invoked when --skip-trace is passed. Each lead costs
-    TRACERFY_COST_PER_LEAD. Never called on the default path."""
+    TRACERFY_COST_PER_LEAD. Never called on the default path, and never without
+    clearing the FREE-FIRST guard for every lead in the batch."""
+    from app.free_first.guard import paid_call
+    with paid_call("tracerfy", items=[("contact.phone", f"lead:{lead['lead_id']}") for lead in leads],
+                   est_cost_usd=round(len(leads) * TRACERFY_COST_PER_LEAD, 4),
+                   caller="scripts/export_outreach.py:tracerfy_batch_trace"):
+        return _tracerfy_batch_trace_cleared(leads, api_key)
+
+
+def _tracerfy_batch_trace_cleared(leads: List[Dict[str, Any]], api_key: str) -> Dict[str, Dict[str, Any]]:
+    """The vendor request itself; reachable only through tracerfy_batch_trace's clearance."""
     payload = {
         "records": [
             {

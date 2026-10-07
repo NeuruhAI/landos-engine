@@ -85,10 +85,14 @@ def test_dnc_number_is_never_created():
 def test_orphan_assertion_is_seller_scoped_and_dnc_gated():
     s = re.sub(r"\s+", " ", ORPHAN_CALLABLE.lower())
     assert "c.contact_type = 'seller'" in s
-    assert "not coalesce(a.dnc, false)" in s                   # DNC leads are not "orphans"
-    assert "phone_1 is not null" in s
+    assert "public.callable_leads" in s                       # strict DB gate owns eligibility
+    assert "coalesce(dnc, false)" not in s                     # NULL never becomes clean
 
 
 def test_pass_targets_callable_or_suppressed_only():
     s = re.sub(r"\s+", " ", CALLABLE_OR_SUPPRESSED.lower())
-    assert "phone_1 is not null" in s and "coalesce(dnc, false)" in s
+    assert "phone_1 is not null" in s
+    assert "public.callable_leads" in s
+    assert "a.dnc is true" in s                               # suppressed rows reach retraction
+    assert "c.source = 'spine_sync'" in s                     # stale owned contacts reach retraction
+    assert "coalesce(dnc, false)" not in s

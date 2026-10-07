@@ -18,6 +18,18 @@ is the ONLY score they get, written next by score_emergence.py.
 Idempotent: ON CONFLICT (tenant_id, county_fips, parcel_apn) DO NOTHING — re-run mints 0 dups;
 only signals still status='new' are (re)matched, so re-run re-matches 0. The whole batch is one
 DELETE (provenance='discovered_taxsale', source='county_taxsale_<county_fips>') if it must be removed.
+
+🔴 PROMOTE GATE (mig 036 / tax_sale_promote_contract): the mint fires ONLY for signals a HUMAN
+has promoted (promoted=true). tax-sale.info's ToU forbids AUTOMATED aggregation for outreach +
+contacting former owners — the ToU line runs through a human keystroke, so an un-promoted
+taxsale signal NEVER mints and NEVER enters any queue. Gate-in-DATA (the WHERE below), not app
+logic that a caller could skip. The freshness gate stays as defense-in-depth on top.
+
+🔴 DILIGENCE PREDICATE (G1 / mig 040): the full mint predicate is fresh + promoted +
+needs_diligence=false + diligence_flag is null. A flagged record NEVER mints. Gate-in-DATA in
+the WHERE below, re-checked row-by-row in Python (app/taxsale_predicate.py) as defense-in-depth.
+The dry-run reconciles EVERY taxsale signal against the predicate — county-by-county eligible +
+excluded-by-reason counts with a books-balance invariant and a canonical receipt hash.
 """
 import argparse
 from datetime import date
@@ -28,7 +40,8 @@ from psycopg.types.json import Jsonb
 
 from app.config import DATABASE_URL
 from app.score_absentee import classify_owner_type   # the EXISTING entity/individual classifier
-from app.freshness import upcoming_taxsale            # tax-sale freshness gate (upcoming-only)
+from app.taxsale_predicate import (                   # G1: the complete mint predicate, pure
+    evaluate_mint_predicate, reconcile, render_reconciliation)
 
 APG_TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"   # St. Joseph 18141 is APG territory
 SOURCE_PREFIX = "county_taxsale_"   # per-row source = prefix + the signal's county_fips
@@ -36,7 +49,23 @@ PROVENANCE = "discovered_taxsale"
 
 SIGNALS = """
     select signal_id, parcel_apn, owner_name, confidence, county_fips,
-           raw_payload, status, matched_lead_id, signal_date
+           raw_payload, status, matched_lead_id, signal_date, promoted,
+           needs_diligence, diligence_flag
+    from landos.discovery_signals
+    where source_type = 'taxsale' and signal_class = 'temporal'
+      and promoted = true                       -- 🔴 THE GATE (mig 036): human-promoted only
+      and needs_diligence = false               -- 🔴 G1 (mig 040): diligence review complete
+      and diligence_flag is null                -- 🔴 G1 (mig 040): flagged records NEVER mint
+      and (%(only_fips)s::text[] is null or county_fips = any(%(only_fips)s))
+    order by parcel_apn
+"""
+
+# The dry-run reconciler's population: EVERY taxsale temporal signal in scope, ungated —
+# so the excluded (flagged / stale / needs_diligence / not_promoted) are counted per county,
+# never silently invisible. Read-only; the classification happens in app/taxsale_predicate.
+RECON_SIGNALS = """
+    select signal_id, parcel_apn, owner_name, county_fips, source_ref,
+           raw_payload, signal_date, promoted, needs_diligence, diligence_flag
     from landos.discovery_signals
     where source_type = 'taxsale' and signal_class = 'temporal'
       and (%(only_fips)s::text[] is null or county_fips = any(%(only_fips)s))
@@ -74,6 +103,7 @@ def main(dry_run=False, only_fips=None):
     per-territory). Returns a stats dict either way — the CLI ignores it; the hunt
     worker/mint consume it. CLI behavior with no args is byte-identical."""
     minted = skipped_conflict = signals_matched = rejected_stale = 0
+    rejected_by_reason = {}
     today = date.today()
     preview = []
     per_county = {}
@@ -81,12 +111,15 @@ def main(dry_run=False, only_fips=None):
         cur.execute(SIGNALS, {"only_fips": list(only_fips) if only_fips else None})
         signals = cur.fetchall()
         for s in signals:
-            # FRESHNESS GATE (defense-in-depth): a consumed/past or already-resolved tax-sale
-            # parcel must NEVER become a candidate — reject loudly, whatever the source/county.
-            ok, why = upcoming_taxsale(s.get("signal_date"), s["raw_payload"], s["owner_name"], today)
+            # G1 PREDICATE (defense-in-depth): the SQL already gates promoted / needs_diligence /
+            # diligence_flag; re-checking the FULL predicate here (incl. freshness) means a
+            # consumed, flagged, or un-reviewed parcel NEVER becomes a candidate even if the
+            # fetch path changes. Reject loudly, whatever the source/county.
+            ok, code, why = evaluate_mint_predicate(s, today)
             if not ok:
-                rejected_stale += 1
-                print(f"  REJECT {s['parcel_apn']!r}: {why}")
+                rejected_stale += 1  # back-compat total (hunt_worker consumes this key)
+                rejected_by_reason[code] = rejected_by_reason.get(code, 0) + 1
+                print(f"  REJECT {s['parcel_apn']!r}: [{code}] {why}")
                 continue
             rp = s["raw_payload"] or {}
             owner_name = s["owner_name"]
@@ -139,18 +172,27 @@ def main(dry_run=False, only_fips=None):
                             (APG_TENANT, fips, apn))
                 pc = per_county.setdefault(fips, {"would_mint": 0, "already_present": 0})
                 pc["already_present" if cur.fetchone() else "would_mint"] += 1
+            # G1 RECONCILIATION: classify EVERY taxsale signal in scope (ungated fetch) so the
+            # excluded — flagged / stale / needs_diligence / not_promoted — are counted county
+            # by county, and the books provably balance. Read-only; deterministic (injected
+            # clock, canonical ordering, receipt hash byte-stable across runs on unchanged data).
+            cur.execute(RECON_SIGNALS, {"only_fips": list(only_fips) if only_fips else None})
+            recon = reconcile(cur.fetchall(), today)
             conn.rollback()
             would = sum(c.get("would_mint", 0) for c in per_county.values())
             present = sum(c.get("already_present", 0) for c in per_county.values())
             print(f"\n=== MINT DRY-RUN — {would} would mint, {present} already present, "
-                  f"{rejected_stale} rejected_stale (freshness gate), NO writes ===")
+                  f"{rejected_stale} rejected (gate), NO writes ===")
             for fips, apn, own, ot, luc, ac in preview[:10]:
                 print(f"  [{fips}] {apn}  {own!r}  [{ot}]  {luc}  {ac} ac")
             if len(preview) > 10:
                 print(f"  … +{len(preview) - 10} more")
+            print()
+            print(render_reconciliation(recon))
             print("\nHARD STOP — dry-run only. Re-run without --dry-run to mint.")
             return {"dry_run": True, "would_mint": would, "already_present": present,
-                    "rejected_stale": rejected_stale, "per_county": per_county,
+                    "rejected_stale": rejected_stale, "rejected_by_reason": rejected_by_reason,
+                    "per_county": per_county, "reconciliation": recon,
                     "preview": [{"county_fips": p[0], "parcel_apn": p[1], "owner_name": p[2],
                                  "owner_type": p[3], "land_use_class": p[4], "acreage": p[5]}
                                 for p in preview]}
@@ -158,12 +200,12 @@ def main(dry_run=False, only_fips=None):
 
     print(f"\nmint summary: minted={minted} skipped_conflict={skipped_conflict} "
           f"signals_matched={signals_matched} rejected_stale={rejected_stale} "
-          f"(tenant=APG, source={SOURCE_PREFIX!r}+county_fips, provenance={PROVENANCE!r}; freshness gate: only "
-          f"upcoming/unresolved mint; situs / lat-lng / mailing / absentee / final_lead_score = honest NULL).")
+          f"(tenant=APG, source={SOURCE_PREFIX!r}+county_fips, provenance={PROVENANCE!r}; G1 predicate: only "
+          f"fresh + promoted + diligence-clear mint; situs / lat-lng / mailing / absentee / final_lead_score = honest NULL).")
     print("Next: `python -m scripts.score_emergence` then `python -m scripts.sync_to_crm`.")
     return {"dry_run": False, "minted": minted, "skipped_conflict": skipped_conflict,
             "signals_matched": signals_matched, "rejected_stale": rejected_stale,
-            "per_county": per_county}
+            "rejected_by_reason": rejected_by_reason, "per_county": per_county}
 
 
 if __name__ == "__main__":
