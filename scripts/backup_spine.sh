@@ -22,7 +22,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/../.env"
-OUT_DIR="$HOME/models/provenance/db"
+# SPINE_BACKUP_DIR lets cron keep this legacy-spine dump on cold custody (NEURUH-HD)
+# instead of the internal disk. The default is unchanged.
+OUT_DIR="${SPINE_BACKUP_DIR:-$HOME/models/provenance/db}"
 
 # --- locate pg_dump (Homebrew libpq is keg-only; cron PATH won't have it) --------------
 for d in /opt/homebrew/opt/libpq/bin /usr/local/opt/libpq/bin /opt/homebrew/bin /usr/local/bin /usr/bin; do
@@ -44,6 +46,31 @@ if [ -z "$DBURL" ]; then
   echo "backup_spine: FATAL — DATABASE_URL empty in $ENV_FILE" >&2; exit 1
 fi
 
+# --- hand the DSN to libpq through its environment, never argv ------------------------
+# `ps` shows every argument to every local user, so `pg_dump "$DBURL"` published the
+# password for the length of each dump. python3 reads the URL from the environment
+# (not argv) and prints shell-quoted PG* exports; the URL value is never echoed.
+pg_env_from_url() {
+  DBURL_FOR_ENV="$1" "$(command -v python3 || echo /usr/bin/python3)" - <<'PY'
+import os, shlex, sys, urllib.parse
+u = urllib.parse.urlsplit(os.environ["DBURL_FOR_ENV"])
+if u.scheme not in ("postgres", "postgresql") or not u.hostname or "," in u.netloc:
+    sys.exit("not a single-host postgres URL (value not shown)")
+env = {"PGHOST": u.hostname, "PGPORT": str(u.port or 5432),
+       "PGUSER": urllib.parse.unquote(u.username or ""),
+       "PGDATABASE": urllib.parse.unquote(u.path.lstrip("/")) or "postgres"}
+if u.password:
+    env["PGPASSWORD"] = urllib.parse.unquote(u.password)
+for k, v in urllib.parse.parse_qsl(u.query):
+    if k != "sslmode":
+        sys.exit("unsupported URL parameter " + k)
+    env["PGSSLMODE"] = v
+print("\n".join("export %s=%s" % (k, shlex.quote(v)) for k, v in env.items()))
+PY
+}
+PGENV_LINES="$(pg_env_from_url "$DBURL")" || { echo "backup_spine: FATAL — DATABASE_URL is not a single-host postgres URL" >&2; exit 1; }
+eval "$PGENV_LINES"; unset PGENV_LINES
+
 mkdir -p "$OUT_DIR"
 STAMP="$(date +%F)"
 OUT="$OUT_DIR/spine-$STAMP.sql.gz"
@@ -51,7 +78,7 @@ TMP="$OUT.partial"
 
 echo "backup_spine: dumping spine -> $OUT"
 # Dump to a .partial first. `set -o pipefail` above makes a pg_dump failure fail the pipe.
-if ! pg_dump "$DBURL" | gzip > "$TMP"; then
+if ! pg_dump --no-password | gzip > "$TMP"; then
   echo "backup_spine: FATAL — pg_dump failed; removing partial" >&2
   rm -f "$TMP"; exit 1
 fi

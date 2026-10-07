@@ -62,12 +62,13 @@ def test_guard_rejects_any_stray_value():
 
 # ---- JOB 2/3: the discovered-tier INSERT shape (source is NOT NULL) ------------------
 
-def test_discovered_insert_lists_source_and_has_21_placeholders():
+def test_discovered_insert_lists_source_contact_and_has_26_placeholders():
     s = re.sub(r"\s+", " ", DISCOVERED_INSERT_SQL.lower())
     assert "insert into public.acquisition_leads" in s
-    assert " source)" in s                                  # source IS written by this path
-    assert "'discovered'" in s                              # status literal, not a placeholder
-    assert s.count("%s") == 21                              # the value-tuple contract
+    assert "signal_tags, source, phone_1" in s              # source + gated contact bound together
+    assert "contact_confidence, dnc)" in s                  # tri-state verdict is explicit
+    assert "'new_lead'" in s                              # status literal, not a placeholder
+    assert s.count("%s") == 26                              # the value-tuple contract
 
 
 def test_guard_is_wired_into_main_and_insert_uses_engine_sync_fallback():
@@ -79,7 +80,8 @@ def test_guard_is_wired_into_main_and_insert_uses_engine_sync_fallback():
     assert "assert_source_allowed(insert_source)" in src
     # the INSERT binds insert_source (never the possibly-NULL lead_source) to source, and
     # insert_sig_tags (never a null) to signal_tags — guarded before the execute runs.
-    assert "insert_sig_tags, insert_source)" in src
+    assert "insert_sig_tags, insert_source," in src
+    assert "p1, p1t, p2, conf, projected_dnc" in src
     assert "insert_sig_tags = sig_tags or default_signal_tags(" in src
     assert "assert_insert_row_valid(insert_values)" in src
     assert "DISCOVERED_INSERT_SQL" in src                   # main() runs the shared SQL

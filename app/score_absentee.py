@@ -34,7 +34,12 @@ from typing import Any, Dict, Iterable, Optional, Set
 #   1.1.0 — de-compressed ranking: unclamped raw fusion (raw_fused_score) + batch
 #           normalization to 0–100 + explicit tiebreakers. Does NOT change which
 #           signals count or any weight — only how the scores spread + resolve ties.
-__VERSION__ = "1.1.0"
+#   1.2.0 — absentee-is-a-dimension doctrine: KILLED the entity 1.10 boost (an
+#           absentee institution is not a motivated seller) and added the cold-call
+#           LENS gate — BANK/LLC/INC/CORP/FACILITIES/TRUST/AUTHORITY owners leave
+#           the cold-call seller queue for the entity/commercial lens. score_lead
+#           now emits lens + cold_call_eligible. Weights otherwise unchanged.
+__VERSION__ = "1.2.0"
 
 # ---------------------------------------------------------------------------
 # County membership reference (multi-county; keyed by FIPS — Berrien is first).
@@ -97,7 +102,10 @@ _GOVT_PATTERNS = [
     "PUBLIC SCHOOLS", "BOARD OF EDUCATION", "HOUSING COMMISSION",
     "HOUSING AUTHORITY", "REDEVELOPMENT AUTHORITY", "STATE LAND", "MICHIGAN STATE OF",
 ]
-# Private non-person entities (an absentee one is a classic motivated-seller candidate).
+# Private non-person entities. Kept broad for the entity/commercial lens; note
+# " &" is retained here only for back-compat of classify_owner_type — the cold-call
+# lens (below) deliberately does NOT treat " &" as institutional, because
+# "SMITH JOHN & JANE" is a JOINT HUMAN ownership, a legitimate cold-call seller.
 _ENTITY_PATTERNS = [
     " LLC", "L.L.C", "L L C", " INC", " CORP", " CO.", " CO ", " COMPANY", " LTD",
     " LP", " LLP", " L P ", " TRUST", " TR ", " TR.", " ASSOCIATION", " ASSN",
@@ -106,6 +114,52 @@ _ENTITY_PATTERNS = [
     " CHURCH", " MINISTRIES", " BANK", " DEVELOPMENT", " BUILDERS", " HOMES",
     " REALTY", " INVESTMENTS", " CAPITAL", " FARMS", " ESTATES", " &",
 ]
+
+# ---- COLD-CALL LENS (the doctrine gate) -----------------------------------
+# THE RULE (absentee is a DIMENSION, not a thesis): a BANK/LLC/INC/CORP/
+# FACILITIES/TRUST/AUTHORITY owner is a commercial HOLDER, not a motivated
+# cold-call seller — no matter how far off-parcel it mails. Absentee-alone must
+# never surface an institution as a top-tier "distressed seller". Institutions
+# drop OUT of the human-distress cold-call queue and into the entity/commercial
+# lens. This is the same institutional exclusion the conversion mine uses.
+#
+# WHOLE-WORD matched (see is_institution) so there is NO surname collision: the token
+# "BANK" never matches the surname "Banks", "TR" never matches "Tract", etc. — the
+# hard lesson from the conversion scrub. Deliberately excludes " &" (joint humans are
+# sellers) and bare family words. A personal TRUST is included per the operator's
+# explicit list — a trust is a legal entity; route it to the entity lens, not a cold dial.
+#
+# Legal-form tokens: the corporate/legal shell forms.
+_LEGAL_FORM_TOKENS = {
+    "LLC", "PLLC", "INC", "INCORPORATED", "CORP", "CORPORATION", "LTD", "LIMITED",
+    "LP", "LLP", "LLLP", "PLC", "CO", "COMPANY", "TRUST", "TR", "BANK", "BANCORP",
+    "BANCSHARES", "FSB", "AUTHORITY", "COMMISSION", "ASSN", "ASSOCIATION",
+}
+# Commercial / organizational NOUNS — words that mark a business or institution and
+# essentially never appear in a natural person's name. This is what catches the
+# suffix-less holders (CSX TRANSPORTATION, CHECKMATE REAL ESTATE, ... RENTALS).
+_ORG_NOUN_TOKENS = {
+    "FACILITIES", "TRANSPORTATION", "RAILROAD", "RAILWAY", "RAILWAYS", "REALTY",
+    "PROPERTIES", "RENTALS", "RENTAL", "LEASING", "STORAGE", "WAREHOUSE",
+    "LOGISTICS", "MOTORS", "AUTOMOTIVE", "INDUSTRIES", "INDUSTRIAL",
+    "MANUFACTURING", "UTILITIES", "PETROLEUM", "PIPELINE", "COMMUNICATIONS",
+    "TELECOM", "MEDICAL", "HEALTHCARE", "HOSPITAL", "CLINIC", "LABORATORIES",
+    "PHARMACY", "APARTMENTS", "APTS", "CONDOMINIUM", "CONDOMINIUMS", "TOWNHOMES",
+    "VILLAS", "TERRACE", "GARDENS", "PLAZA", "DEVELOPMENT", "DEVELOPERS",
+    "CONSTRUCTION", "CONTRACTORS", "BUILDERS", "HOMEBUILDERS", "EXCAVATING",
+    "SYSTEMS", "SOLUTIONS", "TECHNOLOGIES", "SERVICES", "RESOURCES", "CONSULTING",
+    "CONSULTANTS", "ENTERPRISES", "VENTURES", "HOLDINGS", "INVESTMENTS", "CAPITAL",
+    "MORTGAGE", "INSURANCE", "MINISTRIES", "FOUNDATION", "ASSOCIATES",
+    "MANAGEMENT", "PARTNERS", "PARTNERSHIP", "GROUP",
+}
+# Punctuated legal forms that tokenizing would split apart — substring-matched.
+_LEGAL_FORM_SUBSTRINGS = (" L.L.C", " L L C ", " L P ", " L.P", " L.L.P")
+# Adjacent-token phrases (a single word from either is too collision-prone alone).
+_ORG_PHRASES = (("REAL", "ESTATE"),)
+
+
+def _name_tokens(owner_name: str):
+    return re.sub(r"[^A-Z0-9 ]", " ", owner_name.upper()).split()
 
 
 def classify_owner_type(owner_name: Optional[str]) -> str:
@@ -119,6 +173,46 @@ def classify_owner_type(owner_name: Optional[str]) -> str:
     if any(p in n for p in _ENTITY_PATTERNS):
         return "entity"
     return "individual"
+
+
+def is_institution(owner_name: Optional[str]) -> bool:
+    """True when the owner name is an institution — a bank/LLC/inc/corp/facilities/
+    trust/authority OR a suffix-less commercial holder (CSX TRANSPORTATION, CHECKMATE
+    REAL ESTATE). Whole-word matched: no surname collision (never flags "Banks").
+    NOT a cold-call human seller."""
+    if not owner_name:
+        return False
+    padded = f" {owner_name.upper().strip()} "
+    if any(s in padded for s in _LEGAL_FORM_SUBSTRINGS):
+        return True
+    toks = _name_tokens(owner_name)
+    tokset = set(toks)
+    if tokset & _LEGAL_FORM_TOKENS or tokset & _ORG_NOUN_TOKENS:
+        return True
+    return any(toks[i] == a and toks[i + 1] == b
+               for a, b in _ORG_PHRASES for i in range(len(toks) - 1))
+
+
+def cold_call_lens(owner_name: Optional[str]) -> str:
+    """Which OUTREACH LENS a parcel belongs to — the doctrine gate that keeps the
+    cold-call SELLER queue human. Govt is a disposition channel (land bank /
+    surplus), institutions are entity/commercial, only a human is a cold-call
+    seller. Absentee status does NOT enter here: it is a dimension, not the lens.
+      'govt'        -> disposition channel, not cold-call
+      'institution' -> entity/commercial lens, not the cold-call seller queue
+      'seller'      -> a human owner: the cold-call seller queue
+    """
+    if classify_owner_type(owner_name) == "govt":
+        return "govt"
+    if is_institution(owner_name):
+        return "institution"
+    return "seller"
+
+
+def cold_call_eligible(owner_name: Optional[str]) -> bool:
+    """True only for human sellers — the ONLY lens the cold-call queue ranks.
+    An absentee bank/LLC is reachable but is NOT a motivated cold-call seller."""
+    return cold_call_lens(owner_name) == "seller"
 
 
 # ---- absentee tier ---------------------------------------------------------
@@ -224,8 +318,14 @@ TIER_BASE = {
     "unknown_situs": 40.0,   # in/near county but situs street unknown -> occupancy undetermined
     "unknown": 40.0,
 }
-# owner_type adjustment: an ABSENTEE entity is a classic motivated-seller candidate.
-OWNER_TYPE_FACTOR = {"entity": 1.10, "individual": 1.00, "govt": 1.00}
+# owner_type adjustment. DOCTRINE (v1.2.0): an absentee INSTITUTION is NOT a
+# "classic motivated seller" — that premise surfaced banks and LLCs at the top of
+# the cold-call queue on absentee alone. The boost is GONE: an entity is as
+# reachable as an individual (factor 1.0), no more motivated. What actually keeps
+# institutions out of the cold-call queue is the lens gate (cold_call_eligible),
+# not a score penalty — an absentee LLC is a real entity/commercial lead, just not
+# a cold dial.
+OWNER_TYPE_FACTOR = {"entity": 1.00, "individual": 1.00, "govt": 1.00}
 # Govt land is frequently disposable (land bank / state surplus / tax-reverted),
 # regardless of the agency HQ mailing — so govt gets a disposition floor.
 GOVT_DISPOSITION_FLOOR = 75.0
@@ -404,8 +504,11 @@ def score_lead(
     # county hasn't stripped -> still absentee, marginally stronger. On owner_occupied/
     # unknown tiers it only corroborates and is left False (never forces owner_occupied).
     stale_homestead = bool(homestead_present and a_flag)
+    lens = cold_call_lens(lead.get("owner_name"))
     return {
         "owner_type": owner_type,
+        "lens": lens,                           # seller | institution | govt (v1.2.0)
+        "cold_call_eligible": lens == "seller",  # only humans ride the cold-call queue
         "absentee_tier": tier,
         "absentee_flag": a_flag,
         "absentee_score": a_score,

@@ -1,55 +1,12 @@
-"""
-score_emergence.py — CC2 step 2: the EMERGENCE SCORER (AXON Emergence Loop).
-
-    python -m scripts.score_emergence [--dry-run]
-
-Computes landos.owner_leads.emerging_score (+ emerging_signals audit trail) from
-TEMPORAL discovery_signals with exponential freshness decay. Projection to the CRM is
-NOT this script's job — sync_to_crm.py is the SOLE WRITER of public.acquisition_leads
-(single-writer rule); run it afterward to carry emerging_score/_signals across.
-
-Pure DB read -> compute -> DB write. NO network, NO spend.
-
-Doctrine (see DISCOVERY_ADAPTERS.md invariant 6):
-  * Only signal_class='temporal' rows that are matched (matched_lead_id) AND dated
-    (signal_date) score a lead. Structural derivations NEVER emerge; an unmatched temporal
-    signal has no lead to write. Both filters are load-bearing.
-  * emerging_score is an INDEPENDENT axis. final_lead_score (absentee/reachability rank)
-    and the composite are never read, written, or relabeled here.
-  * NULL emerging_score = "not computed" (fail-safe). A lead with no qualifying temporal
-    signal stays NULL — never a fabricated 0. (A computed score that DECAYS to ~0 because
-    its signal is old is a real value, not a fabrication.)
-  * A parcel COOLS on its own as the signal ages: freshness is recomputed from signal_date
-    every run, so a score falls over time with no new input. Idempotent within a day;
-    intended to drift downward across days.
-
-Scoring (per qualifying signal, grouped by matched_lead_id):
-    age_days     = today - signal_date
-    freshness    = 0.5 ** (age_days / half_life_days[source_type])   # exponential half-life
-    contribution = weight[source_type] * freshness * confidence
-    raw_sum      = sum(contribution)                                 # over a lead's signals
-    emerging_score = round(100 * (1 - exp(-raw_sum)), 1)             # bounded 0-100, saturating,
-                                                                     # diminishing returns when
-                                                                     # signals stack. Comparable
-                                                                     # SCALE to the composite but
-                                                                     # computed INDEPENDENTLY.
-
-The weight / half-life tables are the moat IP — they live HERE (engine repo, behind the
-firewall), never in the CRM. Ordering follows the ROI thesis: a death/probate event is the
-strongest, freshest motivator; forward-demand (permit/rezoning) is weakest and decays fastest.
-"""
-import argparse
-import math
+"""score_emergence — emergence scorer with hang fail-closed (batched commits + timeouts)."""
+import argparse, math, sys
 from collections import defaultdict
 from datetime import date
-
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
-
 from app.config import DATABASE_URL
 
-# --- moat IP: scoring tables (TUNABLE) --------------------------------------------------
 EMERGENCE_WEIGHTS = {
     "probate_in": 1.0, "probate": 1.0, "taxsale": 0.9, "taxdelinquent": 0.7,
     "estate_sale": 0.6, "permit": 0.4, "rezoning": 0.4,
@@ -58,13 +15,10 @@ HALF_LIFE_DAYS = {
     "probate_in": 180, "probate": 180, "taxsale": 90, "taxdelinquent": 180,
     "estate_sale": 30, "permit": 60, "rezoning": 90,
 }
-DEFAULT_WEIGHT = 0.5
-DEFAULT_HALF_LIFE = 90
+DEFAULT_WEIGHT, DEFAULT_HALF_LIFE = 0.5, 90
+LOCK_TIMEOUT, STATEMENT_TIMEOUT = "15s", "180s"
+WRITE_BATCH_SIZE, SUMMARY_PRINT_CAP = 50, 30
 
-# The ONLY rows that may score a lead. Every filter is load-bearing:
-#   temporal   — structural derivations never emerge.
-#   matched    — an unmatched signal has no owner_lead to write (FK-joined to prove it resolves).
-#   dated      — freshness decay needs an event date.
 QUALIFYING_SIGNALS = """
     select ds.signal_id, ds.source_type, ds.signal_date,
            coalesce(ds.confidence, 0.5) as confidence,
@@ -74,92 +28,101 @@ QUALIFYING_SIGNALS = """
     where ds.signal_class = 'temporal'
       and ds.matched_lead_id is not null
       and ds.signal_date is not null
+      and (%(lead_ids)s::uuid[] is null or ds.matched_lead_id = any(%(lead_ids)s))
+      and (%(only_fips)s::text[] is null or ol.county_fips = any(%(only_fips)s))
     order by ds.matched_lead_id, ds.signal_date
 """
 
-
 def score_signal(row, today):
-    """One temporal signal -> (contribution, auditable 'show your work' object)."""
     st = row["source_type"]
     weight = EMERGENCE_WEIGHTS.get(st, DEFAULT_WEIGHT)
     half_life = HALF_LIFE_DAYS.get(st, DEFAULT_HALF_LIFE)
     if st not in EMERGENCE_WEIGHTS:
-        # never silently score an unmapped type
-        print(f"  WARN unmapped source_type {st!r} -> default weight {DEFAULT_WEIGHT}, "
-              f"half_life {DEFAULT_HALF_LIFE} (signal {row['signal_id']})")
+        print(f"  WARN unmapped source_type {st!r} (signal {row['signal_id']})")
     age_days = (today - row["signal_date"]).days
     freshness = pow(0.5, age_days / half_life)
     confidence = float(row["confidence"])
     contribution = weight * freshness * confidence
-    audit = {
-        "signal_id": str(row["signal_id"]),
-        "source_type": st,
-        "signal_date": row["signal_date"].isoformat(),
-        "age_days": age_days,
-        "weight": weight,
-        "freshness": freshness,        # full precision on purpose — audit survives deep decay
-        "confidence": confidence,
+    return contribution, {
+        "signal_id": str(row["signal_id"]), "source_type": st,
+        "signal_date": row["signal_date"].isoformat(), "age_days": age_days,
+        "weight": weight, "freshness": freshness, "confidence": confidence,
         "contribution": contribution,
     }
-    return contribution, audit
 
+def _apply_timeouts(cur):
+    cur.execute("select set_config('lock_timeout', %s, true)", (LOCK_TIMEOUT,))
+    cur.execute("select set_config('statement_timeout', %s, true)", (STATEMENT_TIMEOUT,))
 
-def main(dry_run=False):
+def main(dry_run=False, lead_ids=None, only_fips=None):
     today = date.today()
+    lead_ids = list(lead_ids) if lead_ids else None
+    only_fips = list(only_fips) if only_fips else None
+    params = {"lead_ids": lead_ids, "only_fips": only_fips}
+    aborted, updated, results = None, 0, []
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn, conn.cursor() as cur:
-        cur.execute(QUALIFYING_SIGNALS)
+        _apply_timeouts(cur)
+        cur.execute(QUALIFYING_SIGNALS, params)
         signals = cur.fetchall()
-
-        # RAIL (assert, defense in depth): a structural row must NEVER reach the scorer.
         leaked = [s["signal_id"] for s in signals if s["signal_class"] != "temporal"]
         assert not leaked, f"structural signal(s) reached the scorer — bug: {leaked}"
-
         per_lead = defaultdict(list)
         for s in signals:
             per_lead[s["matched_lead_id"]].append(s)
-
-        results = []
-        updated = 0
-        for lead_id, lead_signals in per_lead.items():
+        print(f"score_emergence: signals={len(signals)} leads={len(per_lead)} dry_run={dry_run}", flush=True)
+        pending = 0
+        for i, (lead_id, lead_signals) in enumerate(per_lead.items(), start=1):
             contributions, audit = [], []
             for s in lead_signals:
                 c, a = score_signal(s, today)
-                contributions.append(c)
-                audit.append(a)
-            raw_sum = sum(contributions)
-            emerging_score = round(100 * (1 - math.exp(-raw_sum)), 1)
+                contributions.append(c); audit.append(a)
+            emerging_score = round(100 * (1 - math.exp(-sum(contributions))), 1)
             results.append((lead_id, emerging_score, len(audit)))
             if dry_run:
                 continue
-            cur.execute(
-                """update landos.owner_leads
-                   set emerging_score = %s, emerging_signals = %s
-                   where lead_id = %s""",
-                (emerging_score, Jsonb(audit), lead_id))
+            try:
+                cur.execute(
+                    """update landos.owner_leads
+                       set emerging_score=%s, emerging_signals=%s where lead_id=%s""",
+                    (emerging_score, Jsonb(audit), lead_id))
+            except Exception as e:
+                sqlstate = getattr(e, "sqlstate", None)
+                if sqlstate not in ("55P03", "57014") and type(e).__name__ not in (
+                        "LockNotAvailable", "QueryCanceled"):
+                    raise
+                conn.rollback()
+                aborted = f"{type(e).__name__}: {e}"
+                print(f"  FAIL-CLOSED after {updated} updates: {aborted}", flush=True)
+                break
             if cur.rowcount == 1:
                 updated += 1
-            else:
-                print(f"  WARN owner_leads {lead_id} not updated (rowcount={cur.rowcount})")
-
+            pending += 1
+            if pending >= WRITE_BATCH_SIZE:
+                conn.commit(); pending = 0; _apply_timeouts(cur)
+                print(f"  progress {i}/{len(per_lead)} ({updated} updated)", flush=True)
         if dry_run:
             conn.rollback()
-            print(f"\n=== EMERGENCE DRY-RUN — {len(per_lead)} lead(s) would score, NO writes ===")
-            for lead_id, es, n in results:
-                print(f"  {lead_id}  emerging_score={es}  ({n} signal(s))")
-            print("\nHARD STOP — dry-run only. Re-run without --dry-run to write owner_leads.")
-            return
-
-        conn.commit()
-
-    print(f"\nemergence summary: temporal_qualifying_signals={len(signals)} "
-          f"leads_scored={len(per_lead)} owner_leads_updated={updated}")
-    for lead_id, es, n in results:
-        print(f"  lead {lead_id}  emerging_score={es}  ({n} contributing signal(s))")
-    print("\nProjection is sync_to_crm.py's job (single-writer). "
-          "Run `python -m scripts.sync_to_crm` next to carry it into public.acquisition_leads.")
-
+            print(f"DRY-RUN {len(per_lead)} leads would score")
+            for lead_id, es, n in results[:SUMMARY_PRINT_CAP]:
+                print(f"  {lead_id} emerging_score={es} ({n})")
+            return {"dry_run": True, "leads_scored": len(per_lead), "aborted": None}
+        if aborted is None:
+            conn.commit()
+    print(f"emergence summary: signals={len(signals)} scored={len(per_lead)} updated={updated}"
+          + (f" aborted={aborted}" if aborted else ""))
+    for lead_id, es, n in results[:SUMMARY_PRINT_CAP]:
+        print(f"  lead {lead_id} emerging_score={es} ({n})")
+    if len(results) > SUMMARY_PRINT_CAP:
+        print(f"  … +{len(results) - SUMMARY_PRINT_CAP} more")
+    print("score_emergence DONE", flush=True)
+    if aborted:
+        raise RuntimeError(f"score_emergence fail-closed: {aborted}")
+    return {"dry_run": False, "leads_scored": len(per_lead), "owner_leads_updated": updated,
+            "aborted": None, "lead_ids": [r[0] for r in results]}
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="CC2 step 2 — emergence scorer (writes landos.owner_leads)")
-    ap.add_argument("--dry-run", action="store_true", help="compute + preview; write nothing")
-    main(dry_run=ap.parse_args().dry_run)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--fips", action="append", dest="only_fips")
+    args = ap.parse_args()
+    main(dry_run=args.dry_run, only_fips=args.only_fips)

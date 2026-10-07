@@ -96,13 +96,18 @@ def to_e164(raw: str):
 
 
 def twilio_lookup(number: str, sid: str, token: str):
-    """One Lookup v2 call. Returns (result_dict, url). Raises on transport error."""
-    url = LOOKUP_URL.format(number=urllib.parse.quote(number))
-    req = urllib.request.Request(url)
-    auth = base64.b64encode(f"{sid}:{token}".encode()).decode()
-    req.add_header("Authorization", f"Basic {auth}")
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode()), url
+    """One Lookup v2 call. Returns (result_dict, url). Raises on transport error.
+
+    Billable (UNPRICED here): clears the FREE-FIRST guard for this phone first."""
+    from app.free_first.guard import paid_call
+    with paid_call("twilio_lookup", items=[("contact.phone_line_type", f"phone:{number}")], est_cost_usd=None,
+                   caller="scripts/contact_rank.py:twilio_lookup"):
+        url = LOOKUP_URL.format(number=urllib.parse.quote(number))
+        req = urllib.request.Request(url)
+        auth = base64.b64encode(f"{sid}:{token}".encode()).decode()
+        req.add_header("Authorization", f"Basic {auth}")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode()), url
 
 
 def lookup_with_pacing(number: str, sid: str, token: str):

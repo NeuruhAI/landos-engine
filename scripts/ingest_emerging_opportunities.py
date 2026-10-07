@@ -15,7 +15,8 @@ Usage (example for St. Joe):
   python -m scripts.ingest_emerging_opportunities --county 18141 --tenant <tenant_id> --limit 500
 
 Requires:
-- .env with DATABASE_URL (LandOS spine)
+- .env with DEEDSONAR_DATABASE_URL (the production authority; app/config.py resolves it
+  and refuses the retired lvdi spine)
 - CSV inputs in data/incoming/ for va_fed adapters (from VA / DALE ops)
 - For computed negative_space: will stub or implement DB query.
 
@@ -26,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,10 +53,10 @@ COUNTY_CONFIG = {
 DEFAULT_TENANT = "1840ac90-54bd-4b3d-8baf-227c8d84ab5a"  # APG from canon
 
 def get_db():
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError("DATABASE_URL not set (use LandOS spine pooler)")
-    return psycopg.connect(url, row_factory=dict_row)
+    # ONE authority: app.config resolves DEEDSONAR_DATABASE_URL first and refuses
+    # the retired spine, so this writer cannot land on lvdi through a stale variable.
+    from app.config import DATABASE_URL
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 def resolve_to_parcel(signal: DiscoverySignal, conn) -> str | None:
     """Simple resolver: prefer signal parcel_apn, else match by owner_name + county (stub).

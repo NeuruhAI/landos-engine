@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Weekly estate producer (Mon 09:30 local): the consumer of
+         com.neuruh.landos-ingest.source-factory-weekly (Mon 08:45). Ranks the
+         whole estate against UNIVERSE_CURRENT.json in one run and writes the
+         revise rows + receipts projection under data/estate_producer/runs/.
+         FILES ONLY: the production promotion stays a T5/founder action.
+         Install once (log dir, the two dedicated input checkouts, then the job):
+           mkdir -p ~/neuruh-repos/NeuruhAI/landos-engine/data/estate_producer
+           git -C ~/neuruh-repos/NeuruhAI/recipe-engine worktree add --detach ~/neuruh-worktrees/estate-producer-recipe-engine origin/main
+           git -C ~/neuruh-repos/NeuruhAI/deedsonar worktree add --detach ~/neuruh-worktrees/estate-producer-deedsonar origin/main
+           ln -s ~/neuruh-repos/NeuruhAI/deedsonar/node_modules ~/neuruh-worktrees/estate-producer-deedsonar/node_modules
+           cp launchd/com.neuruh.landos-engine.estate-producer-weekly.plist ~/Library/LaunchAgents/
+           launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.neuruh.landos-engine.estate-producer-weekly.plist -->
+    <key>Label</key>
+    <string>com.neuruh.landos-engine.estate-producer-weekly</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/jeramiehicks/neuruh-repos/NeuruhAI/landos-engine/.venv/bin/python</string>
+        <string>-m</string>
+        <string>scripts.estate_producer_weekly</string>
+        <string>run</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key><integer>1</integer>
+        <key>Hour</key><integer>9</integer>
+        <key>Minute</key><integer>30</integer>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/jeramiehicks/neuruh-repos/NeuruhAI/landos-engine</string>
+    <key>StandardOutPath</key>
+    <string>/Users/jeramiehicks/neuruh-repos/NeuruhAI/landos-engine/data/estate_producer/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/jeramiehicks/neuruh-repos/NeuruhAI/landos-engine/data/estate_producer/launchd.err.log</string>
+</dict>
+</plist>

@@ -23,6 +23,7 @@ from fastapi.responses import PlainTextResponse, HTMLResponse
 from psycopg.types.json import Jsonb
 
 from .config import LANDOS_SECRET
+from .auth import bearer_of, token_guard_ok
 from .db import pool
 from .models import (
     EvaluateRequest,
@@ -35,6 +36,10 @@ from .models import (
     LandDDRequest,
 )
 from .models import HuntRequest, ComposeRequest, DecideRequest, ComplianceCertBatchRequest
+from .models import FreeFirstResearchRequest
+from .models import FieldPinCaptureRequest
+from .models import OpportunityIntelligenceRequest
+from . import field_pins as field_pins_mod
 from .scoring import score_parcel, DEFAULT_WEIGHTS, EDGE_PROFILE
 from . import nve_land
 from . import land_dd_adapters as lda
@@ -42,7 +47,10 @@ from . import receipt as receipt_mod
 from . import compliance_cert as cert_mod
 from . import hunt_core
 from . import recipe_core
-from .fips import resolve_county
+from .insight import service as insight_service
+from . import valuation as valuation_mod
+from .fips import resolve_hunt_inputs
+from . import opportunity_intelligence as opportunity_intelligence_mod
 
 app = FastAPI(title="LandOS Engine", version="1.0.0")
 
@@ -58,17 +66,16 @@ def auth(x_landos_secret: str = Header(default="")):
 
 
 # The CRM's land-dd proxy authenticates with `Authorization: Bearer <token>`, not the
-# X-LANDOS-SECRET header the rest of the engine uses. /land-dd is read-only (county-public
-# valuation data, no DB writes), so it takes a lenient guard: if NVE_LAND_TOKEN is set the
-# Bearer token (or the X-LANDOS-SECRET) must match; if it is NOT set, the endpoint is open
-# (matches the CRM's "coming soon" default where LAND_PORTAL_JWT may be any placeholder).
+# X-LANDOS-SECRET header the rest of the engine uses. FAIL-CLOSED, identical in shape to
+# auth_hunt/auth_composer: Bearer NVE_LAND_TOKEN when configured, X-LANDOS-SECRET always
+# accepted, and with NO token configured a valid secret is REQUIRED outright. Absence of a
+# credential is a LOCKED door, never open — same doctrine as DNC-unknown = blocked. These
+# routes read county-public valuation data, but "read-only" is not "unauthenticated": an
+# unset token must 401, not serve the world.
 def auth_land_dd(authorization: str = Header(default=""),
                  x_landos_secret: str = Header(default="")):
-    required = os.environ.get("NVE_LAND_TOKEN")
-    if not required:
-        return True
-    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if bearer == required or (x_landos_secret and x_landos_secret == LANDOS_SECRET):
+    if token_guard_ok(bearer_of(authorization), x_landos_secret,
+                      os.environ.get("NVE_LAND_TOKEN") or "", LANDOS_SECRET):
         return True
     raise HTTPException(status_code=401, detail="Invalid or missing land-dd credential")
 
@@ -101,6 +108,24 @@ def health():
     except Exception as e:  # noqa: BLE001 - report any DB failure plainly
         db = f"down: {e.__class__.__name__}"
     return {"status": "ok", "service": "landos-engine", "db": db}
+
+
+@app.post("/v1/opportunity-intelligence/evaluate")
+def opportunity_intelligence(
+    req: OpportunityIntelligenceRequest,
+    _=Depends(auth_land_dd),
+):
+    """Evaluate a versioned Recipe Engine opportunity contract, read-only.
+
+    This endpoint performs no seller contact, offer execution, database write,
+    or recipe mutation.  It returns the full explanation and deterministic
+    receipt produced by the pure evaluator.
+    """
+    try:
+        payload = req.model_dump(exclude_none=True)
+        return opportunity_intelligence_mod.evaluate_opportunity(payload)
+    except opportunity_intelligence_mod.OpportunityIntelligenceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/land-dd")
@@ -243,6 +268,46 @@ def lead_receipt(lead_id: str, format: str = "json", _=Depends(auth_land_dd)):
     return receipt
 
 
+@app.get("/v1/insight/{lead_id}")
+def insight(lead_id: str, force: bool = False, _=Depends(auth_land_dd)):
+    """DS-07 AI INSIGHTS: a grounded call brief for one lead. NEURUH IP — the CRM consumes
+    this over REST and only DISPLAYS it; the prompt, grounding rules, and model routing stay
+    engine-side. Returns {brief, angle, do_not_say, grounding, model, generated_at, cached}.
+    Every claim in `grounding` carries the field it came from; a thin record yields a short or
+    empty brief (an empty brief is correct). Honest-offline (503) when the spend cap is
+    reached, the kill switch is on, or the model is unreachable — never a fabricated brief.
+    `?force=true` bypasses the cache. Same Bearer-tolerant guard as /lead-receipt."""
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                out = insight_service.generate_insight(cur, lead_id, force=force)
+    except insight_service.InsightUnavailable as e:
+        raise HTTPException(status_code=e.status, detail=e.reason)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No lead resolves for {lead_id}")
+    return out
+
+
+@app.get("/v1/valuation/{lead_id}")
+def valuation(lead_id: str, mode: str = "land", federal: bool = False,
+              _=Depends(auth_land_dd)):
+    """VALUATION LAB: an auditable value for one lead. NEURUH IP — the CRM consumes this over
+    REST and DISPLAYS it; the comp selection, adjustment weights, acreage curve, and MAO
+    formula stay engine-side. `mode=land` returns a comp-grounded land value with every
+    overlay itemized (flood/wetlands/slope/acreage-curve/water/road-frontage); `mode=house`
+    returns MAO = (ARV × pct) − repairs − fee with the tenant's pct/repairs/fee carried.
+    Honest-null everywhere: no comps -> value null + reason; a number is NEVER interpolated
+    from an assessed value. `?federal=true` adds the live NWI/3DEP buildable pull (slower)."""
+    if mode not in ("land", "house"):
+        raise HTTPException(status_code=422, detail="mode must be 'land' or 'house'")
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            out = valuation_mod.value_for_lead(cur, lead_id, mode=mode, federal=federal)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No lead resolves for {lead_id}")
+    return out
+
+
 @app.get("/compliance-cert/{lead_id}")
 def compliance_cert(lead_id: str, format: str = "json", _=Depends(auth_land_dd)):
     """COMPLIANCE-AS-PRODUCT: a signed, client-facing Compliance Certificate for one lead —
@@ -302,11 +367,8 @@ def compliance_cert_batch(req: ComplianceCertBatchRequest, _=Depends(auth_land_d
 # and with NO token configured the secret is REQUIRED outright.
 def auth_hunt(authorization: str = Header(default=""),
               x_landos_secret: str = Header(default="")):
-    required = os.environ.get("NVE_LAND_TOKEN")
-    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if required and bearer == required:
-        return True
-    if x_landos_secret and x_landos_secret == LANDOS_SECRET:
+    if token_guard_ok(bearer_of(authorization), x_landos_secret,
+                      os.environ.get("NVE_LAND_TOKEN") or "", LANDOS_SECRET):
         return True
     raise HTTPException(status_code=401, detail="Invalid or missing hunt credential")
 
@@ -315,15 +377,14 @@ def auth_hunt(authorization: str = Header(default=""),
 def hunt_create(req: HuntRequest, _=Depends(auth_hunt)):
     """HUNT-V2: create a net-new territory hunt job. Validates every territory entry
     against the census table (fips wins; else state+county must resolve — never
-    guessed). The job is only QUEUED here: the runner (python -m app.hunt_worker,
-    night-chain-compatible) advances it census -> stage -> score -> DRY-RUN mint and
-    parks it at awaiting_operator_mint. NO owner_leads write ever happens from the
-    API or the worker — the operator fires the mint (python -m app.hunt_mint <id>)."""
-    if not req.territory:
-        raise HTTPException(status_code=422, detail="territory must name >=1 county")
+    guessed). Optional geography (zip | county | state | counties) is resolved
+    through resolve_geography and unioned with territory[]. The job is only QUEUED
+    here: the runner (python -m app.hunt_worker, night-chain-compatible) advances
+    it census -> stage -> score -> DRY-RUN mint and parks it at
+    awaiting_operator_mint. NO owner_leads write ever happens from the API or the
+    worker — the operator fires the mint (python -m app.hunt_mint <id>)."""
     try:
-        resolved = [resolve_county(fips=e.fips, state=e.state, county=e.county)
-                    for e in req.territory]
+        resolved = resolve_hunt_inputs(req.territory, req.geography)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     with pool.connection() as conn:
@@ -334,6 +395,32 @@ def hunt_create(req: HuntRequest, _=Depends(auth_hunt)):
             "next": "python -m app.hunt_worker --job <job_id>  (or the night chain) "
                     "advances it to awaiting_operator_mint; the mint itself is "
                     "operator-fired via python -m app.hunt_mint <job_id>."}
+
+
+@app.post("/v1/free-first/research")
+def free_first_research(req: FreeFirstResearchRequest, _=Depends(auth_hunt)):
+    """FREE-FIRST research on the engine's own ladder, executors and paid gate, for callers
+    that must stay loopback-only (a neuruh-workers job's receipts are 127.0.0.1-only, so it
+    reaches county GIS, the DeedSonar spine and the engine cache through this organ).
+    Writes only the free-first ledger; guarded like /hunt (never open)."""
+    from .free_first import connections, route_executors, service
+    from .free_first.ledger import FreeFirstLedger
+    ledger = FreeFirstLedger(service.default_ledger_path())
+    conns = connections.open_research_connections()
+    try:
+        executors = route_executors.default_executors(engine_conn=conns.get("engine"), spine_conn=conns.get("spine"))
+        results = [service.research(
+            ledger=ledger, tenant_id=req.tenant_id, fact=item.fact, target=item.target, state=item.state,
+            county_fips=item.county_fips, requested_by=req.requested_by, worker_id="landos-engine:api",
+            executors=executors, extra_free_sources=item.extra_free_sources, supplied_evidence=item.supplied_evidence,
+            parent_receipt=req.parent_receipt, probe_paid=req.probe_paid) for item in req.items]
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        connections.close_all(conns)
+    return {"results": results, "ledger": ledger.verify(),
+            "connections": {"spine": conns.get("spine_authority") or conns.get("spine_refused"),
+                            "engine": "UP" if conns.get("engine") is not None else conns.get("engine_refused")}}
 
 
 @app.get("/hunt/{job_id}")
@@ -364,11 +451,8 @@ def hunt_status(job_id: str, _=Depends(auth_hunt)):
 # COMPOSER_TOKEN set the secret is required outright.
 def auth_composer(authorization: str = Header(default=""),
                   x_landos_secret: str = Header(default="")):
-    required = os.environ.get("COMPOSER_TOKEN")
-    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if required and bearer == required:
-        return True
-    if x_landos_secret and x_landos_secret == LANDOS_SECRET:
+    if token_guard_ok(bearer_of(authorization), x_landos_secret,
+                      os.environ.get("COMPOSER_TOKEN") or "", LANDOS_SECRET):
         return True
     raise HTTPException(status_code=401, detail="Invalid or missing composer credential")
 
@@ -796,6 +880,52 @@ def emerging_heat_map(
         count=len(opps),
         opportunities=opps,
     )
+
+
+# ---------------------------------------------------------------------------
+# FIELD PIN V1 — windshield-sensor capture + ray->parcel intelligence.
+# The bounded surface is exactly three routes; all the contract lives in
+# app/field_pins.py (validation fail-closed, ray built server-side, reviewed
+# resolver ladder, idempotent replay, duplicate linkage, honest lake status).
+# A field pin is a SIGNAL: nothing here mints leads or contacts owners.
+# ---------------------------------------------------------------------------
+@app.post("/field-pins")
+def field_pin_capture(req: FieldPinCaptureRequest, _=Depends(auth)):
+    """Capture one field observation, build + preserve its ray, resolve it, and
+    return receipt + resolution + plat GeoJSON + Lake Michigan status. An
+    unresolved pin is a stored, valid outcome — never dropped."""
+    try:
+        with pool.connection() as conn:
+            return field_pins_mod.capture_pin(conn, req.model_dump())
+    except field_pins_mod.FieldPinValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/field-pins/{pin_id}/resolve")
+def field_pin_reresolve(pin_id: str, _=Depends(auth)):
+    """Re-run the reviewed resolution ladder for one pin — the retroactive path
+    for pins captured before their county's parcel geometry landed."""
+    try:
+        with pool.connection() as conn:
+            out = field_pins_mod.reresolve_pin(conn, pin_id)
+    except field_pins_mod.FieldPinValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if not out.get("ok") and out.get("error") == "pin_not_found":
+        raise HTTPException(status_code=404, detail="pin_not_found")
+    return out
+
+
+@app.get("/field-pins/{pin_id}")
+def field_pin_get(pin_id: str, _=Depends(auth)):
+    """Read one pin: stored observation receipt, stamped resolution, plat, lake."""
+    try:
+        with pool.connection() as conn:
+            out = field_pins_mod.get_pin(conn, pin_id)
+    except field_pins_mod.FieldPinValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if not out.get("ok") and out.get("error") == "pin_not_found":
+        raise HTTPException(status_code=404, detail="pin_not_found")
+    return out
 
 
 if __name__ == "__main__":

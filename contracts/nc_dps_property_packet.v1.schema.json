@@ -1,0 +1,691 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuruh.local/contracts/nc_dps_property_packet.v1.schema.json",
+  "title": "NC DPS Property Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "property_id",
+    "state",
+    "county",
+    "county_fips",
+    "parcel_id",
+    "identity",
+    "valuation",
+    "tax_distress",
+    "court",
+    "ownership",
+    "title",
+    "physical",
+    "entity",
+    "scores",
+    "recipes",
+    "risks",
+    "next_research_steps",
+    "source_records",
+    "governance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "nc_dps_property_packet.v1"
+    },
+    "property_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "const": "NC"
+    },
+    "county": {
+      "type": "string",
+      "minLength": 1
+    },
+    "county_fips": {
+      "type": "string",
+      "pattern": "^37[0-9]{3}$"
+    },
+    "parcel_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "property_address",
+        "owner_of_record",
+        "owner_mailing_address",
+        "occupancy_indicator"
+      ],
+      "properties": {
+        "property_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner_of_record": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner_mailing_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "occupancy_indicator": {
+          "type": "string",
+          "enum": [
+            "owner_occupied",
+            "tenant_occupied",
+            "vacant",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "valuation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conservative_as_is_value",
+        "estimated_mortgage_balance",
+        "tax_balance",
+        "judgment_and_lien_balance",
+        "estimated_equity",
+        "equity_ratio",
+        "equity_confidence"
+      ],
+      "properties": {
+        "conservative_as_is_value": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "estimated_mortgage_balance": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "tax_balance": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "judgment_and_lien_balance": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "estimated_equity": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "equity_ratio": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "equity_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        }
+      }
+    },
+    "tax_distress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "delinquent_years",
+        "oldest_delinquent_year",
+        "tax_balance",
+        "delinquency_bucket",
+        "foreclosure_case_number",
+        "foreclosure_stage",
+        "sale_date",
+        "upset_bid_deadline"
+      ],
+      "properties": {
+        "delinquent_years": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "uniqueItems": true
+        },
+        "oldest_delinquent_year": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tax_balance": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "delinquency_bucket": {
+          "type": "string",
+          "enum": [
+            "none",
+            "one_year",
+            "two_to_four_years",
+            "five_plus_years",
+            "unknown"
+          ]
+        },
+        "foreclosure_case_number": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "foreclosure_stage": {
+          "type": "string",
+          "enum": [
+            "none",
+            "filed",
+            "service",
+            "judgment",
+            "order_of_sale",
+            "sale_scheduled",
+            "upset_bid",
+            "stayed",
+            "dismissed",
+            "paid",
+            "unknown"
+          ]
+        },
+        "sale_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upset_bid_deadline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "court": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_age_days",
+        "days_since_last_activity",
+        "failed_service_count",
+        "unserved_party_count",
+        "amended_complaint_count",
+        "unknown_heir_flag",
+        "publication_flag",
+        "ad_litem_flag",
+        "bankruptcy_status"
+      ],
+      "properties": {
+        "case_age_days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "days_since_last_activity": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "failed_service_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unserved_party_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "amended_complaint_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown_heir_flag": {
+          "type": "boolean"
+        },
+        "publication_flag": {
+          "type": "boolean"
+        },
+        "ad_litem_flag": {
+          "type": "boolean"
+        },
+        "bankruptcy_status": {
+          "type": "string",
+          "enum": [
+            "none_found",
+            "active",
+            "stayed",
+            "dismissed",
+            "discharged",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "ownership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "absentee",
+        "out_of_state",
+        "years_owned",
+        "death_status",
+        "probate_status",
+        "interested_party_count",
+        "required_signature_count",
+        "fractional_ownership_flag"
+      ],
+      "properties": {
+        "absentee": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "out_of_state": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "years_owned": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "death_status": {
+          "type": "string",
+          "enum": [
+            "confirmed_deceased",
+            "possible_deceased",
+            "living",
+            "unknown"
+          ]
+        },
+        "probate_status": {
+          "type": "string",
+          "enum": [
+            "no_probate_found",
+            "open",
+            "inactive",
+            "closed_title_unchanged",
+            "closed_conveyed",
+            "contested",
+            "unknown"
+          ]
+        },
+        "interested_party_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "required_signature_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "fractional_ownership_flag": {
+          "type": "boolean"
+        }
+      }
+    },
+    "title": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "free_and_clear_status",
+        "deed_chain_status",
+        "title_issue_codes",
+        "competing_deed_flag",
+        "fraud_flag"
+      ],
+      "properties": {
+        "free_and_clear_status": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "likely",
+            "not_free_and_clear",
+            "unknown"
+          ]
+        },
+        "deed_chain_status": {
+          "type": "string",
+          "enum": [
+            "clean_observed_chain",
+            "curative_issue_detected",
+            "incomplete",
+            "conflicting",
+            "unknown"
+          ]
+        },
+        "title_issue_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "competing_deed_flag": {
+          "type": "boolean"
+        },
+        "fraud_flag": {
+          "type": "boolean"
+        }
+      }
+    },
+    "physical": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vacant",
+        "code_case_open",
+        "code_case_age_days",
+        "condemned",
+        "demolition_pending"
+      ],
+      "properties": {
+        "vacant": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "code_case_open": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "code_case_age_days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "condemned": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "demolition_pending": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_type",
+        "entity_status"
+      ],
+      "properties": {
+        "owner_type": {
+          "type": "string",
+          "enum": [
+            "individual",
+            "estate",
+            "trust",
+            "llc",
+            "corporation",
+            "partnership",
+            "government",
+            "unknown"
+          ]
+        },
+        "entity_status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "inactive",
+            "dissolved",
+            "withdrawn",
+            "revoked",
+            "not_applicable",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "raw_dps_score",
+        "normalized_dps_score",
+        "opportunity_score",
+        "urgency_score",
+        "evidence_confidence",
+        "composite_priority",
+        "trigger_count",
+        "trigger_classes"
+      ],
+      "properties": {
+        "raw_dps_score": {
+          "type": "number"
+        },
+        "normalized_dps_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "opportunity_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "urgency_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "evidence_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "composite_priority": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "trigger_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "trigger_classes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "tax_distress",
+              "court_action",
+              "death_or_probate",
+              "title_chain_problem",
+              "absentee_or_out_of_state",
+              "vacancy_or_code",
+              "entity_failure",
+              "recorded_lien_or_judgment",
+              "ownership_fragmentation",
+              "market_or_redevelopment_signal"
+            ]
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "recipes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "matched_recipes",
+        "recommended_recipe"
+      ],
+      "properties": {
+        "matched_recipes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "recommended_recipe": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "next_research_steps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 5,
+      "maxItems": 5
+    },
+    "source_records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_id",
+          "source_url",
+          "retrieved_at",
+          "evidence_class",
+          "confidence",
+          "field_paths"
+        ],
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_url": {
+            "type": "string",
+            "minLength": 1
+          },
+          "retrieved_at": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_class": {
+            "type": "string",
+            "enum": [
+              "verified_public_record",
+              "seller_reported",
+              "inference",
+              "unknown"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "field_paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "legal_heir_declared",
+        "title_clear_declared",
+        "seller_contact_authorized",
+        "skip_trace_authorized",
+        "offer_authorized",
+        "funds_authorized",
+        "filing_authorized",
+        "recording_authorized"
+      ],
+      "properties": {
+        "legal_heir_declared": {
+          "const": false
+        },
+        "title_clear_declared": {
+          "const": false
+        },
+        "seller_contact_authorized": {
+          "const": false
+        },
+        "skip_trace_authorized": {
+          "const": false
+        },
+        "offer_authorized": {
+          "const": false
+        },
+        "funds_authorized": {
+          "const": false
+        },
+        "filing_authorized": {
+          "const": false
+        },
+        "recording_authorized": {
+          "const": false
+        }
+      }
+    }
+  }
+}

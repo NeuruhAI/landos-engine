@@ -1,0 +1,957 @@
+{
+ "onemap_records": [
+  {
+   "altparno": "211111",
+   "mstate": "NC",
+   "ownname": "OWNER 27",
+   "parno": "0718075776",
+   "parval": "238298.0",
+   "saledatetx": "8/31/2017 12:00:00 AM",
+   "siteadd": "1000 1104 SOUTHPOINT LANDING WAY",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "211139",
+   "mstate": "NC",
+   "ownname": "OWNER 28",
+   "parno": "0718075776",
+   "parval": "238298.0",
+   "saledatetx": "7/3/2012 12:00:00 AM",
+   "siteadd": "2000 2105 SOUTHPOINT LANDING WAY",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "230030",
+   "mstate": "NC",
+   "ownname": "OWNER 24",
+   "parno": "0718075776",
+   "parval": "815800.0",
+   "saledatetx": "1/17/2025 12:00:00 AM",
+   "siteadd": "4010 20 SOUTHPOINT LANDING WAY",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "143617",
+   "mstate": "NC",
+   "ownname": "OWNER 29",
+   "parno": "0718679084",
+   "parval": "391188.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "5015 130 SOUTHPARK DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "143622",
+   "mstate": "NC",
+   "ownname": "OWNER 07",
+   "parno": "0718679084",
+   "parval": "328199.0",
+   "saledatetx": "1/9/2025 12:00:00 AM",
+   "siteadd": "5015 230 SOUTHPARK DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "153922",
+   "mstate": "NC",
+   "ownname": "OWNER 30",
+   "parno": "0738035055",
+   "parval": "150265.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "4728 640 NC 55 HWY",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "153923",
+   "mstate": "NC",
+   "ownname": "OWNER 30",
+   "parno": "0738035055",
+   "parval": "150265.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "4728 630 NC 55 HWY",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "153924",
+   "mstate": "NC",
+   "ownname": "OWNER 31",
+   "parno": "0738035055",
+   "parval": "150265.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "4728 620 NC 55 HWY",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "156112",
+   "mstate": "NC",
+   "ownname": "OWNER 10",
+   "parno": "0739156502",
+   "parval": "154067.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "3201 115 YORKTOWN AVE",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "156116",
+   "mstate": "NC",
+   "ownname": "OWNER 32",
+   "parno": "0739156502",
+   "parval": "81195.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "3201 106 YORKTOWN AVE",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "121855",
+   "mstate": "NC",
+   "ownname": "OWNER 02",
+   "parno": "0810463559",
+   "parval": "351620.0",
+   "saledatetx": "11/4/2020 12:00:00 AM",
+   "siteadd": "3805 A UNIVERSITY DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "214588",
+   "mstate": "NC",
+   "ownname": "OWNER 02",
+   "parno": "0810463559",
+   "parval": "17867.0",
+   "saledatetx": "11/4/2020 12:00:00 AM",
+   "siteadd": "3805 03 UNIVERSITY DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "214594",
+   "mstate": "NC",
+   "ownname": "OWNER 02",
+   "parno": "0810463559",
+   "parval": "38113.0",
+   "saledatetx": "11/4/2020 12:00:00 AM",
+   "siteadd": "3805 05 UNIVERSITY DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "130521",
+   "mstate": "NC",
+   "ownname": "OWNER 05",
+   "parno": "0812481439",
+   "parval": "659261.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "3400 206 CROASDAILE DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "130522",
+   "mstate": "NC",
+   "ownname": "OWNER 05",
+   "parno": "0812481439",
+   "parval": "536492.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "3400 208 CROASDAILE DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "130489",
+   "mstate": "NC",
+   "ownname": "OWNER 03",
+   "parno": "0812488167",
+   "parval": "226816.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "3200 601 CROASDAILE DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "130490",
+   "mstate": "NC",
+   "ownname": "OWNER 03",
+   "parno": "0812488167",
+   "parval": "78393.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "3200 603 CROASDAILE DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "130503",
+   "mstate": "NC",
+   "ownname": "OWNER 04",
+   "parno": "0812488167",
+   "parval": "162599.0",
+   "saledatetx": "6/27/2014 12:00:00 AM",
+   "siteadd": "3200 105 CROASDAILE DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "104654",
+   "mstate": "NC",
+   "ownname": "OWNER 01",
+   "parno": "0812841783",
+   "parval": "583143.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "3109 HILLSBOROUGH RD",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "104655",
+   "mstate": "NC",
+   "ownname": "OWNER 01",
+   "parno": "0812841783",
+   "parval": "639194.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "3113 HILLSBOROUGH RD",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "158589",
+   "mstate": "NC",
+   "ownname": "OWNER 33",
+   "parno": "0840774737",
+   "parval": "131051.0",
+   "saledatetx": "4/30/2024 12:00:00 AM",
+   "siteadd": "307 204 KENDALL DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "158602",
+   "mstate": "NC",
+   "ownname": "OWNER 34",
+   "parno": "0840774737",
+   "parval": "131051.0",
+   "saledatetx": "3/11/2022 12:00:00 AM",
+   "siteadd": "1401 901 KENDALL DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "158617",
+   "mstate": "NC",
+   "ownname": "OWNER 35",
+   "parno": "0840774737",
+   "parval": "131051.0",
+   "saledatetx": "12/30/1899 12:00:00 AM",
+   "siteadd": "107 104 KENDALL DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "159396",
+   "mstate": "VA",
+   "ownname": "OWNER 15",
+   "parno": "0841370094",
+   "parval": "103736.0",
+   "saledatetx": "4/2/2015 12:00:00 AM",
+   "siteadd": "322 39A JUNCTION RD",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "159405",
+   "mstate": "NC",
+   "ownname": "OWNER 36",
+   "parno": "0841370094",
+   "parval": "103736.0",
+   "saledatetx": "9/9/2021 12:00:00 AM",
+   "siteadd": "322 37B JUNCTION RD",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "159407",
+   "mstate": "VA",
+   "ownname": "OWNER 15",
+   "parno": "0841370094",
+   "parval": "103736.0",
+   "saledatetx": "7/15/2014 12:00:00 AM",
+   "siteadd": "322 37D JUNCTION RD",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "199979",
+   "mstate": "NC",
+   "ownname": "OWNER 37",
+   "parno": "9798851149",
+   "parval": "514137.0",
+   "saledatetx": "6/12/2024 12:00:00 AM",
+   "siteadd": "429 209 CEDAR CLUB CIR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "200078",
+   "mstate": "NC",
+   "ownname": "OWNER 38",
+   "parno": "9798851149",
+   "parval": "1079476.0",
+   "saledatetx": "10/2/2012 12:00:00 AM",
+   "siteadd": "200 023 CEDAR POND LN",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "209760",
+   "mstate": "NC",
+   "ownname": "OWNER 39",
+   "parno": "9798939073",
+   "parval": "301502.0",
+   "saledatetx": "3/11/2021 12:00:00 AM",
+   "siteadd": "1002 D KINGSWOOD DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "209791",
+   "mstate": "NC",
+   "ownname": "OWNER 40",
+   "parno": "9798939073",
+   "parval": "209453.0",
+   "saledatetx": "7/12/2024 12:00:00 AM",
+   "siteadd": "1004 G KINGSWOOD DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "209819",
+   "mstate": "NC",
+   "ownname": "OWNER 41",
+   "parno": "9798939073",
+   "parval": "307053.0",
+   "saledatetx": "4/1/2024 12:00:00 AM",
+   "siteadd": "1008 G KINGSWOOD DR",
+   "stcntyfips": "37063"
+  },
+  {
+   "altparno": "09222012",
+   "mstate": "NC",
+   "ownname": "OWNER 42",
+   "parno": "09222012",
+   "parval": "262100.0",
+   "saledatetx": "1/1/1900 12:00:00 AM",
+   "siteadd": "203 E EAST AVE",
+   "stcntyfips": "37179"
+  }
+ ],
+ "provenance": {
+  "cut": "12 repeated 37063 keys (31 source rows) + Union tracer 09222012",
+  "factory_run": "run-20260913T200758Z (normalized_signals.jsonl sha256 0f7d3c22...)",
+  "owner_names": "replaced by stable tokens",
+  "producer_run": "RE_LIVE_20260913/60_estate_producer (REFUSED at 3_export)"
+ },
+ "repeated_keys_before_fix": [
+  "NC:37063:0718075776",
+  "NC:37063:0718679084",
+  "NC:37063:0738035055",
+  "NC:37063:0739156502",
+  "NC:37063:0810463559",
+  "NC:37063:0812481439",
+  "NC:37063:0812488167",
+  "NC:37063:0812841783",
+  "NC:37063:0840774737",
+  "NC:37063:0841370094",
+  "NC:37063:9798851149",
+  "NC:37063:9798939073"
+ ],
+ "signals": [
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 6251
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 01",
+   "parcel_apn": "104654",
+   "raw_address": "3109 HILLSBOROUGH RD DURHAM NC 27705",
+   "signal_id": "00aab217211da76a2a5fefc5b12a1217e624d4a3c5ef55067554dc17b016ce12",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 6851.07
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 01",
+   "parcel_apn": "104655",
+   "raw_address": "3113 HILLSBOROUGH RD DURHAM NC 27705",
+   "signal_id": "250d48b866926a1fd0ed658131d4e869a046646fdcac2028cc954755759f12b0",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 2258.68
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 02",
+   "parcel_apn": "121855",
+   "raw_address": "3805 A UNIVERSITY DR DURHAM NC 27707",
+   "signal_id": "ec7f686915d5640e925eb7fbdeb48aa5a37b29ec757740ac37f2d65432fa8fc1",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 2436.13
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 03",
+   "parcel_apn": "130489",
+   "raw_address": "3200 601 CROASDAILE DR DURHAM NC 27705",
+   "signal_id": "ed5c1fb4d54283f25704bbc755f3d87819ea30619fe999c8bf5d4726bfbf9213",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 847.12
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 03",
+   "parcel_apn": "130490",
+   "raw_address": "3200 603 CROASDAILE DR DURHAM NC 27705",
+   "signal_id": "616802fc4a43c952ae124fb3e142e6589dd9d717b6f0b471ad87f1b8b6be827f",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 1748.64
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 04",
+   "parcel_apn": "130503",
+   "raw_address": "3200 105 CROASDAILE DR DURHAM NC 27705",
+   "signal_id": "2f975c53d7f516cb16d576895faa3159fcc2674ca3d653edafea66ddf5081733",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 1800.08
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 05",
+   "parcel_apn": "130521",
+   "raw_address": "3400 206 CROASDAILE DR DURHAM NC 27705",
+   "signal_id": "8d0259d07e620837385fc7563074921e1da705d7d50d60b4c0594010e621446e",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 1501.2
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 05",
+   "parcel_apn": "130522",
+   "raw_address": "3400 208 CROASDAILE DR DURHAM NC 27705",
+   "signal_id": "680ddc1336e053332c7495b3a38e13d746487a4b26cf20076cdee581cde9c438",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 4195.91
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 06",
+   "parcel_apn": "143617",
+   "raw_address": "5015 130 SOUTHPARK DR DURHAM NC 27713",
+   "signal_id": "25b315d3d1ba099567cb1168cc1bac4c21b2081aad9b3b056aec59d1d7433607",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 3521.55
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 07",
+   "parcel_apn": "143622",
+   "raw_address": "5015 230 SOUTHPARK DR DURHAM NC 27713",
+   "signal_id": "aab01a34a637d179c2f7c1426785b946390662823f3643b2d723e68c903c5bc1",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 39.43
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 08",
+   "parcel_apn": "153922",
+   "raw_address": "4728 640 NC 55 HWY DURHAM NC 27713",
+   "signal_id": "e734133f9d108f20e45011d7c3259e3ce22fa5dfb1dd1ded52a3647d2ae4c257",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 39.43
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 08",
+   "parcel_apn": "153923",
+   "raw_address": "4728 630 NC 55 HWY DURHAM NC 27713",
+   "signal_id": "7c3023318d20771889d35eaa3ca0e89a6d6156468952fa79b8fa5c5a3ab8ea7d",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 39.43
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 09",
+   "parcel_apn": "153924",
+   "raw_address": "4728 620 NC 55 HWY DURHAM NC 27713",
+   "signal_id": "3e4734e45470da260638400f5952b15d179f52b5ab0c474dac0f1efa2783979f",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 337.74
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 10",
+   "parcel_apn": "156112",
+   "raw_address": "3201 115 YORKTOWN AVE DURHAM NC 27713",
+   "signal_id": "910f6fd85cfbea4cc4bcfd719ed7e4fa1863cec185da98983e1e5179d9b3aba4",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 809.29
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 11",
+   "parcel_apn": "156116",
+   "raw_address": "3201 106 YORKTOWN AVE DURHAM NC 27713",
+   "signal_id": "84007f6725691ea6cd8e496e6762b9dd2bdbf8eeb5ac8242f1f5b7fefcb55b82",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 1410.89
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 12",
+   "parcel_apn": "158589",
+   "raw_address": "307 204 KENDALL DR DURHAM NC 27703",
+   "signal_id": "ab5308cf43fbf8e079917ef3248765966b969c4e73ed7d0715d35a65c4e27efb",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 531.55
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 13",
+   "parcel_apn": "158602",
+   "raw_address": "1401 901 KENDALL DR DURHAM NC 27703",
+   "signal_id": "ed428f114b9349e9ed4b24a686fe390d359e96a82a9414494f0cfa446577d2e4",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 3.86
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 14",
+   "parcel_apn": "158617",
+   "raw_address": "107 104 KENDALL DR DURHAM NC 27703",
+   "signal_id": "f3a60b796a392b7f93a330cf4df8960206767c1987f75f1f000dddf24f71c039",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 52.23
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 15",
+   "parcel_apn": "159396",
+   "raw_address": "322 39A JUNCTION RD DURHAM NC 27703",
+   "signal_id": "160600f77b67bce303f90cbec5355d6fa719805028035c603e0a3fe96c92e736",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 1118.44
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 16",
+   "parcel_apn": "159405",
+   "raw_address": "322 37B JUNCTION RD DURHAM NC 27703",
+   "signal_id": "874613ea7ffacfbd2c2d88f111e4f871d4edf6009709dceaba6446786c0da212",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 52.23
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 15",
+   "parcel_apn": "159407",
+   "raw_address": "322 37D JUNCTION RD DURHAM NC 27703",
+   "signal_id": "17b556f1073200fb9cfd04869670561733fc9c29a480bc3da4594a9328108b5d",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 3
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 17",
+   "parcel_apn": "199979",
+   "raw_address": "429 209 CEDAR CLUB CIR CHAPEL HILL NC 27517",
+   "signal_id": "2d37aa7ad1d043d957ac862e8e4f41e2dd6b62ea0b7b1aebd7a65ae79785a66a",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 240.82
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 18",
+   "parcel_apn": "200078",
+   "raw_address": "200 023 CEDAR POND LN CHAPEL HILL NC 27517",
+   "signal_id": "d9a7f2e1e3d8a8b25deefff0836a671e96a0df22b7036d916c5dcca75ffb1b14",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 3235.75
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 19",
+   "parcel_apn": "209760",
+   "raw_address": "1002 D KINGSWOOD DR CHAPEL HILL NC 27517",
+   "signal_id": "9acd8ddbaf6351ed49d7fd444aa6692e31e196a81d11193c6867a2b682404b17",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 44.01
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 20",
+   "parcel_apn": "209791",
+   "raw_address": "1004 G KINGSWOOD DR CHAPEL HILL NC 27517",
+   "signal_id": "814596b3960150e8bae94d8296d97874956815ca09b5d8edef2e2947b84ff9bf",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 31.7
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 21",
+   "parcel_apn": "209819",
+   "raw_address": "1008 G KINGSWOOD DR CHAPEL HILL NC 27517",
+   "signal_id": "b9daf796d3a27109bdb714e54c8bd64221138ec9b7f98212d8747fd6bdd5258d",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 2559.07
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 22",
+   "parcel_apn": "211111",
+   "raw_address": "7250 1104 NC 751 HWY DURHAM NC 27707",
+   "signal_id": "748a330ac9f8bac775bbcaa45f9a16aa05b15f437c837c5a4b75f4d65d67a0b2",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 2559.07
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 23",
+   "parcel_apn": "211139",
+   "raw_address": "7250 2105 NC 751 HWY DURHAM NC 27707",
+   "signal_id": "d45e5bcfc8abed7ecd0f3b2bab9c1124cd3a1761a7cbb45cf72a7ab8ed6992c3",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 114.78
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 02",
+   "parcel_apn": "214588",
+   "raw_address": "3805 03 UNIVERSITY DR DURHAM NC 27707",
+   "signal_id": "f96aa729653f30dade566a74923629b3f876ca2970200f2bb5df8f1a7deae0d6",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 244.82
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 02",
+   "parcel_apn": "214594",
+   "raw_address": "3805 05 UNIVERSITY DR DURHAM NC 27707",
+   "signal_id": "678965cfbad867788236f26c1792acdf4faf7486abc668739891724e2b701caa",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:08Z",
+    "source_key": "nc.durham.taxdelinquent.spatialest",
+    "source_url": "https://property.spatialest.com/nc/durham-tax/data/getData.php",
+    "tax_balance": 8741.82
+   },
+   "event_date": "2026-08-12",
+   "geography": "37063",
+   "owner_name": "OWNER 24",
+   "parcel_apn": "230030",
+   "raw_address": "4010 20 SOUTHPOINT LANDING WAY DURHAM NC 27707",
+   "signal_id": "893e18841dea5e9dc89b005dbe231acd458b937cae6c731582c0fbeec86d6150",
+   "source": "official_distress:durham",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": null,
+    "retrieved_at": "2026-09-13T20:08:20Z",
+    "source_key": "nc.union.tax_foreclosure_case.county_pdf",
+    "source_url": "https://www.unioncountync.gov/home/showdocument?id=4784&t=637775972934935927"
+   },
+   "event_date": "2026-08-05",
+   "geography": "37179",
+   "owner_name": "OWNER 25",
+   "parcel_apn": "09.222.012",
+   "raw_address": "203 East Avenue",
+   "signal_id": "cd52a83fffbcfdd8abfbe368ae76b62473082decd8e17c1743a94dc0514216aa",
+   "source": "official_tax_foreclosure:union",
+   "source_type": "tax_foreclosure_case"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": "2026-09-02",
+    "retrieved_at": "2026-09-13T20:08:22Z",
+    "source_key": "nc.union.taxdelinquent.published_list",
+    "source_url": "https://www.unioncountync.gov/home/showdocument?id=4792&t=639076999845462802",
+    "tax_balance": 1300.04
+   },
+   "event_date": "2026-08-05",
+   "geography": "37179",
+   "owner_name": "OWNER 26",
+   "parcel_apn": "09222012",
+   "raw_address": "",
+   "signal_id": "945fdbac961aa2df70b4e19cf4ddaecc526f077dca350a590da9397c9c587d27",
+   "source": "official_distress:union",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": "2026-09-02",
+    "retrieved_at": "2026-09-13T20:08:22Z",
+    "source_key": "nc.union.taxdelinquent.published_list",
+    "source_url": "https://www.unioncountync.gov/home/showdocument?id=4792&t=639076999845462802",
+    "tax_balance": 1232.58
+   },
+   "event_date": "2026-08-05",
+   "geography": "37179",
+   "owner_name": "OWNER 26",
+   "parcel_apn": "09222012",
+   "raw_address": "",
+   "signal_id": "b3d295678cd90e68c878f3ca8c09de68feec18cbe69230803e1044018033fd55",
+   "source": "official_distress:union",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": "2026-09-02",
+    "retrieved_at": "2026-09-13T20:08:22Z",
+    "source_key": "nc.union.taxdelinquent.published_list",
+    "source_url": "https://www.unioncountync.gov/home/showdocument?id=4792&t=639076999845462802",
+    "tax_balance": 611.66
+   },
+   "event_date": "2026-08-05",
+   "geography": "37179",
+   "owner_name": "OWNER 26",
+   "parcel_apn": "09222012",
+   "raw_address": "",
+   "signal_id": "c888bbb1802088a1ea4d3d6ed8249e42c95e785ddafc8a43010e2cb5e53a4d5c",
+   "source": "official_distress:union",
+   "source_type": "taxdelinquent"
+  },
+  {
+   "detail_json": {
+    "observed_event_date": "2026-09-02",
+    "retrieved_at": "2026-09-13T20:08:22Z",
+    "source_key": "nc.union.taxdelinquent.published_list",
+    "source_url": "https://www.unioncountync.gov/home/showdocument?id=4792&t=639076999845462802",
+    "tax_balance": 1207.43
+   },
+   "event_date": "2026-08-05",
+   "geography": "37179",
+   "owner_name": "OWNER 26",
+   "parcel_apn": "09222012",
+   "raw_address": "",
+   "signal_id": "fedd7d9baf1380133ff10e6a7268f852e612db98b80190354ca4b9f279e1d7b6",
+   "source": "official_distress:union",
+   "source_type": "taxdelinquent"
+  }
+ ]
+}
