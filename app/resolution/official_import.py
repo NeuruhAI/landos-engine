@@ -20,6 +20,7 @@ you may call.
 from __future__ import annotations
 
 import csv
+import re
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -31,6 +32,12 @@ ACCEPTED_CONFIDENCE = frozenset({"EXACT", "HIGH"})
 #: T22 source name -> the family that names its class of authority.
 SOURCE_FAMILY_BY_NAME: Dict[str, str] = {
     "WAKE_PARCELS": "COUNTY_PARCEL_ROLL",
+    "MECK_ALL_OWNERS": "COUNTY_PARCEL_ROLL",
+    "MECK_ALL_PARCELDATA": "COUNTY_PARCEL_ROLL",
+    "MECK_TAXPARCELSALES": "COUNTY_PARCEL_ROLL",
+    "MECK_PARCEL_ZIPCODE": "COUNTY_PARCEL_ROLL",
+    "UNION_TAX_STATUS": "COUNTY_PARCEL_ROLL",
+    "CABARRUS_TAX_PARCELS": "COUNTY_PARCEL_ROLL",
     "DURHAM_PARCELS": "COUNTY_PARCEL_ROLL",
     "MECK_CAMA_OWNERSHIP": "COUNTY_PARCEL_ROLL",
     "MECK_TAXPARCELSAPP": "COUNTY_PARCEL_ROLL",
@@ -38,8 +45,13 @@ SOURCE_FAMILY_BY_NAME: Dict[str, str] = {
     "IRS_EO_BMF_NC": "IRS_EXEMPT_ORG_BMF",
 }
 
-#: T22 relationship token -> (contract role, whether the source states the role)
+#: Supply relationship token -> (contract role, whether the source states the role)
 ROLE_MAP: Dict[str, Tuple[str, bool]] = {
+    # T24C. The county roll stores every owner in ONE string; read as segments,
+    # a segment carrying no death marker beside a co-owner that does is the
+    # county asserting that person holds title. That is a stated title-level
+    # fact, not an inference about heirship, so it lands as COOWNER.
+    "CO_OWNER_OF_RECORD": ("COOWNER", True),
     "EXECUTOR": ("EXECUTOR", True),
     "ADMINISTRATOR": ("ADMINISTRATOR", True),
     "PERSONAL_REPRESENTATIVE": ("PERSONAL_REPRESENTATIVE", True),
@@ -55,10 +67,39 @@ def _s(row: dict, key: str) -> str:
     return " ".join(str(row.get(key) or "").strip().split())
 
 
+#: `WAKE_PARCELS :: locator (corroborated by 2 independent official sources: A,B)`
+_T24C_CORROBORATION = re.compile(
+    r"\(corroborated by (\d+) independent official sources?:\s*([^)]*)\)\s*$")
+
+
 def parse_source_document(value: str) -> dict:
-    """`T22|WAKE_PARCELS|<locator>|conf=EXACT|OFFICIAL_ROLE_STATED`."""
-    parts = [p.strip() for p in (value or "").split("|")]
-    out = {"lane": "", "source_name": "", "locator": "", "confidence": "", "match_method": ""}
+    """Read either supply lane's source_document into one shape.
+
+    T22   `T22|WAKE_PARCELS|<locator>|conf=EXACT|OFFICIAL_ROLE_STATED`
+    T24C  `WAKE_PARCELS :: <locator> (corroborated by 2 independent official
+          sources: DURHAM_PARCELS,NC_ONEMAP_PARCELS)`
+
+    The T24C form carries NO confidence and NO match method -- both live in that
+    lane's resolution-evidence file. This returns them empty, which means a
+    caller that does not join the evidence gets `confidence=""` and imports
+    nothing. That is the correct failure: an identity with no stated confidence
+    is not importable, and silently defaulting it to HIGH is exactly the naked
+    assertion the contract forbids.
+    """
+    text = (value or "").strip()
+    out = {"lane": "", "source_name": "", "locator": "", "confidence": "",
+           "match_method": "", "corroborating_sources": []}
+    if "::" in text:
+        head, _, tail = text.partition("::")
+        out["lane"] = "T24C"
+        out["source_name"] = head.strip()
+        m = _T24C_CORROBORATION.search(tail)
+        if m:
+            out["corroborating_sources"] = [s.strip() for s in m.group(2).split(",") if s.strip()]
+            tail = tail[: m.start()]
+        out["locator"] = tail.strip()
+        return out
+    parts = [p.strip() for p in text.split("|")]
     if parts:
         out["lane"] = parts[0]
     if len(parts) > 1:
@@ -70,6 +111,27 @@ def parse_source_document(value: str) -> dict:
             out["confidence"] = p[5:].strip().upper()
         elif p:
             out["match_method"] = p
+    return out
+
+
+def evidence_index(rows: Sequence[dict]) -> Dict[Tuple[str, str], dict]:
+    """(candidate_id, PERSON) -> the strongest evidence row naming that person.
+
+    T24C states confidence in ESTATE_RESOLUTION_EVIDENCE.csv rather than inside
+    source_document. Keeping the join here means the import path has exactly one
+    place that decides what an identity's confidence is.
+    """
+    rank = {"EXACT": 3, "HIGH": 2, "REVIEW": 1, "REJECT": 0}
+    out: Dict[Tuple[str, str], dict] = {}
+    for row in rows:
+        person = _s(row, "living_party_name").upper()
+        if not person:
+            continue
+        key = (_s(row, "candidate_id"), person)
+        current = out.get(key)
+        if current is None or rank.get(_s(row, "match_confidence").upper(), 0) > rank.get(
+                _s(current, "match_confidence").upper(), 0):
+            out[key] = row
     return out
 
 
