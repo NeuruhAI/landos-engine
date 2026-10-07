@@ -7,7 +7,9 @@ BEFORE any of our code runs. Defaults mean every field is optional — a parcel
 with only a couple of known signals still scores fine.
 """
 from typing import List, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .national_scope import NATIONAL_HUNT_FIPS, expand_territory
 
 
 class DistressSignals(BaseModel):
@@ -137,6 +139,19 @@ class HuntRequest(BaseModel):
     geography: Optional[HuntGeography | list[HuntGeography]] = None
     recipe: Optional[dict] = None       # {signal_types: [...], thresholds: {...}}
     requested_by: Optional[str] = None
+
+    @model_validator(mode="after")
+    def expand_national_scope(self):
+        """Empty territory and the reserved NATIONAL marker both mean the
+        existing national Census county universe, not a synthetic county."""
+        if not self.territory:
+            self.territory = [HuntTerritoryEntry(fips=NATIONAL_HUNT_FIPS)]
+        expanded = expand_territory(self.territory)
+        self.territory = [
+            item if isinstance(item, HuntTerritoryEntry) else HuntTerritoryEntry(**item)
+            for item in expanded
+        ]
+        return self
 
 
 # --- FREE-FIRST: loopback research (one fact about one target per item) ---
